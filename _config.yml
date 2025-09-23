@@ -1,6 +1,6 @@
 title:              Mr.X's Blog
 email:              2254750892@qq.com
-description:        A Blog for Mrx
+description:        Daily Recording for Mrx
 author:             Mrx
 baseurl:            "" # 如果是 username.github.io 则留空；否则写 /仓库名
 url:                "https://marx2001.github.io"
