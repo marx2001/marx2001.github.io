@@ -13,10 +13,15 @@ github_username:    marx2001
 
 # Build settings
 markdown:           kramdown
+highlighter:        rouge
 paginate:           5
 paginate_path:      "/posts/page:num/"
 plugins:
   - jekyll-feed
   - jekyll-paginate
   - jekyll-sitemap
-highlighter: rouge
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
+  syntax_highlighter_opts:
+    line_numbers: true
