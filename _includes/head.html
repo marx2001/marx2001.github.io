@@ -41,7 +41,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // 创建按钮
     const button = document.createElement('button');
     button.className = 'copy-btn';
-    button.textContent = '复制';
+    button.textContent = '复制代码';
 
     // 设置按钮样式
     button.style.position = 'absolute';
@@ -55,6 +55,9 @@ document.addEventListener('DOMContentLoaded', () => {
     button.style.cursor = 'pointer';
     button.style.fontSize = '0.8em';
 
+    // 设置为等宽字体
+    button.style.fontFamily = '"Courier New", monospace';
+
     // 让父元素可定位
     block.parentNode.style.position = 'relative';
 
@@ -65,9 +68,11 @@ document.addEventListener('DOMContentLoaded', () => {
     button.addEventListener('click', () => {
       navigator.clipboard.writeText(block.innerText).then(() => {
         button.textContent = '已复制';
-        setTimeout(() => button.textContent = '复制', 2000);
+        setTimeout(() => button.textContent = '复制代码', 1000);
       });
     });
   });
 });
 </script>
+
+
