@@ -1,9 +1,0 @@
-/* 专门用于文章正文的容器 */
-.article-container, .post-content {
-    max-width: 150ch;   /* 每行约 75 个字符 */
-    margin: 0 auto;    /* 居中 */
-    padding-left: 1rem;
-    padding-right: 1rem;
-    line-height: 1.6;  /* 可选，提升可读性 */
-    word-wrap: break-word;  /* 防止单词过长溢出 */
-}
