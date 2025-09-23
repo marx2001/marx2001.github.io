@@ -20,6 +20,3 @@ plugins:
   - jekyll-paginate
   - jekyll-sitemap
 highlighter: rouge
-kramdown:
-  syntax_highlighter_opts:
-    span: true
