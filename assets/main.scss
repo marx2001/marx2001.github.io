@@ -3,3 +3,25 @@
 ---
 
 @import "styles";
+
+/* 代码块基础样式 */
+pre code {
+  display: block;              /* 让代码块独占一行 */
+  padding: 1em;                /* 内边距，让代码不贴边 */
+  background-color: #282c34;   /* 深色背景 */
+  color: #abb2bf;              /* 文字颜色 */
+  border-radius: 8px;          /* 圆角 */
+  overflow-x: auto;            /* 横向滚动条 */
+  position: relative;           /* 给复制按钮用 */
+  font-size: 0.9em;
+  line-height: 1.4;
+}
+
+/* 横向滚动条美化（可选） */
+pre code::-webkit-scrollbar {
+  height: 8px;
+}
+pre code::-webkit-scrollbar-thumb {
+  background: #5c6370;
+  border-radius: 4px;
+}
