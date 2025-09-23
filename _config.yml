@@ -8,16 +8,18 @@ url:                "https://marx2001.github.io"
 # Social Profiles
 github_username:    marx2001
 
+# Add your google-analytics ID here to activate google analytics
+# google_analytics:   UA-XXXXXXXXX-X
+
 # Build settings
 markdown:           kramdown
-highlighter:        rouge   # <<<<<< 关键新增这一行
+highlighter:        rouge
 paginate:           5
 paginate_path:      "/posts/page:num/"
 plugins:
   - jekyll-feed
   - jekyll-paginate
   - jekyll-sitemap
-
 kramdown:
   input: GFM
   syntax_highlighter: rouge
