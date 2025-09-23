@@ -1,3 +1,5 @@
+---
+---
 // Import variables
 @import "./variables";
 
@@ -18,4 +20,7 @@
 @import "./sections/post";
 
 // Syntax highlighting (Rouge)
-@import "rouge-github";
+//@import "rouge-github";
+
+// Syntax highlighting (Rouge)
+@import "rouge/github";
