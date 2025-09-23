@@ -20,6 +20,3 @@ plugins:
   - jekyll-paginate
   - jekyll-sitemap
 highlighter: rouge
-kramdown:
-  input: GFM
-  syntax_highlighter: rouge
