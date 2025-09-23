@@ -1,6 +1,6 @@
 /* 专门用于文章正文的容器 */
 .article-container, .post-content {
-    max-width: 75ch;   /* 每行约 75 个字符 */
+    max-width: 150ch;   /* 每行约 75 个字符 */
     margin: 0 auto;    /* 居中 */
     padding-left: 1rem;
     padding-right: 1rem;
