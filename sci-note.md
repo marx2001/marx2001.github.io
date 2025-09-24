@@ -3,6 +3,7 @@ layout: page          # 使用 page 布局模板
 title: Sci-Note        # 页面标题
 permalink: /sci-note/  # URL 地址
 background: /img/bg-sci-note.jpg
+paginate:           5
 ---
 {% assign note_posts = site.posts | where:"categories","sci-note" %}
 {% for post in note_posts limit:5 %}
