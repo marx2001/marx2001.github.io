@@ -4,24 +4,29 @@
 
 @import "styles";
 
-/* 代码块基础样式 */
+/* === 自定义代码块样式 === */
 pre code {
-  display: block;              /* 让代码块独占一行 */
-  padding: 1em;                /* 内边距，让代码不贴边 */
+  display: block;              /* 独占一行 */
+  padding: 1em;
   background-color: #282c34;   /* 深色背景 */
   color: #abb2bf;              /* 文字颜色 */
-  border-radius: 8px;          /* 圆角 */
+  border-radius: 8px;
   overflow-x: auto;            /* 横向滚动条 */
-  position: relative;           /* 给复制按钮用 */
+  overflow-y: auto;            /* 纵向滚动条 */
+  max-height: 500px;           /* 限制最大高度，超出时出现纵向滚动条 */
+  position: relative;          /* 给复制按钮用 */
   font-size: 0.9em;
   line-height: 1.4;
+  white-space: pre;            /* 不自动换行 */
 }
 
-/* 横向滚动条美化（可选） */
+/* 滚动条美化（可选） */
 pre code::-webkit-scrollbar {
-  height: 8px;
+  height: 8px;   /* 横向滚动条厚度 */
+  width: 8px;    /* 纵向滚动条宽度 */
 }
 pre code::-webkit-scrollbar-thumb {
   background: #5c6370;
   border-radius: 4px;
 }
+
