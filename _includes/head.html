@@ -37,6 +37,7 @@
 <script>
 document.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('pre code').forEach((block) => {
+    // 创建复制按钮
     const button = document.createElement('button');
     button.className = 'copy-btn';
     button.textContent = '复制代码';
@@ -52,17 +53,26 @@ document.addEventListener('DOMContentLoaded', () => {
     button.style.borderRadius = '4px';
     button.style.cursor = 'pointer';
     button.style.fontSize = '0.8em';
-    button.style.fontFamily = '"Courier New", monospace';
+    button.style.fontFamily = '"Courier New", monospace'; // 等宽字体
 
+    // 让父元素可以定位
     block.parentNode.style.position = 'relative';
+
+    // 把按钮添加到代码块父元素
     block.parentNode.appendChild(button);
 
+    // 点击按钮 → 复制代码
     button.addEventListener('click', () => {
       navigator.clipboard.writeText(block.innerText).then(() => {
         button.textContent = '已复制';
-        setTimeout(() => button.textContent = '复制代码', 1000);
+        button.style.fontFamily = '"Courier New", monospace'; // 保持等宽字体
+        setTimeout(() => {
+          button.textContent = '复制代码';
+          button.style.fontFamily = '"Courier New", monospace'; // 保持等宽字体
+        }, 1000);
       });
     });
   });
 });
 </script>
+
