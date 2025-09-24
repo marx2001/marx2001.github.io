@@ -1,0 +1,84 @@
+---
+layout: post
+title: "vasp计算态密度"
+subtitle: "Experience Sharing"
+background: '/img/bg-sci-note.jpg'
+categories: sci-note
+permalink: /sci-note_posts/20250924-dos/
+---
+
+## <center>Vasp计算Dos</center>
+
+DOS的计算不是必需的，而是在分析机制的时候使用。例如在分析晶体场劈裂情况以及定性讨论配体场效应时，需要计算DOS以及PDOS。
+
+
+**<span style="font-size: 120%"> 1. 静态自洽计算（static）</span>**
+
+以MPSS为例，其结构如图所示
+
+<div align="center"><img src="/img/vasp计算能带/bg-s1.png" alt="MPSS结构图" style="width:500px; height:auto;"/></div>
+<div align="center"><img src="/img/vasp计算能带/bg-s2.png" alt="MPSS结构图" style="width:500px; height:auto;"/></div>
+
+首先准备INCAR
+
+```python
+SYSTEM = MBT
+LREAL=Auto
+#ALGO=Fast
+IALGO=48 
+
+ISTART = 0
+ICHARG = 11
+
+ENCUT = 520
+#NELECT =84
+#LSORBIT=.TRUE.
+LORBMOM=.TRUE.
+
+#NPAR= 4
+NCORE= 4
+ISMEAR = 0
+SIGMA = 0.04
+
+ISPIN=2
+MAGMOM = 0 4 8*0.0
+LMAXMIX=4
+
+LWAVE=.F
+LCHARG=.F
+EDIFF = 1E-6 
+EDIFFG = -0.01
+
+LORBIT=12
+NEDOS=801
+EMIN=-10
+EMAX=10
+
+LDAU = .TRUE.
+LDAUTYPE = 2
+LDAUL = 2  2 -1 -1
+LDAUU = 0.5 2.0 0.0 0.0
+LDAUJ = 0.0 0.0 0.0 0.0
+LDAUPRINT = 2
+
+```
+
+由于是磁性体系，所以要增加很多设置，虽然部分设置是隐式开启或者关闭的，但根据官网的说法，显式地设置出来，也会起到一定的作用。
+
+注意，个人习惯先用AGLO=Fast,这样计算速度快，可以快速了解大概的情况，同时第一次计算的时候，可以取小K点，同样使得计算速度快。单层材料不加IVDW范德华修正。
+个人习惯开启自旋极化后不设置磁矩，让其自行演化，得到最准确的基态。
+
+对于强关联体系，必须加U，具体数值自行测试。
+
+准备好POSCAR、POTCAR、CHGCAR、KPOINTS后，提交任务进行计算。
+
+
+# 2. 数据处理方法（重点）
+
+首先绘制PDOS,这一部分较为繁琐，首先vaspkit/114，可以选择原子，输出原子所有轨道的pdos。其它功能进入vaspkit后，自行翻译即可。
+
+产生的PDOS_SUM_DW是该原子的数据，复制进orgin表格中。然后把同一轨道的up和down放到一起，再在前面插入x轴——Energy，这一列。全选页面内所有数据后，选择堆积图，调整x和y轴范围即可。
+
+成品示例如下：
+
+<div align="center"><img src="/img/vasp计算态密度/bg-d1.png" alt="MPSS结构图" style="width:500px; height:auto;"/></div>
