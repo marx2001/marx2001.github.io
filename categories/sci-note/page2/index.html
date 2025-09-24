@@ -1,0 +1,94 @@
+---
+layout: page
+title: "Sci-Note-第二页"
+category: sci-note
+current_page: 1
+---
+
+{% comment %} 获取所有属于 sci-note 分类的文章 {% endcomment %}
+{% assign category_posts = site.posts | where: "categories", "sci-note" %}
+
+{% comment %} 设置每页显示5篇文章 {% endcomment %}
+{% assign posts_per_page = 5 %}
+{% assign total_posts = category_posts.size %}
+{% assign total_pages = total_posts | divided_by: posts_per_page | plus: 1 %}
+
+{% if total_posts <= posts_per_page %}
+  {% assign total_pages = 1 %}
+{% endif %}
+
+{% comment %} 计算当前页显示的文章范围 {% endcomment %}
+{% assign start_index = 0 %}
+{% assign end_index = posts_per_page | minus: 1 %}
+{% if end_index >= total_posts %}
+  {% assign end_index = total_posts | minus: 1 %}
+{% endif %}
+
+<h1>Sci - Note 分类</h1>
+<p>共 {{ total_posts }} 篇文章</p>
+
+{% comment %} 显示当前页的文章列表 {% endcomment %}
+{% for i in (start_index..end_index) %}
+  {% assign post = category_posts[i] %}
+  <article class="post-preview">
+    <a href="{{ post.url | prepend: site.baseurl | replace: '//', '/' }}">
+      <h2 class="post-title">{{ post.title }}</h2>
+      {% if post.subtitle %}
+      <h3 class="post-subtitle">{{ post.subtitle }}</h3>
+      {% else %}
+      <h3 class="post-subtitle">{{ post.excerpt | strip_html | truncatewords: 15 }}</h3>
+      {% endif %}
+    </a>
+    <p class="post-meta">发布于 {{ post.date | date: '%Y年%m月%d日' }}</p>
+  </article>
+  <hr>
+{% endfor %}
+
+{% comment %} 分页导航 {% endcomment %}
+{% if total_pages > 1 %}
+<div class="pagination">
+  {% comment %} 上一页按钮 {% endcomment %}
+  {% if page.current_page > 1 %}
+    {% if page.current_page == 2 %}
+      <a href="{{ '/categories/sci-note/' | relative_url }}" class="prev">&laquo; 上一页</a>
+    {% else %}
+      <a href="{{ '/categories/sci-note/page' | append: page.current_page | minus: 1 | append: '/' | relative_url }}" class="prev">&laquo; 上一页</a>
+    {% endif %}
+  {% else %}
+    <span class="prev disabled">&laquo; 上一页</span>
+  {% endif %}
+
+  {% comment %} 页码显示 {% endcomment %}
+  <span class="page-info">第 {{ page.current_page }} 页/共 {{ total_pages }} 页</span>
+
+  {% comment %} 下一页按钮 {% endcomment %}
+  {% if page.current_page < total_pages %}
+    <a href="{{ '/categories/sci-note/page' | append: page.current_page | plus: 1 | append: '/' | relative_url }}" class="next">下一页 &raquo;</a>
+  {% else %}
+    <span class="next disabled">下一页 &raquo;</span>
+  {% endif %}
+</div>
+
+<style>
+.pagination {
+  text-align: center;
+  margin: 30px 0;
+  font-size: 16px;
+}
+.pagination a, .pagination span {
+  display: inline-block;
+  margin: 0 5px;
+  padding: 8px 16px;
+  text-decoration: none;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+}
+.pagination a:hover {
+  background-color: #f5f5f5;
+}
+.pagination .disabled {
+  color: #ccc;
+  cursor: not-allowed;
+}
+</style>
+{% endif %}
