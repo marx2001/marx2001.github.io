@@ -6,7 +6,7 @@ background: /img/bg-sci-note.jpg
 paginate:           5
 ---
 {% assign note_posts = site.posts | where:"categories","sci-note" %}
-{% for post in note_posts limit:5 %}
+{% for post in note_posts limit:100 %}
 
 <article class="post-preview">
   <a href="{{ post.url | prepend: site.baseurl | replace: '//', '/' }}">
