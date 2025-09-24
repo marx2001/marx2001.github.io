@@ -1,22 +1,76 @@
-title:              Mr.X's Blog
-email:              2254750892@qq.com
-description:        Daily Recording for Mrx
-author:             Mrx
-baseurl:            "" # 如果是 username.github.io 则留空；否则写 /仓库名
-url:                "https://marx2001.github.io"
+---
+layout: default
+---
 
-# Social Profiles
-github_username:    marx2001
+<!-- Page Header -->
+{% if page.background %}
+<header class="masthead" style="background-image: url('{{ page.background | prepend: site.baseurl | replace: '//', '/' }}')">
+  {% else %}
+  <header class="masthead">
+    {% endif %}
+    <div class="overlay"></div>
+    <div class="container">
+      <div class="row">
+        <div class="col-lg-8 col-md-10 mx-auto">
+          <div class="page-heading">
+            <h1>{{ site.title }}</h1>
+            {% if site.description %}
+            <span class="subheading">{{ site.description }}</span>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
 
-# Add your google-analytics ID here to activate google analytics
-# google_analytics:   UA-XXXXXXXXX-X
+  <div class="container">
+    <div class="row">
+      <div class="col-lg-8 col-md-10 mx-auto">
 
-# Build settings
-markdown:           kramdown
-paginate:           5
-paginate_path:      "/posts/page:num/"
-plugins:
-  - jekyll-feed
-  - jekyll-paginate
-  - jekyll-sitemap
+        {{ content }}
 
+        <!-- Home Post List -->
+        {% for post in paginator.posts %}
+
+        <article class="post-preview">
+          <a href="{{ post.url | prepend: site.baseurl | replace: '//', '/' }}">
+            <h2 class="post-title">{{ post.title }}</h2>
+            {% if post.subtitle %}
+            <h3 class="post-subtitle">{{ post.subtitle }}</h3>
+            {% else %}
+            <h3 class="post-subtitle">{{ post.excerpt | strip_html | truncatewords: 15 }}</h3>
+            {% endif %}
+          </a>
+          <p class="post-meta">Posted by
+            {% if post.author %}
+            {{ post.author }}
+            {% else %}
+            {{ site.author }}
+            {% endif %}
+            on
+            {{ post.date | date: '%B %d, %Y' }} &middot; {% include read_time.html content=post.content %}            
+          </p>
+        </article>
+
+        <hr>
+
+        {% endfor %}
+
+        <!-- 分页导航 -->
+        <div class="pagination">
+          {% if paginator.total_pages > 1 %}
+            {% if paginator.previous_page %}
+              <a href="{{ paginator.previous_page_path | relative_url }}" class="btn btn-primary">&larr; 上一页</a>
+            {% endif %}
+            
+            <span class="page-number">第 {{ paginator.page }} 页 / 共 {{ paginator.total_pages }} 页</span>
+            
+            {% if paginator.next_page %}
+              <a href="{{ paginator.next_page_path | relative_url }}" class="btn btn-primary">下一页 &rarr;</a>
+            {% endif %}
+          {% endif %}
+        </div>
+
+      </div>
+    </div>
+  </div>
