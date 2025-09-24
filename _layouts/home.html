@@ -5,72 +5,62 @@ layout: default
 <!-- Page Header -->
 {% if page.background %}
 <header class="masthead" style="background-image: url('{{ page.background | prepend: site.baseurl | replace: '//', '/' }}')">
-{% else %}
-<header class="masthead">
-{% endif %}
-  <div class="overlay"></div>
-  <div class="container">
-    <div class="row">
-      <div class="col-lg-8 col-md-10 mx-auto">
-        <div class="page-heading">
-          <h1>{{ site.title }}</h1>
-          {% if site.description %}
+  {% else %}
+  <header class="masthead">
+    {% endif %}
+    <div class="overlay"></div>
+    <div class="container">
+      <div class="row">
+        <div class="col-lg-8 col-md-10 mx-auto">
+          <div class="page-heading">
+            <h1>{{ site.title }}</h1>
+            {% if site.description %}
             <span class="subheading">{{ site.description }}</span>
-          {% endif %}
+            {% endif %}
+          </div>
         </div>
       </div>
     </div>
-  </div>
-</header>
+  </header>
 
-<div class="container">
-  <div class="row">
-    <div class="col-lg-8 col-md-10 mx-auto">
+  <div class="container">
+    <div class="row">
+      <div class="col-lg-8 col-md-10 mx-auto">
 
-      {{ content }}
+        {{ content }}
 
-      <!-- Home Post List -->
-      {% for post in paginator.posts %}
-      <article class="post-preview">
-        <a href="{{ post.url | prepend: site.baseurl | replace: '//', '/' }}">
-          <h2 class="post-title">{{ post.title }}</h2>
-          {% if post.subtitle %}
+        <!-- Home Post List -->
+        {% for post in site.posts limit : 5 %}
+
+        <article class="post-preview">
+          <a href="{{ post.url | prepend: site.baseurl | replace: '//', '/' }}">
+            <h2 class="post-title">{{ post.title }}</h2>
+            {% if post.subtitle %}
             <h3 class="post-subtitle">{{ post.subtitle }}</h3>
-          {% else %}
+            {% else %}
             <h3 class="post-subtitle">{{ post.excerpt | strip_html | truncatewords: 15 }}</h3>
-          {% endif %}
-        </a>
-        <p class="post-meta">
-          Posted by
-          {% if post.author %}
+            {% endif %}
+          </a>
+          <p class="post-meta">Posted by
+            {% if post.author %}
             {{ post.author }}
-          {% else %}
+            {% else %}
             {{ site.author }}
-          {% endif %}
-          on {{ post.date | date: '%B %d, %Y' }}
-          &middot; {% include read_time.html content=post.content %}
-        </p>
-      </article>
-      <hr>
-      {% endfor %}
+            {% endif %}
+            on
+            {{ post.date | date: '%B %d, %Y' }} &middot; {% include read_time.html content=post.content %}            
+          </p>
+        </article>
 
-      <!-- Pager -->
-      <div class="clearfix">
-        {% if paginator.previous_page %}
-          <a class="btn btn-primary float-left"
-             href="{{ paginator.previous_page_path | prepend: site.baseurl | replace: '//', '/' }}">
-            &larr; Newer Posts
-          </a>
-        {% endif %}
+        <hr>
 
-        {% if paginator.next_page %}
-          <a class="btn btn-primary float-right"
-             href="{{ paginator.next_page_path | prepend: site.baseurl | replace: '//', '/' }}">
-            Older Posts &rarr;
-          </a>
-        {% endif %}
+        {% endfor %}
+
+        <!-- Pager -->
+        <div class="clearfix">
+          <a class="btn btn-primary float-right" href="{{"/posts" | relative_url }}">View All Posts &rarr;</a>
+        </div>
+
       </div>
-
     </div>
   </div>
-</div>
