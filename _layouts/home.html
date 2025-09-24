@@ -30,7 +30,7 @@ layout: default
         {{ content }}
 
         <!-- Home Post List -->
-        {% for post in paginator.posts %}
+        {% for post in site.posts limit : 5 %}
 
         <article class="post-preview">
           <a href="{{ post.url | prepend: site.baseurl | replace: '//', '/' }}">
@@ -56,19 +56,9 @@ layout: default
 
         {% endfor %}
 
-        <!-- 分页导航 -->
-        <div class="pagination">
-          {% if paginator.total_pages > 1 %}
-            {% if paginator.previous_page %}
-              <a href="{{ paginator.previous_page_path | relative_url }}" class="btn btn-primary">&larr; 上一页</a>
-            {% endif %}
-            
-            <span class="page-number">第 {{ paginator.page }} 页 / 共 {{ paginator.total_pages }} 页</span>
-            
-            {% if paginator.next_page %}
-              <a href="{{ paginator.next_page_path | relative_url }}" class="btn btn-primary">下一页 &rarr;</a>
-            {% endif %}
-          {% endif %}
+        <!-- Pager -->
+        <div class="clearfix">
+          <a class="btn btn-primary float-right" href="{{"/posts" | relative_url }}">View All Posts &rarr;</a>
         </div>
 
       </div>
