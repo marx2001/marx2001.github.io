@@ -1,0 +1,22 @@
+title:              Mr.X's Blog
+email:              2254750892@qq.com
+description:        Daily Recording for Mrx
+author:             Mrx
+baseurl:            "" # 如果是 username.github.io 则留空；否则写 /仓库名
+url:                "https://marx2001.github.io"
+
+# Social Profiles
+github_username:    marx2001
+
+# Add your google-analytics ID here to activate google analytics
+# google_analytics:   UA-XXXXXXXXX-X
+
+# Build settings
+markdown:           kramdown
+paginate:           5
+paginate_path:      "/posts/page:num/"
+plugins:
+  - jekyll-feed
+  - jekyll-paginate
+  - jekyll-sitemap
+
