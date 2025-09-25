@@ -6,5 +6,5 @@ background: /img/bg-sci-note.jpg
 ---
 <!-- ✅ 设置分类变量供 JavaScript 使用 -->
 <script>
-window.currentCategory = 'sci-note';
+window.currentCategory = 'Sci-Note';
 </script>

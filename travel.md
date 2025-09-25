@@ -6,5 +6,5 @@ background: /img/bg-travel.jpg
 ---
 <!-- ✅ 设置分类变量供 JavaScript 使用 -->
 <script>
-window.currentCategory = 'travel';
+window.currentCategory = 'Travel';
 </script>
