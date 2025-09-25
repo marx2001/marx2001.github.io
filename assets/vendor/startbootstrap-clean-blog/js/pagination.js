@@ -31,17 +31,24 @@ document.addEventListener('DOMContentLoaded', function() {
             const postElement = document.createElement('article');
             postElement.className = 'post-preview';
             
-            // 正确显示作者信息
-            const author = post.author || window.siteAuthor || 'Unknown Author';
+            // 使用与原模板完全一致的格式
+            const author = post.author || 'Start Bootstrap'; // 默认作者名
             
             postElement.innerHTML = `
                 <a href="${post.url}">
                     <h2 class="post-title">${post.title}</h2>
-                    <h3 class="post-subtitle">${post.excerpt || ''}</h3>
+                    <h3 class="post-subtitle">${post.subtitle || ''}</h3>
                 </a>
-                <p class="post-meta">Posted by ${author} on ${post.date}</p>
+                <p class="post-meta">Posted by ${author} on ${post.date} &middot; ${post.read_time}</p>
             `;
+            
             postsContainer.appendChild(postElement);
+            
+            // 如果不是最后一篇文章，添加分隔线
+            if (i < endIndex - 1) {
+                const hr = document.createElement('hr');
+                postsContainer.appendChild(hr);
+            }
         }
     }
     
