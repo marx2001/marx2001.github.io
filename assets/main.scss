@@ -63,25 +63,24 @@ pre code::-webkit-scrollbar-thumb {
       
       .post-subtitle {
         font-weight: 300;
-        margin: 0 0 5px;
-        font-size: 24px;
+        margin: 0 0 8px; /* ✅ 调整副标题底部间距 */
+        font-size: 24px; /* ✅ 确保副标题字体大小正常 */
         line-height: 1.3;
         font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;
         color: #6c757d;
       }
     }
     
-    /* ✅ 修正：分类信息样式 - 匹配图片中的蓝色 */
-    .post-category {
-      font-size: 16px;
-      font-weight: 600;
-      color: #007bff;  // ✅ 改为蓝色，匹配图片
-      margin-bottom: 6px;
-      font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;
-      letter-spacing: 0.3px;
-    }
+    /* ❌ 删除分类信息样式 */
+    /* .post-category {
+        font-size: 16px;
+        font-weight: 600;
+        color: #007bff;
+        margin-bottom: 6px;
+        font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+        letter-spacing: 0.3px;
+    } */
     
-    /* ✅ 添加：元数据样式 */
     .post-meta {
       font-size: 18px;
       font-style: italic;
@@ -121,7 +120,7 @@ pre code::-webkit-scrollbar-thumb {
   }
 }
 
-/* ✅ 修正：无文章提示样式 - 移到外层 */
+/* 无文章提示样式 */
 .no-posts {
   text-align: center;
   padding: 3rem 0;
@@ -136,10 +135,6 @@ pre code::-webkit-scrollbar-thumb {
     color: #6c757d;
     margin-bottom: 0.5rem;
     font-size: 1.1rem;
-  }
-  
-  .small {
-    font-size: 0.9rem;
   }
 }
 
@@ -204,13 +199,8 @@ pre code::-webkit-scrollbar-thumb {
       
       .post-subtitle {
         font-size: 20px;
-        margin: 0 0 4px;
+        margin: 0 0 6px; /* ✅ 移动端调整副标题间距 */
       }
-    }
-    
-    .post-category {
-      font-size: 14px;
-      margin-bottom: 4px;
     }
     
     .post-meta {
