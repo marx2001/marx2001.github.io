@@ -17,18 +17,41 @@ function initPagination() {
     const currentPageSpan = document.getElementById('current-page');
     const totalPagesSpan = document.getElementById('total-pages');
     
-    // 获取当前分类
+    // ✅ 修正：获取当前页面分类（从页面变量获取）
     const currentCategory = window.currentCategory;
+    console.log('当前页面分类:', currentCategory);
     
-    // ✅ 修正：根据分类过滤文章，并去除重复
+    // ✅ 修正：根据页面分类正确筛选文章
     let filteredPosts = window.allPosts;
-    if (currentCategory) {
+    
+    if (currentCategory && currentCategory !== 'null' && currentCategory !== 'undefined') {
+        console.log('开始筛选文章，目标分类:', currentCategory);
+        
         filteredPosts = window.allPosts.filter(post => {
-            return post.categories && post.categories.includes(currentCategory);
+            // 检查文章是否有分类标签
+            if (!post.categories || post.categories.length === 0) {
+                return false;
+            }
+            
+            // ✅ 修正：检查文章的分类是否包含当前页面分类
+            const hasMatchingCategory = post.categories.some(category => {
+                // 不区分大小写比较
+                return category.toLowerCase() === currentCategory.toLowerCase();
+            });
+            
+            return hasMatchingCategory;
         });
+        
+        console.log('筛选后文章数量:', filteredPosts.length);
+        console.log('筛选结果:', filteredPosts.map(p => ({
+            title: p.title,
+            categories: p.categories
+        })));
+    } else {
+        console.log('未设置分类，显示所有文章');
     }
     
-    // ✅ 新增：去除重复文章（基于URL去重）
+    // ✅ 修正：去除重复文章（基于URL去重）
     const uniquePosts = [];
     const seenUrls = new Set();
     
@@ -54,7 +77,8 @@ function initPagination() {
             postsContainer.innerHTML = `
                 <div class="no-posts text-center py-5">
                     <h3 class="text-muted">暂无文章</h3>
-                    <p class="text-muted">当前分类还没有发布任何文章。</p>
+                    <p class="text-muted">当前分类 "${currentCategory || '所有文章'}" 还没有发布任何文章。</p>
+                    <p class="text-muted small">请检查文章的分类标签设置。</p>
                 </div>
             `;
             document.getElementById('pagination').style.display = 'none';
@@ -75,7 +99,6 @@ function initPagination() {
                     <h2 class="post-title">${post.title}</h2>
                     <h3 class="post-subtitle">${post.subtitle || ''}</h3>
                 </a>
-                <!-- ❌ 删除分类标签：<div class="post-category">${post.categories && post.categories.length > 0 ? post.categories[0] : ''}</div> -->
                 <p class="post-meta">
                     Posted by ${post.author} on ${post.date} &middot; ${post.read_time}
                 </p>
