@@ -6,7 +6,7 @@ function initPagination() {
     // 检查数据是否已加载
     if (!window.allPosts || window.allPosts.length === 0) {
         console.error("文章数据未加载！");
-        document.getElementById('posts-container').innerHTML = '<p class="text-muted text-center py-5">No posts available</p>';
+        document.getElementById('posts-container').innerHTML = '';
         document.getElementById('pagination').style.display = 'none';
         return;
     }
@@ -73,14 +73,9 @@ function initPagination() {
     function renderPosts() {
         postsContainer.innerHTML = '';
         
-        // 如果没有文章
+        // 如果没有文章，保持空白
         if (filteredPosts.length === 0) {
-            postsContainer.innerHTML = `
-                <div class="no-posts text-center py-5">
-                    <h3 class="text-muted">暂无文章</h3>
-                    <p class="text-muted">分类 "${currentCategory || '所有文章'}" 还没有发布任何文章。</p>
-                </div>
-            `;
+            // 保持空白，不显示任何内容
             document.getElementById('pagination').style.display = 'none';
             return;
         }
