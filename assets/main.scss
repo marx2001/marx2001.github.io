@@ -70,47 +70,37 @@ pre code::-webkit-scrollbar-thumb {
       }
     }
     
-    /* ✅ 修正：分类信息样式 - 精确匹配图片 */
-    .post-category {
-      font-size: 16px;
-      font-weight: 600;
-      color: #6c757d;  // ✅ 改为浅灰色，与图片一致
-      margin-bottom: 6px;  // ✅ 减小间距
-      font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;
-      letter-spacing: 0.3px;  // ✅ 减小字母间距
-      // ❌ 删除 text-transform: uppercase; 保持小写
+    //* 分类信息样式 */
+.post-category {
+    font-size: 16px;
+    font-weight: 600;
+    color: #6c757d;
+    margin-bottom: 6px;
+    font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    letter-spacing: 0.3px;
+}
+
+/* 无文章提示样式 */
+.no-posts {
+    text-align: center;
+    padding: 3rem 0;
+    
+    h3 {
+        color: #6c757d;
+        margin-bottom: 1rem;
+        font-size: 1.5rem;
     }
     
-    .post-meta {
-      font-size: 18px;
-      font-style: italic;
-      margin-top: 0;
-      margin-bottom: 8px;  // ✅ 减小底部间距
-      color: #6c757d;
-      font-family: 'Lora', 'Times New Roman', serif;
-      line-height: 1.5;
-      
-      a {
-        color: #212529;
-        text-decoration: none;
-        
-        &:focus,
-        &:hover {
-          text-decoration: underline;
-          color: #0085A1;
-        }
-      }
+    p {
+        color: #6c757d;
+        margin-bottom: 0.5rem;
+        font-size: 1.1rem;
     }
     
-    @media only screen and (min-width: 768px) {
-      > a {
-        .post-title {
-          font-size: 36px;
-        }
-      }
+    .small {
+        font-size: 0.9rem;
     }
-  }
-  
+}
   /* 分隔线样式 - 更紧凑的间距 */
   hr {
     margin: 8px 0 !important;  // ✅ 更紧凑的间距
