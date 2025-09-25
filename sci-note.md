@@ -5,7 +5,7 @@ permalink: /sci-note/  # URL 地址
 background: /img/bg-sci-note.jpg
 ---
 {% assign note_posts = site.posts | where:"categories","sci-note" %}
-{% for post in note_posts limit:100 %}
+{% for post in note_posts limit:5 %}
 
 <article class="post-preview">
   <a href="{{ post.url | prepend: site.baseurl | replace: '//', '/' }}">
