@@ -6,7 +6,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // 检查数据是否已加载
     if (!window.allPosts || window.allPosts.length === 0) {
         console.error("文章数据未加载！");
-        document.getElementById('posts-container').innerHTML = '<p class="text-muted text-center py-5">暂无文章</p>';
+        document.getElementById('posts-container').innerHTML = '<p class="text-muted text-center py-5">No posts available</p>';
         document.getElementById('pagination').style.display = 'none';
         return;
     }
@@ -30,15 +30,16 @@ document.addEventListener('DOMContentLoaded', function() {
             const post = window.allPosts[i];
             const postElement = document.createElement('article');
             postElement.className = 'post-preview';
+            
+            // 恢复原来的英文格式
             postElement.innerHTML = `
                 <a href="${post.url}">
                     <h2 class="post-title">${post.title}</h2>
                     <h3 class="post-subtitle">${post.excerpt || ''}</h3>
                 </a>
-                <p class="post-meta">
-                    发布于 ${post.date}
-                    ${post.categories && post.categories.length > 0 ? 
-                     `• 分类: ${post.categories.join(', ')}` : ''}
+                <p class="post-meta">Posted by
+                    ${post.author || '${site.author}'}
+                    on ${post.date}
                 </p>
             `;
             postsContainer.appendChild(postElement);
