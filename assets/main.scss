@@ -31,12 +31,12 @@ pre code::-webkit-scrollbar-thumb {
 }
 
 /* ====================== */
-/* 分页文章列表样式 - 精确匹配原模板 */
+/* 分页文章列表样式 - 精确匹配图片效果 */
 /* ====================== */
 
 #posts-container {
   .post-preview {
-    margin-bottom: 4rem;
+    margin-bottom: 1.5rem;
     
     > a {
       color: #212529;
@@ -54,7 +54,7 @@ pre code::-webkit-scrollbar-thumb {
       
       .post-title {
         font-size: 30px;
-        font-weight: 700;
+        font-weight: 700; /* 加粗标题 */
         margin-top: 30px;
         margin-bottom: 10px;
         line-height: 1.2;
@@ -75,6 +75,7 @@ pre code::-webkit-scrollbar-thumb {
       font-size: 18px;
       font-style: italic;
       margin-top: 0;
+      margin-bottom: 10px; /* 减小底部间距 */
       color: #6c757d;
       font-family: 'Lora', 'Times New Roman', serif;
       line-height: 1.5;
@@ -100,9 +101,9 @@ pre code::-webkit-scrollbar-thumb {
     }
   }
   
-  /* 分隔线样式 - 与原模板一致 */
+  /* 分隔线样式 - 精确匹配图片的紧凑间距 */
   hr {
-    margin: 10px 0;
+    margin: 10px 0 !important; /* 减小分隔线间距 */
     border: 0;
     border-top: 1px solid rgba(0, 0, 0, 0.1);
     width: 100%;
