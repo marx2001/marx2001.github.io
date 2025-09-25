@@ -56,19 +56,30 @@ pre code::-webkit-scrollbar-thumb {
         font-size: 30px;
         font-weight: 700; /* 加粗标题 */
         margin-top: 30px;
-        margin-bottom: 10px;
+        margin-bottom: 8px; /* 减小底部间距 */
         line-height: 1.2;
         font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;
       }
       
       .post-subtitle {
         font-weight: 300;
-        margin: 0 0 10px;
+        margin: 0 0 8px; /* 减小底部间距 */
         font-size: 24px;
         line-height: 1.3;
         font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;
         color: #6c757d;
       }
+    }
+    
+    /* ✅ 新增：分类信息样式 - 匹配图片中的格式 */
+    .post-category {
+      font-size: 16px;
+      font-weight: 600;
+      color: #495057;
+      margin-bottom: 8px;
+      font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
     }
     
     .post-meta {
@@ -168,6 +179,10 @@ pre code::-webkit-scrollbar-thumb {
       .post-subtitle {
         font-size: 20px;
       }
+    }
+    
+    .post-category {
+      font-size: 14px;
     }
     
     .post-meta {

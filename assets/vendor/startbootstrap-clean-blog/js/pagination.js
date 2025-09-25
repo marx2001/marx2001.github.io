@@ -1,8 +1,8 @@
 // 分页配置
 const POSTS_PER_PAGE = 5;
-let currentPage = 1;
 
-document.addEventListener('DOMContentLoaded', function() {
+// 初始化分页功能
+function initPagination() {
     // 检查数据是否已加载
     if (!window.allPosts || window.allPosts.length === 0) {
         console.error("文章数据未加载！");
@@ -20,6 +20,8 @@ document.addEventListener('DOMContentLoaded', function() {
     const totalPages = Math.ceil(window.allPosts.length / POSTS_PER_PAGE);
     totalPagesSpan.textContent = totalPages;
     
+    let currentPage = 1;
+    
     function renderPosts() {
         postsContainer.innerHTML = '';
         
@@ -31,17 +33,19 @@ document.addEventListener('DOMContentLoaded', function() {
             const postElement = document.createElement('article');
             postElement.className = 'post-preview';
             
-            // 使用与原模板完全一致的 HTML 结构
-            const author = post.author || 'Start Bootstrap';
+            // ✅ 根据图片格式生成文章内容
+            // 图片显示格式：标题 + 分类 + 元数据
+            const category = post.categories && post.categories.length > 0 ? 
+                post.categories[0] : 'Uncategorized';
             
             postElement.innerHTML = `
                 <a href="${post.url}">
                     <h2 class="post-title">${post.title}</h2>
                     <h3 class="post-subtitle">${post.subtitle || ''}</h3>
                 </a>
+                <div class="post-category">${category}</div>
                 <p class="post-meta">
-                    Posted by ${author} on ${post.date}
-                    ${post.read_time ? ` &middot; ${post.read_time}` : ''}
+                    Posted by ${post.author} on ${post.date} &middot; ${post.read_time}
                 </p>
             `;
             
@@ -65,28 +69,27 @@ document.addEventListener('DOMContentLoaded', function() {
         nextBtn.classList.toggle('disabled', currentPage === totalPages);
     }
     
-    function initPagination() {
-        renderPosts();
-        updatePagination();
-        
-        prevBtn.addEventListener('click', () => {
-            if (currentPage > 1) {
-                currentPage--;
-                renderPosts();
-                updatePagination();
-                window.scrollTo({ top: 0, behavior: 'smooth' });
-            }
-        });
-        
-        nextBtn.addEventListener('click', () => {
-            if (currentPage < totalPages) {
-                currentPage++;
-                renderPosts();
-                updatePagination();
-                window.scrollTo({ top: 0, behavior: 'smooth' });
-            }
-        });
-    }
+    renderPosts();
+    updatePagination();
     
-    initPagination();
-});
+    prevBtn.addEventListener('click', () => {
+        if (currentPage > 1) {
+            currentPage--;
+            renderPosts();
+            updatePagination();
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+    });
+    
+    nextBtn.addEventListener('click', () => {
+        if (currentPage < totalPages) {
+            currentPage++;
+            renderPosts();
+            updatePagination();
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+    });
+}
+
+// 页面加载时初始化
+document.addEventListener('DOMContentLoaded', initPagination);
