@@ -31,57 +31,81 @@ pre code::-webkit-scrollbar-thumb {
 }
 
 /* ====================== */
-/* 分页文章列表样式 - 与原模板保持一致 */
+/* 分页文章列表样式 - 精确匹配原模板 */
 /* ====================== */
 
 #posts-container {
   .post-preview {
+    margin-bottom: 4rem;
+    
     > a {
       color: #212529;
+      text-decoration: none;
       
-      &:focus, &:hover {
+      &:focus,
+      &:hover {
         text-decoration: none;
         color: #0085A1;
+        
+        .post-title {
+          color: #0085A1;
+        }
       }
       
       .post-title {
-        font-size: 2.25rem;
+        font-size: 30px;
         font-weight: 700;
-        margin-top: 1.875rem;
-        margin-bottom: 0.625rem;
+        margin-top: 30px;
+        margin-bottom: 10px;
+        line-height: 1.2;
+        font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;
       }
       
       .post-subtitle {
         font-weight: 300;
-        margin: 0 0 0.625rem;
-        font-size: 1.5rem;
+        margin: 0 0 10px;
+        font-size: 24px;
+        line-height: 1.3;
+        font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+        color: #6c757d;
       }
     }
     
     .post-meta {
-      font-size: 1.125rem;
+      font-size: 18px;
       font-style: italic;
       margin-top: 0;
       color: #6c757d;
+      font-family: 'Lora', 'Times New Roman', serif;
+      line-height: 1.5;
       
       a {
         color: #212529;
+        text-decoration: none;
+        
+        &:focus,
+        &:hover {
+          text-decoration: underline;
+          color: #0085A1;
+        }
       }
     }
     
     @media only screen and (min-width: 768px) {
       > a {
         .post-title {
-          font-size: 2.25rem;
+          font-size: 36px;
         }
       }
     }
   }
   
+  /* 分隔线样式 - 与原模板一致 */
   hr {
-    margin: 1.5rem 0;
+    margin: 30px 0;
     border: 0;
     border-top: 1px solid rgba(0, 0, 0, 0.1);
+    width: 100%;
   }
 }
 
@@ -98,14 +122,14 @@ pre code::-webkit-scrollbar-thumb {
   border-top: 1px solid #dee2e6;
   
   .pagination-btn {
-    padding: 0.5rem 1rem;
-    margin: 0 0.5rem;
+    padding: 8px 16px;
+    margin: 0 10px;
     background-color: #fff;
     border: 1px solid #007bff;
-    border-radius: 0.25rem;
+    border-radius: 4px;
     cursor: pointer;
     transition: all 0.3s;
-    font-size: 0.9rem;
+    font-size: 14px;
     color: #007bff;
     font-weight: 600;
     
@@ -123,8 +147,39 @@ pre code::-webkit-scrollbar-thumb {
   }
   
   .page-info {
-    margin: 0 1rem;
+    margin: 0 15px;
     color: #6c757d;
-    font-size: 0.9rem;
+    font-size: 16px;
+  }
+}
+
+/* ====================== */
+/* 响应式设计 */
+/* ====================== */
+
+@media (max-width: 768px) {
+  #posts-container .post-preview {
+    > a {
+      .post-title {
+        font-size: 28px;
+      }
+      
+      .post-subtitle {
+        font-size: 20px;
+      }
+    }
+    
+    .post-meta {
+      font-size: 16px;
+    }
+  }
+  
+  #pagination {
+    flex-direction: column;
+    gap: 10px;
+    
+    .page-info {
+      margin: 10px 0;
+    }
   }
 }

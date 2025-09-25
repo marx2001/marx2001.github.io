@@ -29,20 +29,11 @@ window.allPosts = [
         subtitle: {{ post.excerpt | strip_html | truncatewords: 15 | jsonify }},
         {% endif %}
         excerpt: {{ post.excerpt | strip_html | jsonify }},
-        {% if post.author %}
-        author: {{ post.author | jsonify }},
-        {% else %}
-        author: {{ site.author | jsonify }},
-        {% endif %}
+        author: {% if post.author %}{{ post.author | jsonify }}{% else %}"Start Bootstrap"{% endif %},
         categories: {{ post.categories | jsonify }},
-        content: {{ post.content | jsonify }},
-        // 计算阅读时长
+        // 计算阅读时长（与原模板一致）
         {% assign words = post.content | number_of_words %}
-        {% if words < 360 %}
-        read_time: "1 min read"
-        {% else %}
-        read_time: "{{ words | divided_by:180 }} mins read"
-        {% endif %}
+        read_time: "{% if words < 360 %}1 min read{% else %}{{ words | divided_by:180 }} mins read{% endif %}"
     }{% unless forloop.last %},{% endunless %}
     {% endfor %}
 ];
