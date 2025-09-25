@@ -31,16 +31,15 @@ document.addEventListener('DOMContentLoaded', function() {
             const postElement = document.createElement('article');
             postElement.className = 'post-preview';
             
-            // 恢复原来的英文格式
+            // 正确显示作者信息
+            const author = post.author || window.siteAuthor || 'Unknown Author';
+            
             postElement.innerHTML = `
                 <a href="${post.url}">
                     <h2 class="post-title">${post.title}</h2>
                     <h3 class="post-subtitle">${post.excerpt || ''}</h3>
                 </a>
-                <p class="post-meta">Posted by
-                    ${post.author || '${site.author}'}
-                    on ${post.date}
-                </p>
+                <p class="post-meta">Posted by ${author} on ${post.date}</p>
             `;
             postsContainer.appendChild(postElement);
         }

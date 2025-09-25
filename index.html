@@ -22,13 +22,20 @@ window.allPosts = [
     {
         title: {{ post.title | jsonify }},
         url: "{{ post.url | relative_url }}",
-        date: "{{ post.date | date: '%B %d, %Y' }}",  <!-- 修改日期格式为英文 -->
+        date: "{{ post.date | date: '%B %d, %Y' }}",
         excerpt: {{ post.excerpt | strip_html | jsonify }},
-        author: {% if post.author %}{{ post.author | jsonify }}{% else %}{{ site.author | jsonify }}{% endif %},
+        {% if post.author %}
+        author: {{ post.author | jsonify }},
+        {% else %}
+        author: {{ site.author | jsonify }},
+        {% endif %}
         categories: {{ post.categories | jsonify }}
     }{% unless forloop.last %},{% endunless %}
     {% endfor %}
 ];
+
+// 添加站点作者信息
+window.siteAuthor = {{ site.author | jsonify }};
 </script>
 
 <!-- 加载分页脚本 -->
