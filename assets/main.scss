@@ -36,7 +36,7 @@ pre code::-webkit-scrollbar-thumb {
 
 #posts-container {
   .post-preview {
-    margin-bottom: 1.5rem;
+    margin-bottom: 2rem;
     
     > a {
       color: #212529;
@@ -118,8 +118,8 @@ pre code::-webkit-scrollbar-thumb {
   display: flex;
   justify-content: center;
   align-items: center;
-  margin: 4rem 0 2rem;
-  padding: 2rem 0;
+  margin: 2rem 0 2rem !important; /* 减小上边距 */
+  padding: 1.5rem 0 !important; /* 减小内边距 */
   border-top: 1px solid #dee2e6;
   
   .pagination-btn {
