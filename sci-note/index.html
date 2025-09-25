@@ -1,10 +1,12 @@
 ---
-layout: home
-title: 首页
-background: '/img/bg-index.jpg'
+layout: page
+title: SCI-NOTE
+permalink: /sci-note/
+category: sci-note
+background: '/img/bg-sci-note.jpg'
 ---
 
-<p>所有文章列表</p>
+<p>科学笔记和文献整理</p>
 
 <div id="posts-container"></div>
 <div id="pagination" class="pagination">
@@ -14,9 +16,7 @@ background: '/img/bg-index.jpg'
 </div>
 
 <script>
-// 主页不设置分类，显示所有文章
-window.currentCategory = null;
-
+window.currentCategory = 'sci-note';
 window.allPosts = [
     {% for post in site.posts %}
     {

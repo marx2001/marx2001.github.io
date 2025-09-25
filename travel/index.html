@@ -1,10 +1,12 @@
 ---
-layout: home
-title: 首页
-background: '/img/bg-index.jpg'
+layout: page
+title: Travel
+permalink: /travel/
+category: travel
+background: '/img/bg-travel.jpg'
 ---
 
-<p>所有文章列表</p>
+<p>旅行记录和见闻</p>
 
 <div id="posts-container"></div>
 <div id="pagination" class="pagination">
@@ -14,9 +16,7 @@ background: '/img/bg-index.jpg'
 </div>
 
 <script>
-// 主页不设置分类，显示所有文章
-window.currentCategory = null;
-
+window.currentCategory = 'travel';
 window.allPosts = [
     {% for post in site.posts %}
     {

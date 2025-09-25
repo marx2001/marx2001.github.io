@@ -1,10 +1,12 @@
 ---
-layout: home
-title: 首页
-background: '/img/bg-index.jpg'
+layout: page
+title: Life
+permalink: /life/
+category: life
+background: '/img/bg-life.jpg'
 ---
 
-<p>所有文章列表</p>
+<p>日常生活和感悟</p>
 
 <div id="posts-container"></div>
 <div id="pagination" class="pagination">
@@ -14,9 +16,7 @@ background: '/img/bg-index.jpg'
 </div>
 
 <script>
-// 主页不设置分类，显示所有文章
-window.currentCategory = null;
-
+window.currentCategory = 'life';
 window.allPosts = [
     {% for post in site.posts %}
     {

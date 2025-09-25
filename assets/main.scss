@@ -6,24 +6,23 @@
 
 /* === 自定义代码块样式 === */
 pre code {
-  display: block;              /* 独占一行 */
+  display: block;
   padding: 1em;
-  background-color: #282c34;   /* 深色背景 */
-  color: #abb2bf;              /* 文字颜色 */
+  background-color: #282c34;
+  color: #abb2bf;
   border-radius: 8px;
-  overflow-x: auto;            /* 横向滚动条 */
-  overflow-y: auto;            /* 纵向滚动条 */
-  max-height: 500px;           /* 限制最大高度，超出时出现纵向滚动条 */
-  position: relative;          /* 给复制按钮用 */
+  overflow-x: auto;
+  overflow-y: auto;
+  max-height: 500px;
+  position: relative;
   font-size: 0.9em;
   line-height: 1.4;
-  white-space: pre;            /* 不自动换行 */
+  white-space: pre;
 }
 
-/* 滚动条美化（可选） */
 pre code::-webkit-scrollbar {
-  height: 8px;   /* 横向滚动条厚度 */
-  width: 8px;    /* 纵向滚动条宽度 */
+  height: 8px;
+  width: 8px;
 }
 pre code::-webkit-scrollbar-thumb {
   background: #5c6370;
@@ -36,7 +35,7 @@ pre code::-webkit-scrollbar-thumb {
 
 #posts-container {
   .post-preview {
-    margin-bottom: 2rem;
+    margin-bottom: 1.5rem;  // ✅ 减小文章容器间距
     
     > a {
       color: #212529;
@@ -54,16 +53,16 @@ pre code::-webkit-scrollbar-thumb {
       
       .post-title {
         font-size: 30px;
-        font-weight: 700; /* 加粗标题 */
-        margin-top: 30px;
-        margin-bottom: 8px; /* 减小底部间距 */
+        font-weight: 700;
+        margin-top: 25px;  // ✅ 减小顶部间距
+        margin-bottom: 5px;  // ✅ 减小底部间距
         line-height: 1.2;
         font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;
       }
       
       .post-subtitle {
         font-weight: 300;
-        margin: 0 0 8px; /* 减小底部间距 */
+        margin: 0 0 5px;  // ✅ 减小底部间距
         font-size: 24px;
         line-height: 1.3;
         font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;
@@ -71,22 +70,22 @@ pre code::-webkit-scrollbar-thumb {
       }
     }
     
-    /* ✅ 新增：分类信息样式 - 匹配图片中的格式 */
+    /* ✅ 修正：分类信息样式 - 精确匹配图片 */
     .post-category {
       font-size: 16px;
       font-weight: 600;
-      color: #495057;
-      margin-bottom: 8px;
+      color: #6c757d;  // ✅ 改为浅灰色，与图片一致
+      margin-bottom: 6px;  // ✅ 减小间距
       font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
+      letter-spacing: 0.3px;  // ✅ 减小字母间距
+      // ❌ 删除 text-transform: uppercase; 保持小写
     }
     
     .post-meta {
       font-size: 18px;
       font-style: italic;
       margin-top: 0;
-      margin-bottom: 10px; /* 减小底部间距 */
+      margin-bottom: 8px;  // ✅ 减小底部间距
       color: #6c757d;
       font-family: 'Lora', 'Times New Roman', serif;
       line-height: 1.5;
@@ -112,9 +111,9 @@ pre code::-webkit-scrollbar-thumb {
     }
   }
   
-  /* 分隔线样式 - 精确匹配图片的紧凑间距 */
+  /* 分隔线样式 - 更紧凑的间距 */
   hr {
-    margin: 10px 0 !important; /* 减小分隔线间距 */
+    margin: 8px 0 !important;  // ✅ 更紧凑的间距
     border: 0;
     border-top: 1px solid rgba(0, 0, 0, 0.1);
     width: 100%;
@@ -129,8 +128,8 @@ pre code::-webkit-scrollbar-thumb {
   display: flex;
   justify-content: center;
   align-items: center;
-  margin: 2rem 0 2rem !important; /* 减小上边距 */
-  padding: 1.5rem 0 !important; /* 减小内边距 */
+  margin: 1.5rem 0 2rem !important;  // ✅ 减小上边距
+  padding: 1rem 0 !important;  // ✅ 减小内边距
   border-top: 1px solid #dee2e6;
   
   .pagination-btn {
@@ -171,31 +170,44 @@ pre code::-webkit-scrollbar-thumb {
 
 @media (max-width: 768px) {
   #posts-container .post-preview {
+    margin-bottom: 1rem;  // ✅ 移动端更小的间距
+    
     > a {
       .post-title {
         font-size: 28px;
+        margin-top: 20px;  // ✅ 移动端更小的顶部间距
+        margin-bottom: 4px;  // ✅ 移动端更小的底部间距
       }
       
       .post-subtitle {
         font-size: 20px;
+        margin: 0 0 4px;  // ✅ 移动端更小的底部间距
       }
     }
     
     .post-category {
       font-size: 14px;
+      margin-bottom: 4px;  // ✅ 移动端更小的间距
     }
     
     .post-meta {
       font-size: 16px;
+      margin-bottom: 6px;  // ✅ 移动端更小的间距
     }
   }
   
+  #posts-container hr {
+    margin: 6px 0 !important;  // ✅ 移动端更紧凑的间距
+  }
+  
   #pagination {
+    margin: 1rem 0 1.5rem !important;  // ✅ 移动端更小的间距
+    padding: 0.8rem 0 !important;  // ✅ 移动端更小的内边距
     flex-direction: column;
-    gap: 10px;
+    gap: 8px;
     
     .page-info {
-      margin: 10px 0;
+      margin: 8px 0;
     }
   }
 }

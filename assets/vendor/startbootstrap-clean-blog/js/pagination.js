@@ -17,7 +17,18 @@ function initPagination() {
     const currentPageSpan = document.getElementById('current-page');
     const totalPagesSpan = document.getElementById('total-pages');
     
-    const totalPages = Math.ceil(window.allPosts.length / POSTS_PER_PAGE);
+    // 获取当前分类
+    const currentCategory = window.currentCategory;
+    
+    // 根据分类过滤文章
+    let filteredPosts = window.allPosts;
+    if (currentCategory) {
+        filteredPosts = window.allPosts.filter(post => {
+            return post.categories && post.categories.includes(currentCategory);
+        });
+    }
+    
+    const totalPages = Math.ceil(filteredPosts.length / POSTS_PER_PAGE);
     totalPagesSpan.textContent = totalPages;
     
     let currentPage = 1;
@@ -25,16 +36,28 @@ function initPagination() {
     function renderPosts() {
         postsContainer.innerHTML = '';
         
+        // 如果没有文章
+        if (filteredPosts.length === 0) {
+            postsContainer.innerHTML = `
+                <div class="no-posts text-center py-5">
+                    <h3>暂无文章</h3>
+                    <p class="text-muted">当前分类还没有发布任何文章。</p>
+                </div>
+            `;
+            document.getElementById('pagination').style.display = 'none';
+            return;
+        }
+        
         const startIndex = (currentPage - 1) * POSTS_PER_PAGE;
-        const endIndex = Math.min(startIndex + POSTS_PER_PAGE, window.allPosts.length);
+        const endIndex = Math.min(startIndex + POSTS_PER_PAGE, filteredPosts.length);
         
         for (let i = startIndex; i < endIndex; i++) {
-            const post = window.allPosts[i];
+            const post = filteredPosts[i];
             const postElement = document.createElement('article');
             postElement.className = 'post-preview';
             
-            // ✅ 根据图片格式生成文章内容
-            // 图片显示格式：标题 + 分类 + 元数据
+            // 根据图片格式生成文章内容
+            // 图片显示格式：标题 + 副标题 + 分类 + 元数据
             const category = post.categories && post.categories.length > 0 ? 
                 post.categories[0] : 'Uncategorized';
             

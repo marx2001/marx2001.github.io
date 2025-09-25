@@ -1,12 +1,20 @@
 ---
-layout: home
-title: 首页
-background: '/img/bg-index.jpg'
+layout: page
+title: Reading
+permalink: /reading/
+category: reading
+background: '/img/bg-reading.jpg'
 ---
 
-<p>所有文章列表</p>
+<!-- 页面描述 -->
+<p>阅读笔记和文献分享</p>
 
-<div id="posts-container"></div>
+<!-- 文章容器 -->
+<div id="posts-container">
+    <!-- 文章将通过 JavaScript 动态加载 -->
+</div>
+
+<!-- 分页控件 -->
 <div id="pagination" class="pagination">
     <button id="prev-btn" class="pagination-btn">← 上一页</button>
     <span id="page-info" class="page-info">第 <span id="current-page">1</span> 页 / 共 <span id="total-pages">0</span> 页</span>
@@ -14,9 +22,10 @@ background: '/img/bg-index.jpg'
 </div>
 
 <script>
-// 主页不设置分类，显示所有文章
-window.currentCategory = null;
+// 设置当前分类
+window.currentCategory = 'reading';
 
+// 输出所有文章数据
 window.allPosts = [
     {% for post in site.posts %}
     {
