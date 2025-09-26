@@ -13,7 +13,7 @@ github_username:    marx2001
 
 # Build settings
 markdown:           kramdown
-paginate:           20
+paginate:           5
 paginate_path:      "/posts/page:num/"
 plugins:
   - jekyll-feed
