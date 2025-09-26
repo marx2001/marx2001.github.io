@@ -19,5 +19,5 @@ permalink: /search/
   </div>
 </div>
 
-<!-- 加载搜索脚本 -->
-<script src="{{ '/assets/js/search.js' | relative_url }}"></script>
+<!-- 更新为正确的脚本路径 -->
+<script src="{{ '/assets/vendor/startbootstrap-clean-blog/js/search.js' | relative_url }}"></script>
