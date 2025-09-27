@@ -63,18 +63,17 @@
 
   function buildIndex(data) {
     store = {};
-    idx = lunr(function() {
+    idx = lunr(function () {
+      this.use(lunr.zh); // 启用中文支持
       this.ref('url');
       this.field('title', { boost: 10 });
       this.field('content');
-
-      for (var i=0; i<data.length; i++) {
-        var doc = data[i];
-        this.add(doc);
-        store[doc.url] = doc;
+      for (var i = 0; i < data.length; i++) {
+        this.add(data[i]);
+        store[data[i].url] = data[i];
       }
     });
-  }
+
 
   function snippet(text, q, len) {
     len = len || 200;
