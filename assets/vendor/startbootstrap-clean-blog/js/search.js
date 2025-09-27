@@ -1,7 +1,6 @@
-// assets/vendor/startbootstrap-clean-blog/js/search.js
 (function() {
-  // configurable:
-  var INDEX_URL = '/search.json'; // 如果你把 search.json 放在别的位置，这里改为相对路径
+  // 可配置项
+  var INDEX_URL = '/search.json'; // 搜索索引文件路径
   var INPUT_ID = 'search-input';
   var RESULTS_ID = 'search-results';
   var DEBOUNCE_MS = 200;
@@ -23,17 +22,14 @@
     var results = document.getElementById(RESULTS_ID);
     if (!input || !results) return;
 
-    results.innerHTML = '<p>正在加载索引…</p>';
-
     fetch(INDEX_URL)
       .then(function(r){ return r.json(); })
       .then(function(data){
         buildIndex(data);
-        results.innerHTML = '<p>索引加载完成，输入关键词开始搜索。</p>';
       })
       .catch(function(err){
         console.error('加载搜索索引失败：', err);
-        results.innerHTML = '<p class="text-danger">加载搜索索引失败，请检查 /search.json 是否存在。</p>';
+        results.innerHTML = '<p class="text-danger">无法加载搜索索引</p>';
       });
 
     var handler = debounce(function(e){
@@ -51,7 +47,7 @@
         renderResults(lunrResults, results);
       } catch (err) {
         console.error('搜索出错：', err);
-        results.innerHTML = '<p class="text-danger">搜索时发生错误（请尝试更简单的关键词）。</p>';
+        results.innerHTML = '<p class="text-danger">搜索时发生错误</p>';
       }
     }, DEBOUNCE_MS);
 
@@ -68,23 +64,15 @@
       this.field('title', { boost: 10 });
       this.field('content');
 
-      for (var i=0; i<data.length; i++) {
-        var doc = data[i];
+      data.forEach(function(doc) {
         this.add(doc);
         store[doc.url] = doc;
-      }
+      }, this);
     });
   }
 
-  function snippet(text, q, len) {
-    len = len || 200;
-    if (!text) return '';
-    if (text.length <= len) return text;
-    // 简单截取前段作为摘要
-    return text.slice(0, len).trim() + '…';
-  }
-
   function escapeHtml(str) {
+    if (!str) return '';
     return str
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
@@ -93,26 +81,64 @@
       .replace(/'/g, '&#039;');
   }
 
+  function formatDate(dateString) {
+    if (!dateString) return '';
+    
+    // 尝试解析日期字符串
+    var date = new Date(dateString);
+    if (isNaN(date.getTime())) return dateString;
+    
+    var options = { year: 'numeric', month: 'long', day: 'numeric' };
+    return date.toLocaleDateString('en-US', options).replace(',', '');
+  }
+
+  function estimateReadTime(content) {
+    if (!content) return '1 min read';
+    
+    // 估算阅读时间：按照60字/分钟的阅读速度
+    var wordCount = content.split(/\s+/).length;
+    var minutes = Math.max(1, Math.round(wordCount / 60));
+    
+    return minutes + ' min' + (minutes > 1 ? 's' : '') + ' read';
+  }
+
   function renderResults(resultsArray, container) {
     if (!resultsArray || resultsArray.length === 0) {
-      container.innerHTML = '<p>未找到结果。</p>';
+      container.innerHTML = '<p class="text-muted">未找到匹配结果</p>';
       return;
     }
-    var out = '<div class="list-group">';
-    for (var i=0; i<resultsArray.length; i++) {
+    
+    var out = '';
+    for (var i = 0; i < resultsArray.length; i++) {
       var r = resultsArray[i];
       var doc = store[r.ref];
       if (!doc) continue;
-      out += '<a class="list-group-item list-group-item-action mb-2" href="' + escapeHtml(doc.url) + '">';
-      out += '<h5 class="mb-1">' + escapeHtml(doc.title) + '</h5>';
-      out += '<small class="text-muted">' + (doc.date ? escapeHtml(doc.date) : '') + '</small>';
-      out += '<p class="mb-1 mt-2">' + escapeHtml(snippet(doc.content, '', 200)) + '</p>';
+      
+      out += '<div class="post-preview">';
+      
+      // 文章链接和标题
+      out += '<a href="' + escapeHtml(doc.url) + '">';
+      out += '<h2 class="post-title">' + escapeHtml(doc.title) + '</h2>';
+      
+      // 副标题 - 使用固定的"Plan and Realization"或从数据中获取
+      var subtitle = doc.subtitle || 'Plan and Realization';
+      out += '<h3 class="post-subtitle">' + escapeHtml(subtitle) + '</h3>';
       out += '</a>';
+      
+      // 元信息（作者、日期、阅读时间）
+      out += '<p class="post-meta">Posted by Mrx on ' + formatDate(doc.date) + ' &middot; ' + estimateReadTime(doc.content) + '</p>';
+      
+      out += '</div>';
+      
+      // 添加分隔线（最后一个结果不添加）
+      if (i < resultsArray.length - 1) {
+        out += '<hr>';
+      }
     }
-    out += '</div>';
+    
     container.innerHTML = out;
   }
 
-  // DOMContentLoaded 保证在页面加载完成后运行
+  // 页面加载完成后初始化
   document.addEventListener('DOMContentLoaded', init);
 })();

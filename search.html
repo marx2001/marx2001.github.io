@@ -1,26 +1,41 @@
 ---
-layout: default
+layout: page
 title: Search
 permalink: /search/
+description: Search what you want
+background: '/img/bg-contact.jpg'
+show_posts: false
 ---
-<div class="container">
-  <div class="row">
-    <div class="col-md-8 offset-md-2">
-      <h1 class="mt-4">站内文章搜索</h1>
 
-      <div class="form-group mt-3">
-        <input id="search-input" type="search" class="form-control form-control-lg" placeholder="输入关键词，搜索标题或正文..." autocomplete="off" />
+<div class="container my-5">
+  <div class="row justify-content-center">
+    <div class="col-lg-10 col-md-12 text-center">
+
+      <!-- ✅ 搜索框容器 -->
+      <div class="input-group input-group-lg mb-4 shadow-sm" style="border-radius: 2rem; overflow: hidden;">
+        <!-- 放大镜图标 -->
+        <div class="input-group-prepend">
+          <span class="input-group-text bg-white border-0">
+            <i class="fa fa-search text-muted"></i>
+          </span>
+        </div>
+        <!-- 搜索输入框 -->
+        <input id="search-input" 
+               type="search" 
+               class="form-control border-0" 
+               placeholder="输入关键词，搜索标题或正文..." 
+               autocomplete="off">
       </div>
 
-      <div id="search-results" class="mt-3"></div>
+      <!-- ✅ 搜索结果 -->
+      <div id="search-results" class="mt-4 text-left"></div>
+
     </div>
   </div>
 </div>
 
-
-<!-- 引入 Lunr 与 搜索脚本（按这个顺序） -->
+<!-- 引入 Lunr 与 搜索脚本 -->
 <script src="{{ '/assets/vendor/startbootstrap-clean-blog/js/lunr.min.js' | relative_url }}"></script>
 <script src="{{ '/assets/vendor/startbootstrap-clean-blog/js/lunr.stemmer.support.js' | relative_url }}"></script>
 <script src="{{ '/assets/vendor/startbootstrap-clean-blog/js/lunr.zh.js' | relative_url }}"></script>
 <script src="{{ '/assets/vendor/startbootstrap-clean-blog/js/search.js' | relative_url }}"></script>
-

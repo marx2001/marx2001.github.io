@@ -29,43 +29,45 @@ layout: default
 
       {{ content }}
 
-      <!-- ✅ 动态文章容器 -->
-      <div id="posts-container"></div>
+      {% if page.show_posts != false %}
+        <!-- ✅ 动态文章容器 -->
+        <div id="posts-container"></div>
 
-      <!-- ✅ 分页控件 -->
-      <div id="pagination" class="pagination">
-        <button id="prev-btn" class="pagination-btn">← 上一页</button>
-        <span id="page-info" class="page-info">
-          第 <span id="current-page">1</span> 页 / 共 <span id="total-pages">0</span> 页
-        </span>
-        <button id="next-btn" class="pagination-btn">下一页 →</button>
-      </div>
+        <!-- ✅ 分页控件 -->
+        <div id="pagination" class="pagination">
+          <button id="prev-btn" class="pagination-btn">← 上一页</button>
+          <span id="page-info" class="page-info">
+            第 <span id="current-page">1</span> 页 / 共 <span id="total-pages">0</span> 页
+          </span>
+          <button id="next-btn" class="pagination-btn">下一页 →</button>
+        </div>
 
-      <!-- ✅ 输出文章数据给 JS -->
-      <script>
-      window.allPosts = [
-          {% for post in site.posts %}
-          {
-              title: {{ post.title | jsonify }},
-              url: "{{ post.url | relative_url }}",
-              date: "{{ post.date | date: '%B %d, %Y' }}",
-              {% if post.subtitle %}
-              subtitle: {{ post.subtitle | jsonify }},
-              {% else %}
-              subtitle: {{ post.excerpt | strip_html | truncatewords: 15 | jsonify }},
-              {% endif %}
-              excerpt: {{ post.excerpt | strip_html | jsonify }},
-              author: "{{ post.author | default: site.author }}",
-              categories: {{ post.categories | jsonify }},
-              {% assign words = post.content | number_of_words %}
-              read_time: "{% if words < 360 %}1 min read{% else %}{{ words | divided_by:180 }} mins read{% endif %}"
-          }{% unless forloop.last %},{% endunless %}
-          {% endfor %}
-      ];
-      </script>
+        <!-- ✅ 输出文章数据给 JS -->
+        <script>
+        window.allPosts = [
+            {% for post in site.posts %}
+            {
+                title: {{ post.title | jsonify }},
+                url: "{{ post.url | relative_url }}",
+                date: "{{ post.date | date: '%B %d, %Y' }}",
+                {% if post.subtitle %}
+                subtitle: {{ post.subtitle | jsonify }},
+                {% else %}
+                subtitle: {{ post.excerpt | strip_html | truncatewords: 15 | jsonify }},
+                {% endif %}
+                excerpt: {{ post.excerpt | strip_html | jsonify }},
+                author: "{{ post.author | default: site.author }}",
+                categories: {{ post.categories | jsonify }},
+                {% assign words = post.content | number_of_words %}
+                read_time: "{% if words < 360 %}1 min read{% else %}{{ words | divided_by:180 }} mins read{% endif %}"
+            }{% unless forloop.last %},{% endunless %}
+            {% endfor %}
+        ];
+        </script>
 
-      <!-- ✅ 分页脚本 -->
-      <script src="{{ '/assets/vendor/startbootstrap-clean-blog/js/pagination.js' | relative_url }}"></script>
+        <!-- ✅ 分页脚本 -->
+        <script src="{{ '/assets/vendor/startbootstrap-clean-blog/js/pagination.js' | relative_url }}"></script>
+      {% endif %}
 
     </div>
   </div>
