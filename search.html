@@ -1,0 +1,22 @@
+---
+layout: default
+title: 搜索
+permalink: /search/
+---
+<div class="container">
+  <div class="row">
+    <div class="col-md-8 offset-md-2">
+      <h1 class="mt-4">站内文章搜索</h1>
+
+      <div class="form-group mt-3">
+        <input id="search-input" type="search" class="form-control form-control-lg" placeholder="输入关键词，搜索标题或正文..." autocomplete="off" />
+      </div>
+
+      <div id="search-results" class="mt-3"></div>
+    </div>
+  </div>
+</div>
+
+<!-- 引入 Lunr 与 搜索脚本（按这个顺序） -->
+<script src="{{ '/assets/vendor/startbootstrap-clean-blog/js/lunr.min.js' | relative_url }}"></script>
+<script src="{{ '/assets/vendor/startbootstrap-clean-blog/js/search.js' | relative_url }}"></script>
