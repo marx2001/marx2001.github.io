@@ -73,7 +73,7 @@
         store[data[i].url] = data[i];
       }
     });
-
+  }
 
   function snippet(text, q, len) {
     len = len || 200;
