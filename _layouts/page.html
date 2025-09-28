@@ -58,9 +58,10 @@ layout: default
                 excerpt: {{ post.excerpt | strip_html | jsonify }},
                 author: "{{ post.author | default: site.author }}",
                 categories: {{ post.categories | jsonify }},
-                {% assign words = post.content | number_of_words %}
-                {% assign minutes = words | divided_by: 20 %}
-                read_time: "{% if minutes <= 1 %}1 min read{% else %}{{ minutes }} mins read{% endif %}"
+                {% assign content_text = post.content | strip_html %}
+                {% assign char_count = content_text | size %}
+                {% assign minutes = char_count | divided_by: 400 %}
+                read_time: "{% if minutes <= 0 %}less than 1 min{% elsif minutes == 1 %}1 min{% else %}{{ minutes }} mins{% endif %} read"
             }{% unless forloop.last %},{% endunless %}
             {% endfor %}
         ];
