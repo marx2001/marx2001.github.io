@@ -59,7 +59,8 @@ layout: default
                 author: "{{ post.author | default: site.author }}",
                 categories: {{ post.categories | jsonify }},
                 {% assign words = post.content | number_of_words %}
-                read_time: "{% if words < 120 %}1 min read{% else %}{{ words | divided_by:120 }} mins read{% endif %}"
+                {% assign minutes = words | divided_by: 200 %}
+                read_time: "{% if minutes <= 1 %}1 min read{% else %}{{ minutes }} mins read{% endif %}"
             }{% unless forloop.last %},{% endunless %}
             {% endfor %}
         ];
