@@ -11,20 +11,22 @@ show_posts: false
   <div class="row justify-content-center">
     <div class="col-lg-10 col-md-12 text-center">
 
-      <!-- ✅ 搜索框容器 -->
-      <div class="input-group input-group-lg mb-4 shadow-sm" style="border-radius: 2rem; overflow: hidden;">
-        <!-- 放大镜图标 -->
-        <div class="input-group-prepend">
-          <span class="input-group-text bg-white border-0">
-            <i class="fa fa-search text-muted"></i>
-          </span>
-        </div>
+      <!-- ✅ 修改后的搜索框容器 -->
+      <div class="input-group input-group-lg mb-4 shadow-sm" style="border-radius: 2rem; overflow: hidden; position: relative;">
         <!-- 搜索输入框 -->
         <input id="search-input" 
                type="search" 
                class="form-control border-0" 
                placeholder="输入关键词，搜索标题或正文..." 
-               autocomplete="off">
+               autocomplete="off"
+               style="padding-right: 50px;"> <!-- 增加右侧内边距避免文字被图标覆盖 -->
+        
+        <!-- 放大镜图标移动到右侧 -->
+        <div class="input-group-append" style="position: absolute; right: 15px; top: 50%; transform: translateY(-50%); z-index: 5;">
+          <span class="input-group-text bg-white border-0">
+            <i class="fa fa-search text-muted"></i>
+          </span>
+        </div>
       </div>
 
       <!-- ✅ 搜索结果 -->
