@@ -1,10 +1,10 @@
 ---
 layout: post
-title: "Wannier Tools的对称化"
+title: "利用Wannier Tools的对称化hr.dat"
 subtitle: "Experience Sharing"
 background: '/img/bg-sci-note.jpg'
 categories: sci-note
-permalink: /sci-note_posts/20251214-wt-sym
+permalink: /sci-note_posts/20251215-wt-sym
 ---
 
 
@@ -229,3 +229,5 @@ python /public/home/cssong/install_package/cssong/pack/wannier_tools-master/wann
 ```
 
 记得把python库和上面的symmhr_addrptblock.py放到一个文件夹内，要不然运行不了
+
+看日志，没有报错的话，就得到了最终的hr.dat
