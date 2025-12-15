@@ -231,3 +231,5 @@ python /public/home/cssong/install_package/cssong/pack/wannier_tools-master/wann
 记得把python库和上面的symmhr_addrptblock.py放到一个文件夹内，要不然运行不了
 
 看日志，没有报错的话，就得到了最终的hr.dat
+
+要用wannier1.2版本。
