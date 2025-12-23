@@ -4,7 +4,7 @@ title: "Wannier Tools的代码解释"
 subtitle: "Experience Sharing"
 background: '/img/bg-sci-note.jpg'
 categories: sci-note
-permalink: /sci-note_posts/20251128-pyw-test
+permalink: /sci-note_posts/20251202-code
 ---
 
 
