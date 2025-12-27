@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "角态验证1-配置pybinding环境"
+title: "角态验证1-配置pybinding环境-Ubuntu系统配置"
 subtitle: "Experience Sharing"
 background: '/img/bg-sci-note.jpg'
 categories: sci-note
@@ -52,3 +52,11 @@ conda install numpy scipy matplotlib
 pip install pybinding
 
 ```
+
+安装了Cmake和visual Studio installer仍然不能成功安装pybinding，尝试使用Linux环境，安装Ubantu
+
+## <center>安装Ubantu</center>
+
+使用DiskGenius V4.6.4.2 x64专业版 ,选择有空余空间的磁盘，拖动棕色进度条，留出合适的空间。
+
+使用Rufus 4.7.2231，写入Ubuntu镜像文件到安装u盘中，U盘要求16G以上。
