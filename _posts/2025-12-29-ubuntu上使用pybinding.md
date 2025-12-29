@@ -4,7 +4,7 @@ title: "ubuntu中使用pybinding"
 subtitle: "Experience Sharing"
 background: '/img/bg-sci-note.jpg'
 categories: sci-note
-permalink: /sci-note_posts/20251227-pybinding
+permalink: /sci-note_posts/20251229mrx-usage
 ---
 
 ## <center>步骤</center>
