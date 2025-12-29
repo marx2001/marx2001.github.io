@@ -55,6 +55,8 @@ pip install pybinding
 
 安装了Cmake和visual Studio installer仍然不能成功安装pybinding，尝试使用Linux环境，安装Ubantu
 
+
+
 ## <center>安装Ubantu</center>
 
 使用DiskGenius V4.6.4.2 x64专业版 ,选择有空余空间的磁盘，拖动棕色进度条，留出合适的空间。
@@ -62,3 +64,5 @@ pip install pybinding
 使用Rufus 4.7.2231，写入Ubuntu镜像文件到安装u盘中，U盘要求16G以上。
 
 12.28 用ubuntu系统成功安装了pybinding，用conda安装，先创建环境，然后用conda安装前置库，然后再安装pybinding。
+
+在ubuntu中也不能直接用pip安装pybinding，只能用conda 安装0.9.5稳定版的pybinding
