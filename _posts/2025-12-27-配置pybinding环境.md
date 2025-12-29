@@ -65,4 +65,19 @@ pip install pybinding
 
 12.28 用ubuntu系统成功安装了pybinding，用conda安装，先创建环境，然后用conda安装前置库，然后再安装pybinding。
 
-在ubuntu中也不能直接用pip安装pybinding，只能用conda 安装0.9.5稳定版的pybinding
+在ubuntu中也不能直接用pip安装pybinding，只能用conda 安装0.9.5稳定版的pybinding。
+
+安装完pybinding之后，由于是ipynb格式，需要jupyter notebook使用的kernel与安装的pybinding环境一致，这样代码才能在该环境中找到所需要的包并运行。
+
+先激活环境，然后安装ipynernel，运行命令安装ipykernel并添加到jupyter可用的knernel列表中：
+
+```shell
+
+conda activate pybinding_env
+conda install -n pybinding_env ipykernel --update-deps --force-reinstall
+python -m ipykernel install --user --name pybinding_env --display-name "Python (pybinding_env)"
+
+```
+这个命令会将pybinding_env环境注册为一个jupyter kernel，名称为Python(pybinding_env)，可根据实况修改名称。
+
+重新启动jupter notebook，已经打开的话需要重新关闭，在创建或打开notebook时，在kernel菜单中选择刚刚添加的python(pybinding_env) kernel，这样就可以分模块运行代码。
