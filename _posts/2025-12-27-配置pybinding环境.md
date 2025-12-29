@@ -81,3 +81,19 @@ python -m ipykernel install --user --name pybinding_env --display-name "Python (
 这个命令会将pybinding_env环境注册为一个jupyter kernel，名称为Python(pybinding_env)，可根据实况修改名称。
 
 重新启动jupter notebook，已经打开的话需要重新关闭，在创建或打开notebook时，在kernel菜单中选择刚刚添加的python(pybinding_env) kernel，这样就可以分模块运行代码。
+
+
+上述是用conda安装0.9.5稳定版的pybinding，目前已经有包名为pybinding-dev的预发行版本，是1.0.6版本的pybinding，安装流程如下:
+
+创建Python3.10版本以上的环境
+
+```shell
+conda create -n python=3.10
+conda activate pybinding
+conda install numpy matplotlib scipy
+python -m pip install -U "pip<25.3"
+pip install pybinding-dev=1.0.6 --no-use-pep517 --no-cache-dir
+pip show pybinding-dev
+conda install -n pybinding ipykernel --update-deps --force-reinstall
+```
+如果是新配置的vscode，可能没有安装python扩展，根据右下角vscode的提示，安装扩展即可。
