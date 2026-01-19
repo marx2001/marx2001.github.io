@@ -1,0 +1,200 @@
+(* Content-type: application/vnd.wolfram.mathematica *)
+
+(*** Wolfram Notebook File ***)
+(* http://www.wolfram.com/nb *)
+
+(* CreatedBy='Mathematica 14.0' *)
+
+(*CacheID: 234*)
+(* Internal cache information:
+NotebookFileLineBreakTest
+NotebookFileLineBreakTest
+NotebookDataPosition[       158,          7]
+NotebookDataLength[      6397,        190]
+NotebookOptionsPosition[      6018,        175]
+NotebookOutlinePosition[      6443,        192]
+CellTagsIndexPosition[      6400,        189]
+WindowFrame->Normal*)
+
+(* Beginning of Notebook Content *)
+Notebook[{
+Cell[BoxData[
+ RowBox[{
+  RowBox[{"(*", " ", 
+   RowBox[{
+    RowBox[{
+     RowBox[{
+     "===", "===", "===", "===", "===", "===", "===", "===", "===", "==="}], 
+     "=", "e"}], "\[Dash]", "t", "\[Dash]", 
+    RowBox[{
+     RowBox[{
+      RowBox[{"r", "\[RightArrow]", 
+       RowBox[{"Lieb", " ", "\:56db\:80fd\:5e26\:53c2\:6570\:6620\:5c04"}]}], 
+      "===", "===", "===", "===", "===", "===", "===", "===", "===", "==="}], 
+     "="}]}], "*)"}], 
+  RowBox[{
+   RowBox[{
+    RowBox[{
+     RowBox[{"etrToParams", "[", 
+      RowBox[{"e_", ",", "t_", ",", "r_"}], "]"}], ":=", 
+     RowBox[{"{", 
+      RowBox[{
+       RowBox[{"e1", "->", 
+        RowBox[{
+         RowBox[{"-", "e"}], "/", "2"}]}], ",", 
+       RowBox[{"e2", "->", 
+        RowBox[{
+         RowBox[{"+", "e"}], "/", "2"}]}], ",", 
+       RowBox[{"t1", "->", 
+        RowBox[{
+         RowBox[{"+", "t"}], "/", 
+         RowBox[{"Sqrt", "[", "2", "]"}]}]}], ",", 
+       RowBox[{"t2", "->", 
+        RowBox[{
+         RowBox[{"-", "t"}], "/", 
+         RowBox[{"Sqrt", "[", "2", "]"}]}]}], ",", 
+       RowBox[{"r1", "->", 
+        RowBox[{"+", "r"}]}], ",", 
+       RowBox[{"r2", "->", 
+        RowBox[{"+", "r"}]}], ",", 
+       RowBox[{"r3", "->", 
+        RowBox[{"-", "r"}]}], ",", 
+       RowBox[{"r4", "->", 
+        RowBox[{"-", "r"}]}]}], "}"}]}], ";"}], "\n", "\[IndentingNewLine]", 
+   RowBox[{"(*", " ", 
+    RowBox[{
+     RowBox[{
+     "===", "===", "===", "===", "===", "===", "===", "===", "===", "==="}], 
+     "=", 
+     RowBox[{
+      RowBox[{
+       RowBox[{"\:626b\:63cf\:8303\:56f4", 
+        RowBox[{
+        "\:ff08", "\:4f60\:53ef\:4ee5\:81ea\:884c\:6539", "\:ff09"}]}], "===",
+        "===", "===", "===", "===", "===", "===", "===", "===", "==="}], 
+      "="}]}], "*)"}], "\[IndentingNewLine]", 
+   RowBox[{
+    RowBox[{"elist", "=", 
+     RowBox[{"Range", "[", 
+      RowBox[{
+       RowBox[{"-", "0.4"}], ",", "0.4", ",", "0.02"}], "]"}]}], ";"}], "\n", 
+   RowBox[{
+    RowBox[{"tlist", "=", 
+     RowBox[{"Range", "[", 
+      RowBox[{"0.1768", ",", "0.1768", ",", "0.0"}], "]"}]}], ";"}], "\n", 
+   RowBox[{
+    RowBox[{"rlist", "=", 
+     RowBox[{"Range", "[", 
+      RowBox[{
+       RowBox[{"-", "0.08"}], ",", "0.08", ",", "0.004"}], "]"}]}], ";"}], 
+   "\n", "\[IndentingNewLine]", 
+   RowBox[{"(*", " ", 
+    RowBox[{
+     RowBox[{
+     "===", "===", "===", "===", "===", "===", "===", "===", "===", "==="}], 
+     "=", 
+     RowBox[{
+      RowBox[{
+       RowBox[{"\:8f93\:51fa\:76ee\:5f55", 
+        RowBox[{"\:ff08", 
+         RowBox[{"Notebook", " ", "\:6240\:5728\:76ee\:5f55"}], "\:ff09"}]}], 
+       "===", "===", "===", "===", "===", "===", "===", "===", "===", "==="}],
+       "="}]}], "*)"}], "\[IndentingNewLine]", 
+   RowBox[{
+    RowBox[{"outDir", "=", 
+     RowBox[{"NotebookDirectory", "[", "]"}]}], ";"}], "\n", 
+   "\[IndentingNewLine]", 
+   RowBox[{"(*", " ", 
+    RowBox[{
+     RowBox[{
+      RowBox[{
+      "===", "===", "===", "===", "===", "===", "===", "===", "===", "==="}], 
+      "=", "\:4e3b\:5faa\:73af"}], "\:ff1a", 
+     RowBox[{
+      RowBox[{
+       RowBox[{"\:6bcf\:4e2a", " ", 
+        RowBox[{"(", 
+         RowBox[{"e", ",", "t", ",", "r"}], ")"}], " ", 
+        "\:4e00\:4e2a\:6587\:4ef6"}], "===", "===", "===", "===", "===", "===",
+        "===", "===", "===", "==="}], "="}]}], "*)"}], "\[IndentingNewLine]", 
+   RowBox[{"Do", "[", 
+    RowBox[{
+     RowBox[{"Module", "[", 
+      RowBox[{
+       RowBox[{"{", 
+        RowBox[{"params", ",", "file", ",", "stream"}], "}"}], ",", 
+       RowBox[{
+        RowBox[{"params", "=", 
+         RowBox[{"etrToParams", "[", 
+          RowBox[{"e", ",", "t", ",", "r"}], "]"}]}], ";", 
+        "\[IndentingNewLine]", 
+        RowBox[{"file", "=", 
+         RowBox[{"FileNameJoin", "[", 
+          RowBox[{"{", 
+           RowBox[{"outDir", ",", 
+            RowBox[{
+             RowBox[{
+             "StringTemplate", "[", "\"\<wannier90_e``_t``_r``.txt\>\"", 
+              "]"}], "[", 
+             RowBox[{
+              RowBox[{"NumberForm", "[", 
+               RowBox[{"e", ",", 
+                RowBox[{"{", 
+                 RowBox[{"3", ",", "2"}], "}"}]}], "]"}], ",", 
+              RowBox[{"NumberForm", "[", 
+               RowBox[{"t", ",", 
+                RowBox[{"{", 
+                 RowBox[{"3", ",", "2"}], "}"}]}], "]"}], ",", 
+              RowBox[{"NumberForm", "[", 
+               RowBox[{"r", ",", 
+                RowBox[{"{", 
+                 RowBox[{"3", ",", "2"}], "}"}]}], "]"}]}], "]"}]}], "}"}], 
+          "]"}]}], ";", "\[IndentingNewLine]", 
+        RowBox[{"stream", "=", 
+         RowBox[{"OpenWrite", "[", "file", "]"}]}], ";", 
+        "\[IndentingNewLine]", 
+        RowBox[{"Block", "[", 
+         RowBox[{
+          RowBox[{"{", 
+           RowBox[{"$Output", "=", 
+            RowBox[{"{", "stream", "}"}]}], "}"}], ",", 
+          RowBox[{"hop", "[", 
+           RowBox[{"ham", ",", "params"}], "]"}]}], "]"}], ";", 
+        "\[IndentingNewLine]", 
+        RowBox[{"Close", "[", "stream", "]"}], ";", "\[IndentingNewLine]", 
+        RowBox[{"Print", "[", 
+         RowBox[{"\"\<Exported: \>\"", ",", "file"}], "]"}], ";"}]}], "]"}], 
+     ",", 
+     RowBox[{"{", 
+      RowBox[{"e", ",", "elist"}], "}"}], ",", 
+     RowBox[{"{", 
+      RowBox[{"t", ",", "tlist"}], "}"}], ",", 
+     RowBox[{"{", 
+      RowBox[{"r", ",", "rlist"}], "}"}]}], "]"}]}]}]], "Input",ExpressionUUID\
+->"c5468ca6-a7b0-3a4b-a8c1-f402df7ad6f5"]
+},
+WindowSize->{569.25, 624.75},
+WindowMargins->{{Automatic, -753}, {-11.25, Automatic}},
+FrontEndVersion->"14.0 for Microsoft Windows (64-bit) (2023\:5e7412\:670812\
+\:65e5)",
+StyleDefinitions->"Default.nb",
+ExpressionUUID->"8bc802c1-99a2-2949-ae2c-ab899c48039a"
+]
+(* End of Notebook Content *)
+
+(* Internal cache information *)
+(*CellTagsOutline
+CellTagsIndex->{}
+*)
+(*CellTagsIndex
+CellTagsIndex->{}
+*)
+(*NotebookFileOutline
+Notebook[{
+Cell[558, 20, 5456, 153, 790, "Input",ExpressionUUID->"c5468ca6-a7b0-3a4b-a8c1-f402df7ad6f5"]
+}
+]
+*)
+
+(* End of internal cache information *)
+
