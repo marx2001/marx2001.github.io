@@ -1344,3 +1344,10 @@ python j1_filter_sum.py --csv Ge_1.0_delta_floor.csv --topk 100
 3. 与DFT进行对比
     python compare_DFT_J1.py --csv dw.csv --topk 100
     python compare_DFT_J1.py --csv up.csv --topk 100
+
+这一步的输出类似于
+    [INFO] file: up.csv
+    [INFO] mediator (top row): Ge
+    [INFO] J1-shell rows: 2000
+    [INFO] top1 score: 70.4132
+    [INFO] sum top100 score: 2565.74
