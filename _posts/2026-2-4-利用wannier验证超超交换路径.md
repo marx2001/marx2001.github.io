@@ -1351,3 +1351,7 @@ python j1_filter_sum.py --csv Ge_1.0_delta_floor.csv --topk 100
     [INFO] J1-shell rows: 2000
     [INFO] top1 score: 70.4132
     [INFO] sum top100 score: 2565.74
+
+
+结论是，Ir比Ge贡献大的多，经过改变dleta_floor，也是一样的结论，spin up和spin down并不能在数量上严格一致，但只要都支持d-p-d-p-d结论即可，用前面的评分标准定量分析，用MLWFS
+的spin up通道定性演示(因为spin down的图极为混乱，看不清化学键)
