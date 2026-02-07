@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "利用wannier验证超超交换路径(原创自研)"
+title: "(原创自研)利用wannier验证超超交换路径"
 subtitle: "Experience Sharing"
 background: '/img/bg-sci-note.jpg'
 categories: sci-note
