@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "ubuntu中使用pybinding"
+title: "(原创方法)ubuntu中使用pybinding"
 subtitle: "Experience Sharing"
 background: '/img/bg-sci-note.jpg'
 categories: sci-note

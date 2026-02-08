@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "角态验证1-配置pybinding环境-Ubuntu系统配置"
+title: "(原创脚本)角态验证1-配置pybinding环境-Ubuntu系统配置"
 subtitle: "Experience Sharing"
 background: '/img/bg-sci-note.jpg'
 categories: sci-note
