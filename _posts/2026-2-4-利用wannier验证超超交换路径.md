@@ -1328,13 +1328,16 @@ python j1_filter_sum.py --csv Ge_1.0_delta_floor.csv --topk 100
 比较Ir和Ge哪个贡献更大（上面已经完成），下方是在不考虑soc的情况下，分别对spin up和spin down进行贡献比较，确保spin up能代表性的指出交换路径是d-p杂化组成的。
 
 
-1. 产生1step文件
+(1) 产生1step文件
+```shell
     python 1step.py --win wannier90.1.win --centres wannier90.1_centres.xyz --hr wannier90.1_hr.dat --tol 0.10 --min_absH 1e-3 --topk 30 --out_summary 1step_up.csv --pairs ALL --skip_same_atom_R0 --out_edges 2step_up.csv
 
     python 1step.py --win wannier90.2.win --centres wannier90.2_centres.xyz --hr wannier90.2_hr.dat --tol 0.10 --min_absH 1e-3 --topk 30 --out_summary 1step_dw.csv --pairs ALL --skip_same_atom_R0 --out_edges 2step_dw.csv
-    
+```  
 
-2. 产生2step文件
+(2) 产生2step文件
+
+```shell
     python 2step.py --edges 2step_dw.csv --out dw.csv --mediators Ir --d_tcse 3.0 --d_sex 3.0 --min_absH 1e-3 --top_paths 2000 --require_same_tc_atom --max_netR_L1 6 --exclude_netR0 --delta_mode sequential --delta_floor 1e-3 --hr wannier90.2_hr.dat
 
     python 2step.py --edges 2step_up.csv --out up.csv --mediators Ir --d_tcse 3.0 --d_sex 3.0 --min_absH 1e-3 --top_paths 2000 --require_same_tc_atom --max_netR_L1 6 --exclude_netR0 --delta_mode sequential --delta_floor 1e-3 --hr wannier90.1_hr.dat
@@ -1342,18 +1345,20 @@ python j1_filter_sum.py --csv Ge_1.0_delta_floor.csv --topk 100
     python 2step.py --edges 2step_dw.csv --out dw.csv --mediators Ge --d_tcse 3.0 --d_sex 3.0 --min_absH 1e-3 --top_paths 2000 --require_same_tc_atom --max_netR_L1 6 --exclude_netR0 --delta_mode sequential --delta_floor 1e-3 --hr wannier90.2_hr.dat
 
     python 2step.py --edges 2step_up.csv --out up.csv --mediators Ge --d_tcse 3.0 --d_sex 3.0 --min_absH 1e-3 --top_paths 2000 --require_same_tc_atom --max_netR_L1 6 --exclude_netR0 --delta_mode sequential --delta_floor 1e-3 --hr wannier90.1_hr.dat
-
-3. 与DFT进行对比
+```
+(3)与DFT进行对比
+```shell
     python compare_DFT_J1.py --csv dw.csv --topk 100
     python compare_DFT_J1.py --csv up.csv --topk 100
-
+```
 这一步的输出类似于
+```shell
     [INFO] file: up.csv
     [INFO] mediator (top row): Ge
     [INFO] J1-shell rows: 2000
     [INFO] top1 score: 70.4132
     [INFO] sum top100 score: 2565.74
-
+```
 
 结论是，Ir比Ge贡献大的多，经过改变dleta_floor，也是一样的结论，spin up和spin down并不能在数量上严格一致，但只要都支持d-p-d-p-d结论即可，用前面的评分标准定量分析，用MLWFS
 的spin up通道定性演示(因为spin down的图极为混乱，看不清化学键)
