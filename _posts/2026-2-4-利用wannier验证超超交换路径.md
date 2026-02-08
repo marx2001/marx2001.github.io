@@ -1347,11 +1347,13 @@ python j1_filter_sum.py --csv Ge_1.0_delta_floor.csv --topk 100
     python 2step.py --edges 2step_up.csv --out up.csv --mediators Ge --d_tcse 3.0 --d_sex 3.0 --min_absH 1e-3 --top_paths 2000 --require_same_tc_atom --max_netR_L1 6 --exclude_netR0 --delta_mode sequential --delta_floor 1e-3 --hr wannier90.1_hr.dat
 ```
 (3)与DFT进行对比
+
 ```shell
     python compare_DFT_J1.py --csv dw.csv --topk 100
     python compare_DFT_J1.py --csv up.csv --topk 100
 ```
 这一步的输出类似于
+
 ```shell
     [INFO] file: up.csv
     [INFO] mediator (top row): Ge
