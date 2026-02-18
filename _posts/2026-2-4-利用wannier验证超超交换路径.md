@@ -1014,6 +1014,9 @@ python 2step.py --edges 2step.csv --out Ir_0.1_delta_floor.csv --mediators Ir --
 
 源文件目录：/public/home/cssong/song/1mrx/9_single_layer/19_ReIrGe2S6/TcIrGeSe/
 3_static_band/4_wannier/ncl
+
+
+
 (4)根据你想要探究的目的，超超交换路径是通过提供铁电性的迁移原子 Ge 还是非磁性原子 Ir 来主导，
 我们可以修改脚本，让它在输出路径时能够分别计算 Ge 和 Ir 路径的贡献，并将这些路径的 权重贡献 
 和参与原子频率明确标识出来。
