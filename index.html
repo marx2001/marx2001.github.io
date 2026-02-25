@@ -27,7 +27,7 @@ window.allPosts = [
         subtitle: {{ post.excerpt | strip_html | truncatewords: 15 | jsonify }},
         {% endif %}
         excerpt: {{ post.excerpt | strip_html | jsonify }},
-        author: "Start Bootstrap",
+        author: "Mrx",
         categories: {{ post.categories | jsonify }},
         {% assign words = post.content | number_of_words %}
         read_time: "{% if words < 120 %}1 min read{% else %}{{ words | divided_by:120 }} mins read{% endif %}"
