@@ -1,0 +1,467 @@
+---
+layout: post
+title: "(原创自研)机器学习-应用1"
+subtitle: "Experience Sharing"
+background: '/img/bg-sci-note.jpg'
+categories: sci-note
+permalink: /sci-note_posts/20260323-ML4
+---
+
+## 说明
+
+均为原创，禁止抄袭，转载注明出处，否则必会追究。
+
+## 项目主线
+
+当前对话工作总结说明（ML 拓扑代理模型项目）。
+
+### 项目背景
+
+当前项目围绕 8 参数最小模型（磁群 `{123,342}`、z 向共线自旋假设）构建机器学习代理模型，目标是：输入一组参数，快速判断该参数点是否为拓扑候选，并进一步服务于参数空间搜索、相图分析和后验 Chern 验证。
+
+### 本次对话的核心工作主线
+
+本次对话主要围绕“第一个应用：相图代理模型 / 拓扑候选筛选器”展开，并在后续延伸到：
+
+1. 机器学习模型的用途讨论（3 个应用方向）
+2. 预测脚本、joint 规则脚本、测试集生成脚本
+3. Mathematica / WL 导出 `hr.dat` 脚本
+4. Chern 后处理与准确率评估脚本
+5. 阈值扫描脚本
+6. consistent `sample_id` 验证链条（严格一一对应）
+
+## 一、模型的三个主要应用（当前建议的论文主线）
+
+1. **应用一：相图代理模型 / 拓扑候选快速筛选**
+   - 输入一组 8 参数
+   - 输出模型判断：是否绝缘、是否拓扑、是否可靠
+   - 适合作为“高精度拓扑候选预筛器”
+   - 这是当前对话中实现最完整、最推荐优先推进的应用
+
+2. **应用二：参数敏感性 / 控制轴识别**
+   - 通过 `feature importance / SHAP / 局部扫描` 分析
+   - 识别哪些参数或组合变量最主导拓扑相界
+   - 当前结论：`t2` 和 `r3` 是拓扑相界主轴
+   - 与解析模型中 `e、t、r` 的物理关系相互印证
+
+3. **应用三：8 参数拟合 / 反演辅助**
+   - 从真实材料低能带或 Wannier 结果出发，拟合等效 8 参数
+   - 再把拟合得到的参数点放入 ML 相图中
+   - 这是连接真实材料的关键增强方向
+   - 当前对话中讨论了理论方案，但尚未正式展开完整脚本链条
+
+## 二、当前阶段的主要结论
+
+1. 训练好的三层模型已经能正常工作，且当前预测脚本已修好 22 维特征输入问题：
+   - 原始输入只需 8 个参数：  
+     `e1, e2, t1, t2, r1, r2, r3, r4`
+   - 脚本内部自动补齐训练时用到的 14 个组合特征：  
+     `e0, m, rbar, d12, d34, dpair, A13, A24, A14, A23, B1, B2, B3, B4`
+
+2. 组合特征的定义来自：
+   - `05_B_next_stage_refine_debug_fixed.py`
+   - 核心函数：`add_signed_features(df)`
+
+3. 三层模型当前使用目录（已统一到 `scripts` 相对路径口径）：
+   - `05_ml_models/levelA_insulator_strict/xgboost/model.joblib`
+   - `05_ml_models/me_final_boundary_top20_refine/xgboost/model.joblib`
+   - `05_ml_models/levelC_reliability_strict_v2/xgboost/model.joblib`
+
+4. 现阶段最推荐的用途不是“完全替代 Chern 计算”，而是：
+   - 高 `precision` 的 topo candidate screening
+   - 即：先用 ML 报出高置信候选，再做后验 Chern 验证
+
+5. 在严格 consistent `sample_id` 链条下，100 个样本的最终验证结果为：
+   - `n_valid = 100`
+   - `accuracy = 0.87`
+   - `precision = 0.8461538461538461`
+   - `recall = 0.7096774193548387`
+   - `f1 = 0.7719298245614036`
+   - `tp = 22`
+   - `tn = 65`
+   - `fp = 4`
+   - `fn = 9`
+
+6. 阈值扫描后，以 `precision` 为优化目标，最佳阈值为：
+   - `Best threshold by precision: 0.6`
+   - `accuracy = 0.84`
+   - `precision = 0.894737`
+   - `recall = 0.548387`
+   - `f1 = 0.68`
+
+7. 从发表角度的客观定位：
+   - 这组结果适合支撑“模型可作为高 precision 的拓扑候选预筛工具”
+   - 不适合表述成“模型已经可以替代真实拓扑判定”
+   - 如果继续补更多独立样本验证，论文说服力会进一步提升
+
+## 三、关于“究竟该提升 accuracy 还是 precision”的结论
+
+用户当前的核心目标是：
+
+> 只关心模型说“这组参数对应的是拓扑”这句话准不准。
+
+因此最重要的指标是：
+
+- `Precision`
+
+### 原因
+
+- `Precision = TP / (TP + FP)`
+- 它直接回答：模型一旦报 topo，这个判断有多大概率是真的
+- 这和后续 expensive 的 `band / Chern` 计算成本最直接相关
+
+### 为什么 Accuracy 不是当前第一优先
+
+- `Accuracy` 会受到非 topo 样本占比影响
+- 即便模型对 trivial 判得很好，accuracy 也可能高
+- 但这不等价于“报 topo 是否真的准”
+
+因此：
+
+- 当前优先目标：提升 `Precision`
+- 其次再考虑 `Accuracy`
+- `Recall` 不是当前主目标（除非想尽量少漏 topo）
+
+## 四、脚本总览（按功能分类）
+
+### A. 代理模型基础预测 / phase map 工具
+
+1. **`predict_8param_phase_suite_v3.py`**
+
+   **功能：**
+   - 单点预测
+   - 批量 CSV 预测
+   - 二维参数扫描
+   - 自动补齐 14 个组合特征
+
+   **使用顺序：**
+   - 最先运行的基础预测脚本
+
+   **需要修改：**
+   - `TRAIN_RANGE_CSV`
+   - `MODE`
+   - `INPUT_CSV`
+   - `OUTPUT_CSV`
+   - `SCAN_FIXED_PARAMS`
+   - `SCAN_RANGES`
+
+2. **`apply_joint_phase_rules_v3.py`**
+
+   **功能：**
+   - 对 stage1 / stage2 / stage3 结果做 joint 融合
+   - 给出最终相区标签（如 `topo_core / topo_primary / boundary / trivial`）
+
+   **使用顺序：**
+   - 在批量预测之后使用
+
+   **需要修改：**
+   - `INPUT_PRED_CSV`
+   - `OUTPUT_JOINT_CSV`
+   - 各种 `threshold`（如需要）
+
+3. **`evaluate_proxy_model_on_testset.py`**
+
+   **功能：**
+   - 在测试集上评估三层模型
+   - 输出 `accuracy / precision / recall / f1 / confusion matrix`
+
+   **使用顺序：**
+   - 需要直接评估测试集时使用
+
+   **需要修改：**
+   - `TEST_CSV`
+   - `LABEL_STAGE1`
+   - `LABEL_STAGE2`
+   - `LABEL_STAGE3`
+
+### B. 从分析结果生成新测试集 / 批量预测
+
+4. **`build_proxy_testset_from_analysis.py`**
+
+   **功能：**
+   - 读取最后一轮分析脚本输出的中心点 CSV
+   - 在中心点附近按设定宽度生成新的参数测试集 CSV
+
+   **默认中心点来源：**
+   - `05_ml_models/levelB_augmentation_analysis/recommended_levelB_augmentation_set.csv`
+
+   **需要修改：**
+   - `INPUT_CENTER_CSV`
+   - `MAX_CENTERS`
+   - `WIDTHS_CORE`
+   - `WIDTHS_BOUNDARY`
+   - `WIDTHS_DEFAULT`
+
+5. **`batch_predict_proxy_topo.py`**
+
+   **功能：**
+   - 对生成的测试集做批量预测
+   - 输出预测 CSV
+
+   **需要修改：**
+   - `INPUT_TESTSET_CSV`
+   - `OUTPUT_PRED_CSV`
+
+6. **`run_proxy_testset_workflow.py`**
+
+   **功能：**
+   - 串联运行：  
+     a) `build_proxy_testset_from_analysis.py`  
+     b) `batch_predict_proxy_topo.py`
+
+   **使用顺序：**
+   - 一步跑完测试集生成 + 批量预测
+
+   **注意：**
+   - 路径需和前两个脚本一致
+
+### C. 小样本评估链条（50 / 100 / consistent 版本）
+
+7. **`reduce_proxy_testset_to_50.py`**
+
+   **功能：**
+   - 从大样本测试集或预测结果里随机抽取 50 个样本
+
+   **需要修改（如果改样本数）：**
+   - `OUT_CSV`
+   - `N_SAMPLES`
+
+   **注意：**
+   - 只改 `N_SAMPLES` 不够，输出文件名也要同步修改
+
+8. **`generate_hr_from_proxy_testset_50.wl`**
+
+   **功能：**
+   - 读取 `proxy_testset_50.csv`
+   - 导出 `hr.dat`
+
+   **需要修改：**
+   - `testCsv`
+   - `rawOutDir`
+   - `sample_id / 文件名前缀`（如需）
+
+9. **`compare_proxy_prediction_vs_chern.py / v2 / v3`**
+
+   **功能：**
+   - 对比预测 CSV 和真实 Chern 汇总 CSV
+   - 自动匹配并计算 `accuracy / precision / recall / f1`
+
+   **演化说明：**
+   - 初版：简单匹配
+   - `v2`：如果 Chern CSV 没有参数列，则自动从 manifest 补回参数
+   - `v3`：加入多层匹配与 debug 输出
+
+   **需要修改：**
+   - `PRED_CSV`
+   - `CHERN_CSV`
+   - `MANIFEST_CSV`
+
+### D. 完全统一的 consistent 版本（推荐）
+
+10. **`reduce_proxy_testset_to_100_consistent.py`**
+
+    **功能：**
+    - 从大样本预测表里抽样 100 个样本
+    - 强制保留 / 生成统一 `sample_id`
+
+    **输出：**
+    - `06_outputs/proxy_small_eval/proxy_testset_100_consistent.csv`
+
+    **需要修改：**
+    - `N_SAMPLES`
+    - `RANDOM_SEED`
+    - `OUT_CSV`
+    - `INPUT_CANDIDATES`
+
+11. **`generate_hr_from_proxy_testset_100_consistent.wl`**
+
+    **功能：**
+    - 读取 `proxy_testset_100_consistent.csv`
+    - 直接使用 CSV 中的 `sample_id` 写入 `hr.dat` 文件头
+    - 导出 manifest
+
+    **输出：**
+    - `scripts/raw_hr_proxy_testset_100_consistent/`
+
+    **需要修改：**
+    - `testCsv`
+    - `rawOutDir`
+    - 参数范围（如需）
+
+12. **`compare_proxy_prediction_vs_chern_100_consistent.py`**
+
+    **功能：**
+    - 只按 `sample_id` 进行严格 1:1 对齐
+    - 不再使用参数 `round` 近似匹配
+
+    **输入：**
+    - `proxy_testset_100_consistent.csv`
+    - `chern_output_hr_proxy_testset_100_consistent/all_chern_summary.csv`
+
+    **输出：**
+    - merged CSV
+    - summary txt/json
+
+    **需要修改：**
+    - `PRED_CSV`
+    - `CHERN_CSV`
+
+### E. 阈值扫描
+
+13. **`scan_topo_thresholds.py`**
+
+    **功能：**
+    - 对已完成严格匹配的 merged CSV 做 `p_topo` 阈值扫描
+    - 计算不同阈值下的 `accuracy / precision / recall / f1`
+
+    **默认输入：**
+    - `06_outputs/proxy_small_eval_eval/proxy_vs_chern_merged_100_consistent.csv`
+
+    **需要修改：**
+    - `INPUT_CSV`
+    - `THRESHOLDS`
+    - `FOCUS_METRIC（precision / accuracy / f1）`
+
+    **当前最重要结论：**
+    - 用户当前目标下，应优先用 `precision` 作为优化指标
+
+## 五、重要的 WL / Chern / compare 链条说明
+
+1. 一开始出现“只匹配上 152/200”的问题，原因不是模型不准，而是：
+   - 预测 CSV、WL 导出、Chern 汇总没有共享同一套 `sample_id`
+   - 导致 compare 脚本只能退回到参数 `round` 匹配
+
+2. 最终通过 consistent 版本解决：
+   - 抽样 CSV 中保留 `sample_id`
+   - WL 导出时把同一个 `sample_id` 写入 `hr.dat` 文件头
+   - Chern 脚本从 `hr.dat` 文件头读出 `sample_id`
+   - compare 脚本按 `sample_id` 严格 1:1 对齐
+
+3. Chern 脚本是否统一：
+   - 逻辑上已经统一，因为 `read_hr_file()` 会读取 `# sample_id`
+   - 但目录名必须同步改成 consistent 版本
+
+   例如：
+   - `WORKDIR = ROOT / "clean_raw_hr_proxy_testset_100_consistent"`
+   - `OUTDIR = ROOT / "chern_output_hr_proxy_testset_100_consistent"`
+
+## 六、当前最推荐的使用顺序（consistent 严格验证版）
+
+如果要重新做一套 100 个样本的一一对应验证，推荐顺序如下：
+
+### 步骤 1：抽样并生成 consistent 测试集
+
+运行：
+
+- `reduce_proxy_testset_to_100_consistent.py`
+
+输出：
+
+- `06_outputs/proxy_small_eval/proxy_testset_100_consistent.csv`
+
+### 步骤 2：导出 hr.dat
+
+运行：
+
+- `generate_hr_from_proxy_testset_100_consistent.wl`
+
+输出：
+
+- `scripts/raw_hr_proxy_testset_100_consistent/`
+- `sample_file_manifest.csv`
+- `bad_export_log.txt`
+
+### 步骤 3：clean
+
+将 `raw_hr_proxy_testset_100_consistent` 导入 clean 脚本，输出：
+
+- `clean_raw_hr_proxy_testset_100_consistent`
+
+### 步骤 4：计算 Chern
+
+修改 Chern 脚本中的：
+
+- `WORKDIR = ROOT / "clean_raw_hr_proxy_testset_100_consistent"`
+- `OUTDIR = ROOT / "chern_output_hr_proxy_testset_100_consistent"`
+
+运行后输出：
+
+- `chern_output_hr_proxy_testset_100_consistent/all_chern_summary.csv`
+
+### 步骤 5：严格 compare
+
+运行：
+
+- `compare_proxy_prediction_vs_chern_100_consistent.py`
+
+输出：
+
+- `proxy_vs_chern_merged_100_consistent.csv`
+- `proxy_vs_chern_summary_100_consistent.txt`
+- `proxy_vs_chern_summary_100_consistent.json`
+
+### 步骤 6：阈值扫描
+
+运行：
+
+- `scan_topo_thresholds.py`
+
+得到不同 `p_topo` 阈值下的：
+
+- `accuracy`
+- `precision`
+- `recall`
+- `f1`
+
+当前结果：
+
+- `Best threshold by precision = 0.6`
+
+## 七、如何理解当前结果是否“够发文章”
+
+1. 当前结果已经足够支持：
+   - 模型可作为高 precision 的拓扑候选预筛器
+   - 可以显著减少无效的后验 Chern 计算
+   - 已经有独立后验验证支撑“模型有实用性”
+
+2. 当前结果不建议表述为：
+   - 模型可完全替代真实 Chern 计算
+   - 模型已经非常高精度、几乎无误
+
+3. 当前论文叙事最稳的定位：
+   - 8 参数最小模型
+   - XGBoost 学习拓扑参数空间
+   - `t2 / r3` 是主导相界的控制轴
+   - 机器学习模型可作为高 precision 的 topo candidate screening 工具
+   - 使用后验 Chern 计算对独立样本进行验证
+
+## 八、给初学者的直接结论
+
+1. 你现在最该重视的指标：
+   - `Precision`
+
+2. 原因：
+   - 你只关心“模型说这是 topo”这句话准不准
+   - 这正对应 `precision`，而不是 `accuracy`
+
+3. 目前结果说明：
+   - 模型已经“可用”
+   - 更像筛选器，而不是最终判决器
+   - 这是可以写进论文的，但叙事要准确
+
+4. 后续增强方向：
+   - 再做更多独立样本验证（如再做 100 或 200）
+   - 报不同随机抽样下的平均表现
+   - 把阈值扫描结果作为补充说明
+   - 继续结合 `t2-r3` 主相图和参数控制轴分析
+
+## 九、最后的总判断
+
+当前对话中，最完整、最可落地、最接近论文正文主线的内容是：
+
+- 第一个应用：相图代理模型 / 拓扑候选预筛器
+- 已建立从参数输入、ML 预测、WL 导出 `hr.dat`、后验 Chern、严格 compare、阈值扫描的完整闭环
+- 模型当前的价值定位是：  
+  “高 precision 的拓扑候选筛选工具”
+
+这条线已经具备继续整理成论文方法与结果部分的基础。
