@@ -371,3 +371,35 @@ mark {
   padding: 0 2px;
   border-radius: 2px;
 }
+
+@media (min-width: 992px) {
+  #mainNav .nav-inner {
+    width: 100%;
+    max-width: 1400px;
+    margin: 0 auto;
+    display: flex;
+    align-items: center;
+  }
+
+  #mainNav .navbar-brand {
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  #mainNav .navbar-collapse {
+    display: flex !important;
+    flex-grow: 0 !important;
+    justify-content: flex-start !important;
+    margin-left: 0.8rem !important;
+  }
+
+  #mainNav .navbar-nav {
+    margin-left: 0 !important;
+  }
+
+  #mainNav .navbar-nav .nav-link {
+    white-space: nowrap !important;
+    padding-left: 12px !important;
+    padding-right: 12px !important;
+  }
+}
