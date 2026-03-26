@@ -2,39 +2,19 @@
 layout: default
 ---
 
-{% assign cat_name = page.autopages.display_name | default: page.title %}
-{% assign cat_slug = cat_name | downcase %}
-
-{% if cat_slug == "life" %}
-  {% assign cat_title = "Life" %}
-  {% assign cat_bg = "/img/bg-life.jpg" %}
-{% elsif cat_slug == "sci-log" %}
-  {% assign cat_title = "Sci-Log" %}
-  {% assign cat_bg = "/img/bg-sci-log.jpg" %}
-{% elsif cat_slug == "sci-note" %}
-  {% assign cat_title = "Sci-Note" %}
-  {% assign cat_bg = "/img/bg-sci-note.jpg" %}
-{% elsif cat_slug == "reading" %}
-  {% assign cat_title = "Reading" %}
-  {% assign cat_bg = "/img/bg-reading.jpg" %}
-{% elsif cat_slug == "learning" %}
-  {% assign cat_title = "Learning" %}
-  {% assign cat_bg = "/img/bg-about.jpg" %}
-{% elsif cat_slug == "writing" %}
-  {% assign cat_title = "Writing" %}
-  {% assign cat_bg = "/img/bg-travel.jpg" %}
+<!-- Page Header -->
+{% if page.background %}
+<header class="masthead" style="background-image: url('{{ page.background | relative_url }}')">
 {% else %}
-  {% assign cat_title = cat_name | capitalize %}
-  {% assign cat_bg = "/img/bg-index.jpg" %}
+<header class="masthead">
 {% endif %}
-
-<header class="masthead" style="background-image: url('{{ cat_bg | relative_url }}')">
   <div class="overlay"></div>
   <div class="container">
     <div class="row">
       <div class="col-lg-8 col-md-10 mx-auto">
-        <div class="page-heading">
-          <h1>{{ cat_title }}</h1>
+        <div class="site-heading">
+          <h1>{{ site.title }}</h1>
+          <span class="subheading">{{ site.description }}</span>
         </div>
       </div>
     </div>
