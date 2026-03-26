@@ -429,6 +429,7 @@ mark {
 
 #pagination .pagination-next {
   margin-left: auto !important;
+  margin-right: -150px !important; // 适当调整右侧边距，保持与内容区边距一致
 }
 
 #pagination .pagination-placeholder {
@@ -464,3 +465,32 @@ mark {
   }
 }
 
+#pagination::before,
+#pagination::after {
+  content: none !important;
+  display: none !important;
+}
+
+#pagination::before,
+#pagination::after {
+  content: none !important;
+  display: none !important;
+}
+
+#pagination .pagination-next:last-child {
+  margin-left: auto !important;
+  margin-right: 0 !important;
+}
+
+#pagination .pagination-btn {
+  background-color: #0085a1 !important;
+  border-color: #0085a1 !important;
+  color: #ffffff !important;
+}
+
+#pagination .pagination-btn:hover,
+#pagination .pagination-btn:focus {
+  background-color: #00657b !important;
+  border-color: #00657b !important;
+  color: #ffffff !important;
+}
