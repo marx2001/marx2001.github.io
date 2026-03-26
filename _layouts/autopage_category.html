@@ -1,0 +1,72 @@
+---
+layout: default
+---
+
+{% assign cat_name = page.autopages.display_name | default: page.title %}
+{% assign cat_slug = page.autopages.display_name | default: page.title | downcase %}
+
+{% if cat_slug == "learning" %}
+  {% assign cat_bg = "/img/bg-about.jpg" %}
+{% elsif cat_slug == "reading" %}
+  {% assign cat_bg = "/img/bg-reading.jpg" %}
+{% elsif cat_slug == "life" %}
+  {% assign cat_bg = "/img/bg-life.jpg" %}
+{% elsif cat_slug == "sci-log" %}
+  {% assign cat_bg = "/img/bg-sci-log.jpg" %}
+{% elsif cat_slug == "sci-note" %}
+  {% assign cat_bg = "/img/bg-note.jpg" %}
+{% else %}
+  {% assign cat_bg = "/img/home-bg.jpg" %}
+{% endif %}
+
+<header class="masthead" style="background-image: url('{{ cat_bg | relative_url }}')">
+  <div class="overlay"></div>
+  <div class="container">
+    <div class="row">
+      <div class="col-lg-8 col-md-10 mx-auto">
+        <div class="page-heading">
+          <h1>{{ cat_name }}</h1>
+          <span class="subheading">{{ cat_name }} 分类文章</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<div class="container">
+  <div class="row">
+    <div class="col-lg-8 col-md-10 mx-auto">
+
+      {% for post in paginator.posts %}
+        <div class="post-preview">
+          <a href="{{ post.url | relative_url }}">
+            <h2 class="post-title">{{ post.title }}</h2>
+            {% if post.subtitle %}
+            <h3 class="post-subtitle">{{ post.subtitle }}</h3>
+            {% else %}
+            <h3 class="post-subtitle">{{ post.excerpt | strip_html | truncatewords: 20 }}</h3>
+            {% endif %}
+          </a>
+          <p class="post-meta">
+            Posted on {{ post.date | date: "%B %d, %Y" }}
+            · {% assign words = post.content | number_of_words %}
+            {% if words < 120 %}1 min read{% else %}{{ words | divided_by: 120 }} mins read{% endif %}
+          </p>
+        </div>
+
+        <hr>
+      {% endfor %}
+
+      <div class="clearfix">
+        {% if paginator.previous_page %}
+          <a class="btn btn-primary float-left" href="{{ paginator.previous_page_path | relative_url }}">&larr; 上一页</a>
+        {% endif %}
+
+        {% if paginator.next_page %}
+          <a class="btn btn-primary float-right" href="{{ paginator.next_page_path | relative_url }}">下一页 &rarr;</a>
+        {% endif %}
+      </div>
+
+    </div>
+  </div>
+</div>
