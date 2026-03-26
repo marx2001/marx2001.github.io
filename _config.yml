@@ -30,6 +30,9 @@ autopages:
       - autopage_category.html
     title: ":cat"
     permalink: "/:cat/"
+    slugify:
+      mode: "default"
+      case: false
   tags:
     enabled: false
   collections:
