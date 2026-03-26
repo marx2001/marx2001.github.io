@@ -1,3 +1,4 @@
+// Styling for the navbar
 #mainNav {
   position: absolute;
   border-bottom: 1px solid $gray-200;
@@ -22,6 +23,7 @@
     padding: 13px;
     text-transform: uppercase;
     color: $gray-800;
+    border: 1px solid $gray-300;
   }
 
   .navbar-collapse {
@@ -29,38 +31,52 @@
   }
 
   .navbar-nav {
-    > li.nav-item > a {
-      font-size: 18px;
-      font-weight: 800;
-      letter-spacing: 1px;
-      text-transform: uppercase;
+    > li.nav-item {
+      > a {
+        font-size: 18px;
+        font-weight: 800;
+        letter-spacing: 1px;
+        text-transform: uppercase;
+      }
     }
   }
 
-  /* 手机端：菜单展开后单独占一整行 */
+  /* 手机端：让 Bootstrap 自己控制 collapse/show */
   @media only screen and (max-width: 991.98px) {
     .nav-inner {
       display: block;
     }
 
+    .navbar-brand {
+      display: inline-block;
+      padding: 12px 0;
+    }
+
+    .navbar-toggler {
+      float: right;
+      margin-top: 6px;
+      margin-bottom: 6px;
+    }
+
     .navbar-collapse {
-      display: block;
-      margin-left: 0;
       margin-top: 0.75rem;
       width: 100%;
     }
 
     .navbar-nav {
-      padding-top: 0.5rem;
+      padding-top: 0.25rem;
     }
 
     .navbar-nav > li.nav-item > a {
-      padding: 0.75rem 0;
+      display: block;
+      padding: 0.7rem 0;
+      font-size: 16px;
+      letter-spacing: 0.5px;
       white-space: normal;
     }
   }
 
-  /* 桌面端再启用横向 flex */
+  /* 桌面端：再启用横向 flex 布局 */
   @media only screen and (min-width: 992px) {
     border-bottom: 1px solid transparent;
     background: transparent;
@@ -73,6 +89,7 @@
     .navbar-brand {
       padding: 10px 20px;
       color: $white;
+      flex-shrink: 0;
 
       &:focus,
       &:hover {
@@ -87,14 +104,18 @@
       margin-left: 1.5rem;
     }
 
-    .navbar-nav > li.nav-item > a {
-      padding: 10px 12px;
-      color: $white;
-      white-space: nowrap;
+    .navbar-nav {
+      > li.nav-item {
+        > a {
+          padding: 10px 12px;
+          color: $white;
+          white-space: nowrap;
 
-      &:focus,
-      &:hover {
-        color: fade-out($white, .2);
+          &:focus,
+          &:hover {
+            color: fade-out($white, .2);
+          }
+        }
       }
     }
   }
@@ -129,12 +150,16 @@
         }
       }
 
-      .navbar-nav > li.nav-item > a {
-        color: $gray-900;
+      .navbar-nav {
+        > li.nav-item {
+          > a {
+            color: $gray-900;
 
-        &:focus,
-        &:hover {
-          color: $primary;
+            &:focus,
+            &:hover {
+              color: $primary;
+            }
+          }
         }
       }
     }
