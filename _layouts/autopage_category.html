@@ -62,28 +62,30 @@ layout: default
               {% if words < 120 %}1 min read{% else %}{{ words | divided_by: 120 }} mins read{% endif %}
             </p>
           </div>
-          <hr>
+          {% unless forloop.last %}
+            <hr>
+          {% endunless %}
         {% endfor %}
 
-<div id="pagination">
-  {% if paginator.previous_page %}
-    <a class="btn btn-primary pagination-btn pagination-prev"
-       href="{{ paginator.previous_page_path | relative_url }}">
-      上一页
-    </a>
-  {% else %}
-    <span class="pagination-placeholder"></span>
-  {% endif %}
+        <div id="pagination">
+          {% if paginator.previous_page %}
+            <a class="btn btn-primary pagination-btn pagination-prev"
+               href="{{ paginator.previous_page_path | relative_url }}">
+              上一页
+            </a>
+          {% else %}
+            <span class="pagination-placeholder"></span>
+          {% endif %}
 
-  {% if paginator.next_page %}
-    <a class="btn btn-primary pagination-btn pagination-next"
-       href="{{ paginator.next_page_path | relative_url }}">
-      下一页
-    </a>
-  {% else %}
-    <span class="pagination-placeholder"></span>
-  {% endif %}
-</div>
+          {% if paginator.next_page %}
+            <a class="btn btn-primary pagination-btn pagination-next"
+               href="{{ paginator.next_page_path | relative_url }}">
+              下一页
+            </a>
+          {% else %}
+            <span class="pagination-placeholder"></span>
+          {% endif %}
+        </div>
       </div>
 
     </div>

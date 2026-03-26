@@ -536,3 +536,8 @@ mark {
   padding-top: 1rem !important;
   border-top: 1px solid #dee2e6 !important;
 }
+
+#posts-container > #pagination {
+  position: relative;
+  top: -2px;
+}
