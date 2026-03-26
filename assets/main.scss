@@ -403,3 +403,64 @@ mark {
     padding-right: 12px !important;
   }
 }
+
+#pagination {
+  margin-top: 1.75rem;
+  padding-top: 0 !important;
+  border-top: none !important;   // 去掉最靠近按钮上方的那根线
+
+  width: 100%;
+  display: flex;
+  justify-content: space-between; // 两端贴边
+  align-items: center;
+  clear: both;
+}
+
+#pagination .pagination-btn {
+  min-width: 150px;
+  text-align: center;
+  float: none !important;
+  margin: 0 !important;
+}
+
+#pagination .pagination-prev {
+  margin-right: auto !important;
+}
+
+#pagination .pagination-next {
+  margin-left: auto !important;
+}
+
+#pagination .pagination-placeholder {
+  display: block;
+  width: 150px;   // 只用于单按钮时保持边界感
+  height: 1px;
+  visibility: hidden;
+}
+
+/* 移动端保持原来较自然的显示，不去强拉两端 */
+@media (max-width: 768px) {
+  #pagination {
+    margin-top: 1.5rem;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 0.75rem;
+  }
+
+  #pagination .pagination-placeholder {
+    display: none;
+  }
+
+  #pagination .pagination-btn {
+    width: 100%;
+    max-width: 220px;
+    min-width: 0;
+  }
+
+  #pagination .pagination-prev,
+  #pagination .pagination-next {
+    margin: 0 !important;
+  }
+}
+

@@ -25,33 +25,48 @@ layout: default
   <div class="row">
     <div class="col-lg-8 col-md-10 mx-auto">
 
-      {% for post in paginator.posts %}
-        <div class="post-preview">
-          <a href="{{ post.url | relative_url }}">
-            <h2 class="post-title">{{ post.title }}</h2>
-            {% if post.subtitle %}
-              <h3 class="post-subtitle">{{ post.subtitle }}</h3>
-            {% else %}
-              <h3 class="post-subtitle">{{ post.excerpt | strip_html | truncatewords: 20 }}</h3>
-            {% endif %}
-          </a>
-          <p class="post-meta">
-            Posted on {{ post.date | date: "%B %d, %Y" }}
-            · {% assign words = post.content | number_of_words %}
-            {% if words < 120 %}1 min read{% else %}{{ words | divided_by: 120 }} mins read{% endif %}
-          </p>
+      <div id="posts-container">
+        {% for post in paginator.posts %}
+          <div class="post-preview">
+            <a href="{{ post.url | relative_url }}">
+              <h2 class="post-title">{{ post.title }}</h2>
+              {% if post.subtitle %}
+                <h3 class="post-subtitle">{{ post.subtitle }}</h3>
+              {% else %}
+                <h3 class="post-subtitle">{{ post.excerpt | strip_html | truncatewords: 20 }}</h3>
+              {% endif %}
+            </a>
+            <p class="post-meta">
+              Posted on {{ post.date | date: "%B %d, %Y" }}
+              · {% assign words = post.content | number_of_words %}
+              {% if words < 120 %}1 min read{% else %}{{ words | divided_by: 120 }} mins read{% endif %}
+            </p>
+          </div>
+          {% unless forloop.last %}
+            <hr>
+          {% endunless %}
+        {% endfor %}
+
+        <div id="pagination" class="clearfix">
+          {% if paginator.previous_page %}
+            <a class="btn btn-primary pagination-btn pagination-prev"
+               href="{{ paginator.previous_page_path | relative_url }}">
+              &larr; 上一页
+            </a>
+          {% else %}
+            <span class="pagination-placeholder"></span>
+          {% endif %}
+
+          {% if paginator.next_page %}
+            <a class="btn btn-primary pagination-btn pagination-next"
+               href="{{ paginator.next_page_path | relative_url }}">
+              下一页 &rarr;
+            </a>
+          {% else %}
+            <span class="pagination-placeholder"></span>
+          {% endif %}
         </div>
-        <hr>
-      {% endfor %}
 
-      <div class="clearfix">
-        {% if paginator.previous_page %}
-          <a class="btn btn-primary float-left" href="{{ paginator.previous_page_path | relative_url }}">&larr; 上一页</a>
-        {% endif %}
-
-        {% if paginator.next_page %}
-          <a class="btn btn-primary float-right" href="{{ paginator.next_page_path | relative_url }}">下一页 &rarr;</a>
-        {% endif %}
       </div>
 
     </div>
