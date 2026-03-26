@@ -1,7 +1,6 @@
 title:              Mr.X's Blog
 email:              2254750892@qq.com
 description:        建议使用电脑版以获得最佳阅览体验（页面比例100%最佳）
-                    文章较多，初次加载较慢，请耐心等待
 author:             Mrx
 baseurl:            ""
 url:                "https://marx2001.github.io"
@@ -18,7 +17,10 @@ plugins:
   - jekyll-sitemap
 
 pagination:
-  enabled: false
+  enabled: true
+  per_page: 5
+  permalink: "/page:num/"
+  sort_reverse: true
 
 autopages:
   enabled: true
