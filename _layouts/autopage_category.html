@@ -71,6 +71,8 @@ layout: default
        href="{{ paginator.previous_page_path | relative_url }}">
       上一页
     </a>
+  {% else %}
+    <span class="pagination-placeholder"></span>
   {% endif %}
 
   {% if paginator.next_page %}
@@ -78,6 +80,8 @@ layout: default
        href="{{ paginator.next_page_path | relative_url }}">
       下一页
     </a>
+  {% else %}
+    <span class="pagination-placeholder"></span>
   {% endif %}
 </div>
       </div>

@@ -47,25 +47,25 @@ layout: default
           {% endunless %}
         {% endfor %}
 
-        <div id="pagination" class="clearfix">
-          {% if paginator.previous_page %}
-            <a class="btn btn-primary pagination-btn pagination-prev"
-               href="{{ paginator.previous_page_path | relative_url }}">
-              &larr; 上一页
-            </a>
-          {% else %}
-            <span class="pagination-placeholder"></span>
-          {% endif %}
+ <div id="pagination" class="clearfix">
+  {% if paginator.previous_page %}
+    <a class="btn btn-primary pagination-btn pagination-prev"
+       href="{{ paginator.previous_page_path | relative_url }}">
+      上一页
+    </a>
+  {% else %}
+    <span class="pagination-placeholder"></span>
+  {% endif %}
 
-          {% if paginator.next_page %}
-            <a class="btn btn-primary pagination-btn pagination-next"
-               href="{{ paginator.next_page_path | relative_url }}">
-              下一页 &rarr;
-            </a>
-          {% else %}
-            <span class="pagination-placeholder"></span>
-          {% endif %}
-        </div>
+  {% if paginator.next_page %}
+    <a class="btn btn-primary pagination-btn pagination-next"
+       href="{{ paginator.next_page_path | relative_url }}">
+      下一页
+    </a>
+  {% else %}
+    <span class="pagination-placeholder"></span>
+  {% endif %}
+</div>
 
       </div>
 
