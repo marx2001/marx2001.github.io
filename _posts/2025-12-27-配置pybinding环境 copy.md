@@ -31,10 +31,8 @@ https://visualstudio.microsoft.com/zh-hans/visual-cpp-build-tools/
 创建环境
 
 ```shell
-
 conda create -n pybinding_env python=3.9 -y
 conda activate pybinding_env
-
 ```
 
 安装miniconda后，运行
@@ -42,7 +40,6 @@ conda activate pybinding_env
 ```shell
 
 conda install numpy scipy matplotlib
-
 ```
 
 然后
@@ -50,7 +47,6 @@ conda install numpy scipy matplotlib
 ```shell
 
 pip install pybinding
-
 ```
 
 安装了Cmake和visual Studio installer仍然不能成功安装pybinding，尝试使用Linux环境，安装Ubantu
@@ -72,11 +68,9 @@ pip install pybinding
 先激活环境，然后安装ipynernel，运行命令安装ipykernel并添加到jupyter可用的knernel列表中：
 
 ```shell
-
 conda activate pybinding_env
 conda install -n pybinding_env ipykernel --update-deps --force-reinstall
 python -m ipykernel install --user --name pybinding_env --display-name "Python (pybinding_env)"
-
 ```
 这个命令会将pybinding_env环境注册为一个jupyter kernel，名称为Python(pybinding_env)，可根据实况修改名称。
 
