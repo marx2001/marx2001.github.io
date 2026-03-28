@@ -4,32 +4,6 @@
 
 @import "styles";
 
-/* === 自定义代码块样式 === */
-pre code {
-  display: block;
-  padding: 1em;
-  background-color: #282c34;
-  color: #abb2bf;
-  border-radius: 8px;
-  overflow-x: auto;
-  overflow-y: auto;
-  max-height: 500px;
-  position: relative;
-  font-size: 0.9em;
-  line-height: 1.4;
-  white-space: pre;
-}
-
-pre code::-webkit-scrollbar {
-  height: 8px;
-  width: 8px;
-}
-
-pre code::-webkit-scrollbar-thumb {
-  background: #5c6370;
-  border-radius: 4px;
-}
-
 /* ====================== */
 /* 分页文章列表样式 - 精确匹配图片效果 */
 /* ====================== */
@@ -540,4 +514,323 @@ mark {
 #posts-container > #pagination {
   position: relative;
   top: -2px;
+}
+
+
+
+/* ====================== */
+/* #设置代码块样式 */
+/* ====================== */
+
+/* =========================================
+   Code block: integrated final version
+   图标与圆形按钮中心绑定版
+   ========================================= */
+
+/* 外层容器：只负责定位，不额外加背景 */
+div.highlighter-rouge,
+div.highlight,
+figure.highlight {
+  position: relative;
+  margin: 1.5rem 0;
+  padding: 0;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+  overflow: visible !important;
+}
+
+/* pre：真正的代码块外观 */
+pre,
+pre.highlight,
+div.highlighter-rouge pre,
+div.highlight pre,
+figure.highlight pre {
+  position: relative;
+  margin: 0 !important;
+  padding: 0 !important;
+
+  background: #eef1f4 !important;
+  border: 1px solid #d8dde3 !important;
+  border-radius: 16px !important;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.05) !important;
+
+  overflow-x: auto !important;
+  overflow-y: auto !important;
+  max-height: 500px;
+  white-space: pre !important;
+}
+
+/* 真正代码文本 */
+pre code,
+pre.highlight code,
+div.highlighter-rouge pre code,
+div.highlight pre code,
+figure.highlight pre code {
+  display: block;
+  margin: 0 !important;
+  padding: 1.15rem 1.2rem 1.05rem 1.2rem !important;
+
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+
+  color: #2f3542;
+  font-size: 0.92em;
+  line-height: 1.68;
+  white-space: pre !important;
+  word-break: normal !important;
+  overflow-wrap: normal !important;
+
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code",
+               "SFMono-Regular", Consolas, Menlo, Monaco, monospace;
+}
+
+/* 行内代码 */
+p code,
+li code,
+td code,
+span code,
+h1 code,
+h2 code,
+h3 code,
+h4 code,
+h5 code,
+h6 code,
+blockquote code {
+  display: inline;
+  padding: 0.14em 0.42em;
+  background: #f1f3f5;
+  color: #c7254e;
+  border-radius: 6px;
+  font-size: 0.92em;
+  line-height: 1.4;
+  white-space: normal;
+
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code",
+               "SFMono-Regular", Consolas, Menlo, Monaco, monospace;
+}
+
+/* 滚动条 */
+pre::-webkit-scrollbar,
+pre.highlight::-webkit-scrollbar,
+div.highlighter-rouge pre::-webkit-scrollbar,
+div.highlight pre::-webkit-scrollbar,
+figure.highlight pre::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+pre::-webkit-scrollbar-track,
+pre.highlight::-webkit-scrollbar-track,
+div.highlighter-rouge pre::-webkit-scrollbar-track,
+div.highlight pre::-webkit-scrollbar-track,
+figure.highlight pre::-webkit-scrollbar-track {
+  background: #dde3e8;
+  border-radius: 999px;
+}
+
+pre::-webkit-scrollbar-thumb,
+pre.highlight::-webkit-scrollbar-thumb,
+div.highlighter-rouge pre::-webkit-scrollbar-thumb,
+div.highlight pre::-webkit-scrollbar-thumb,
+figure.highlight pre::-webkit-scrollbar-thumb {
+  background: #bfc8d2;
+  border-radius: 999px;
+}
+
+pre::-webkit-scrollbar-thumb:hover,
+pre.highlight::-webkit-scrollbar-thumb:hover,
+div.highlighter-rouge pre::-webkit-scrollbar-thumb:hover,
+div.highlight pre::-webkit-scrollbar-thumb:hover,
+figure.highlight pre::-webkit-scrollbar-thumb:hover {
+  background: #aeb8c3;
+}
+
+/* 复制按钮 */
+.copy-btn {
+  position: absolute;
+  top: 4px;   /* 只改这个数字可上下移动 */
+  right: 8px; /* 只改这个数字可左右移动 */
+  z-index: 30;
+
+  width: 53px;  /* 只改这两个数字可放大缩小圆按钮 */
+  height: 53px;
+  padding: 0 !important;
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  background: transparent !important;
+  border: 1px solid transparent !important;
+  border-radius: 999px !important;
+  box-shadow: none !important;
+
+  cursor: pointer;
+  outline: none !important;
+  appearance: none !important;
+  -webkit-appearance: none !important;
+
+  color: transparent !important;
+  font-size: 0 !important;
+  line-height: 0 !important;
+  text-indent: -9999px;
+  overflow: visible !important;
+
+  transition: background 0.18s ease,
+              border-color 0.18s ease,
+              box-shadow 0.18s ease,
+              transform 0.18s ease;
+}
+
+/* 清理按钮内部其他节点 */
+.copy-btn > * {
+  display: none !important;
+}
+
+/* 默认图标：复制，始终相对圆心居中 */
+.copy-btn::before {
+  content: "";
+  position: absolute;
+  left: 45%;
+  top: 55%;
+
+  width: 14px;
+  height: 14px;
+
+  border: 2px solid #1f2937;
+  border-radius: 3px;
+  background: transparent;
+  box-sizing: border-box;
+
+  /* 先把主框居中，再用 box-shadow 做右上角副框 */
+  transform: translate(-50%, -50%);
+  box-shadow:
+    4px -4px 0 0 #eef1f4,
+    4px -4px 0 2px #1f2937;
+}
+
+/* hover 时在正下方显示“复制” */
+.copy-btn::after {
+  content: "复制";
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+
+  padding: 0.28rem 0.52rem;
+  border-radius: 8px;
+  background: rgba(31, 41, 55, 0.92);
+  color: #ffffff !important;
+  font-size: 12px !important;
+  line-height: 1.2 !important;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-indent: 0 !important;
+
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.18s ease, visibility 0.18s ease, transform 0.18s ease;
+}
+
+.copy-btn:hover::after,
+.copy-btn:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
+}
+
+/* hover / focus */
+.copy-btn:hover,
+.copy-btn:focus,
+.copy-btn:focus-visible {
+  background: #cfd6df !important;
+  border-color: #bcc6d1 !important;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.10) !important;
+  transform: translateY(-1px);
+}
+
+.copy-btn:active {
+  transform: scale(0.98);
+}
+
+/* 复制成功后：对勾也始终相对圆心居中 */
+.copy-btn.copied::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+
+  width: 9px;
+  height: 18px;
+
+  background: transparent !important;
+  border: none !important;
+  border-right: 3px solid #1f2937 !important;
+  border-bottom: 3px solid #1f2937 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+
+  transform: translate(-50%, -58%) rotate(45deg) !important;
+}
+
+/* 成功复制后 tooltip 仍显示“复制” */
+.copy-btn.copied::after {
+  content: "复制";
+}
+
+/* Firefox */
+button.copy-btn::-moz-focus-inner {
+  border: 0;
+  padding: 0;
+}
+
+/* 移动端 */
+@media (max-width: 768px) {
+  pre,
+  pre.highlight,
+  div.highlighter-rouge pre,
+  div.highlight pre,
+  figure.highlight pre {
+    max-height: 420px;
+  }
+
+  pre code,
+  pre.highlight code,
+  div.highlighter-rouge pre code,
+  div.highlight pre code,
+  figure.highlight pre code {
+    padding: 1rem 1rem 0.95rem 1rem !important;
+    font-size: 0.88em;
+  }
+
+  .copy-btn {
+    top: 10px;
+    right: 10px;
+    width: 40px;
+    height: 40px;
+  }
+
+  .copy-btn::before {
+    width: 13px;
+    height: 13px;
+    box-shadow:
+      4px -4px 0 0 #eef1f4,
+      4px -4px 0 2px #1f2937;
+  }
+
+  .copy-btn::after {
+    top: calc(100% + 7px);
+    font-size: 11px !important;
+    padding: 0.24rem 0.48rem;
+  }
+
+  .copy-btn.copied::before {
+    width: 8px;
+    height: 15px;
+    transform: translate(-50%, -56%) rotate(45deg) !important;
+  }
 }

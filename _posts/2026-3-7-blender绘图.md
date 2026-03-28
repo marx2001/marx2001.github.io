@@ -20,7 +20,6 @@ permalink: /sci-note_posts/20260307-blender
 sh脚本负责收集，python负责绘制，配色为原创：
 
 ```shell
-
 #!/bin/bash -x
 mkdir result
 for i in {0,5,10,15,20,25}
@@ -34,7 +33,6 @@ done
 ```
 
 ```python
-
 import numpy as np
 import os
 import matplotlib.pyplot as plt
@@ -170,7 +168,6 @@ print("   所有图片生成完成!")
 (4) 先将ovf转换为csv文件，记录自旋数据,这是一个ipynb文件，需要opencv库。改晶格常数等信息。
 
 ```python
-
 import os
 import numpy as np
 import matplotlib.pyplot as plt
@@ -340,7 +337,6 @@ if __name__ == "__main__":
 (5) 框选想要绘制的区域。
 
 ```python
-
 import cv2
 import os
 
@@ -416,14 +412,11 @@ print('结束')
 (6) 记住上一步输出的ROI这一行内容，计算想要绘制的区域的坐标，同时记得修改你的png和csv文件名。
 
 ```shell
-
 ROI: x=912, y=602, w=79, h=68
-
 ```
 
 将坐标填入下方脚本
 ```python
-
 import cv2
 import numpy as np
 
@@ -472,7 +465,6 @@ print(f"z_range={z_range},")
 (7)转换xywh坐标为xyz坐标，即将图片中的位置转换为csv文件的位置。
 
 ```python
-
 import cv2
 import numpy as np
 
@@ -521,7 +513,6 @@ print(f"z_range={z_range},")
 (8)上一个脚本的输出如下所示，填入到下一个脚本结尾的相应的xyz坐标处：
 
 ```shell
-
 可直接填写到 filter.py 中：
 x_range=(2995.7427548963037, 3255.24496400857),
 y_range=(1506.399353766607, 1699.6781734408135),
@@ -529,7 +520,6 @@ z_range=(4.623772823642497, 7.254555104183036),
 
 ```
 ```python
-
 import numpy as np
 
 def filter_csv_by_xyz(file_path, x_range, y_range, z_range, output_path=None):
@@ -586,7 +576,6 @@ filter_csv_by_xyz(
 (9)计算切割后的斯格明子的自旋数据并形成spin texture图，观察是否是自己想要的那一个区域。
 
 ```python
-
 import os
 import numpy as np
 import matplotlib.pyplot as plt
@@ -638,7 +627,6 @@ print("完成")
 这个是抠图版的代码，只绘制斯格明子本身
 
 ```python
-
 import os
 import numpy as np
 import matplotlib.pyplot as plt
@@ -689,7 +677,6 @@ print("完成")
 这个是方形的背景
 
 ```python
-
 import os
 import numpy as np
 import matplotlib.pyplot as plt
