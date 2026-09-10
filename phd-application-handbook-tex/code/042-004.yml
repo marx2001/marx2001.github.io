@@ -1,0 +1,26 @@
+plugins:
+  - jekyll-feed
+  - jekyll-paginate-v2
+  - jekyll-sitemap
+
+pagination:
+  enabled: true
+  per_page: 5
+  permalink: "/page:num/"
+  sort_reverse: true
+
+autopages:
+  enabled: true
+  categories:
+    enabled: true
+    layouts:
+      - autopage_category.html
+    title: ":cat"
+    permalink: "/:cat/"
+    slugify:
+      mode: "default"
+      case: false
+  tags:
+    enabled: false
+  collections:
+    enabled: false

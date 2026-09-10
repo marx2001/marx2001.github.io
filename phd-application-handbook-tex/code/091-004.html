@@ -1,0 +1,13 @@
+<div id="pagination">
+  {% if paginator.previous_page %}
+    <a class="btn btn-primary pagination-btn pagination-prev" ...>上一页</a>
+  {% else %}
+    <span class="pagination-placeholder"></span>
+  {% endif %}
+
+  {% if paginator.next_page %}
+    <a class="btn btn-primary pagination-btn pagination-next" ...>下一页</a>
+  {% else %}
+    <span class="pagination-placeholder"></span>
+  {% endif %}
+</div>

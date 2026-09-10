@@ -1,0 +1,27 @@
+1. 打开 Materials Studio 2023 Visualizer
+2. File → New → 3D Atomistic Document
+3. Build → Crystals → Build Crystal...
+4. Space group 输入 189
+5. 确认显示 P -6 2 m
+6. 输入晶格参数：
+   a = 10.1327
+   b = 10.1327
+   c = 8.2181
+   alpha = 90
+   beta  = 90
+   gamma = 120
+7. 点击 Add Atoms
+8. 依次输入 6 个非等价位点：
+   Cs  0.0000    0.3632    0.0000
+   V   0.8220    0.5334    0.5000
+   V   0.8469    0.8469    0.5000
+   Te  0.0000    0.77119   0.71975
+   Te  0.666667  0.333333  0.25213
+   Te  0.58986   0.58986   0.5000
+9. 每输入一行点击一次 Add
+10. 回到 Build Crystal 主窗口
+11. 点击 Apply symmetry / Build / OK
+12. 检查总原子数是否为 25
+13. 检查化学式是否为 Cs3V9Te13
+14. 检查 9 个 V 是否都位于 z = 0.5
+15. File → Export → VASP POSCAR

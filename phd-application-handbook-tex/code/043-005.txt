@@ -1,0 +1,2 @@
+ruby -v
+gem -v

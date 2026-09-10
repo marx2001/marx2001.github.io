@@ -1,0 +1,43 @@
+
+SYSTEM = MOPTSNS
+LREAL= Auto
+ALGO= Normal
+#ISEARCH=1
+PREC=High
+
+ISTART = 1
+ICHARG = 11 #=11用于电子能带和态密度计算，此过程中电荷密度不变
+
+ENCUT =520
+NCORE= 4
+
+ISMEAR = 0 
+SIGMA = 0.04
+GGA=PE
+
+LSORBIT=.TRUE.
+LORBMOM=.TRUE.
+
+LWAVE=.F; 
+LCHARG=.F
+EDIFF = 1E-6
+EDIFFG = -0.01
+ISYM = 0
+
+NBANDS=64
+LDAU=.T
+LDAUTYPE=2
+LDAUL=2 -1 -1 -1            #库伦排斥的轨道，对应元素
+LDAUU=1.5 0.0 0.0 0.0      #几个元素几个数
+LDAUJ=0.0 0.0 0.0 0.0       #stoner交换参数大小
+LDAUPRINT = 2
+LORBIT=11         #常用=11，输出包含IM投影的PROCAR和DOSCAR
+
+ISPIN=2
+MAGMOM = 0 0 4 0 0 -4  9*0
+LMAXMIX=4
+
+AMIX     = 0.01
+BMIX     = 0.0001 
+AMIX_MAG = 0.8
+BMIX_MAG = 0.0001

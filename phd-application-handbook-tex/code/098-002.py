@@ -1,0 +1,38 @@
+
+#General
+PREC = ACCURATE
+ISTART= 0
+ICHARG= 1
+ENCUT = 500
+EDIFF = 1E-6
+EDIFFG = -0.01
+LREAL = .F.
+NPAR = 4
+NSW= 0
+IBRION = -1
+ISIF = 2
+NELM=300
+ISMEAR = 0
+SIGMA = 0.05
+LCHARG = .F.
+LWAVE = .F.
+POTIM = 0.1
+
+#Magnetic properties
+
+ISPIN=2
+
+MAGMOM = 0  0  0   0 0 4   24*0.0
+
+NELMIN = 6
+LORBIT = 11
+ISYM = 0
+LSORBIT = .True.
+LMAXMIX = 4  
+
+LDAU = .TRUE.
+LDAUTYPE = 2
+LDAUL = 2  2 -1 -1
+LDAUU = 0.5 2.0 0.0 0.0
+LDAUJ = 0.0 0.0 0.0 0.0
+LDAUPRINT = 2

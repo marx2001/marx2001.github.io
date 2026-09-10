@@ -1,0 +1,5 @@
+Denis Šabani, Cihan Bacaksız, and M. V. Milošević,
+Ab initio methodology for magnetic exchange parameters:
+Generic four-state energy mapping onto a Heisenberg spin Hamiltonian,
+Physical Review B 102, 014457 (2020).
+DOI: 10.1103/PhysRevB.102.014457

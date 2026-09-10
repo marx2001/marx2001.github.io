@@ -1,0 +1,9 @@
+POSCAR/CONTCAR
+        ↓
+VESTA 结构检查与显示优化
+        ↓
+导出模型文件
+        ↓
+Blender 三维渲染
+        ↓
+得到论文级原子结构示意图

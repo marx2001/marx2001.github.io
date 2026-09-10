@@ -1,0 +1,4 @@
+Bin Xu, Sebastian Meyer, Matthieu J. Verstraete, Laurent Bellaiche, and Bertrand Dupé,
+First-principles study of spin spirals in the multiferroic BiFeO3,
+Physical Review B 103, 214423 (2021).
+DOI: 10.1103/PhysRevB.103.214423

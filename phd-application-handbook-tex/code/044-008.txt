@@ -1,0 +1,4 @@
+{% for post in paginator.posts %}
+  ...
+  <hr>
+{% endfor %}

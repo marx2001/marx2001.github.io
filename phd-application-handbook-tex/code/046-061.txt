@@ -1,0 +1,4 @@
+Code block shortened for readability.
+Language: python. Full length: 425 lines.
+The first 30 lines are shown below.
+The complete code is collected in Appendix: Source Codes.

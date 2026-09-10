@@ -1,0 +1,1 @@
+The magnetic exchange parameters, including the isotropic exchange and Dzyaloshinskii--Moriya interaction, can be extracted by mapping first-principles total energies onto an atomistic spin Hamiltonian. In particular, the DMI vector corresponds to the antisymmetric part of the exchange matrix obtained from four-state energy mapping.

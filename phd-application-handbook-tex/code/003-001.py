@@ -1,0 +1,36 @@
+SYSTEM = MPSS
+LREAL= Auto 
+ALGO= Fast
+
+ISTART = 0
+ICHARG = 2
+
+ENCUT = 520
+NCORE= 4
+
+#IVDW=11
+ISMEAR = 0 
+SIGMA = 0.04
+GGA=PE
+
+LORBIT=12
+
+ISPIN=2
+#MAGMOM = 1*4.0  2*0.0
+LMAXMIX=4
+#Amin = 0.01
+
+VOSKOWN = 1
+ISYM = 2
+GGA_COMPAT = .FALSE.
+LWAVE=.F
+LCHARG=.T
+EDIFF = 1E-6 
+EDIFFG = -0.01
+
+LDAU=.T
+LDAUTYPE=2
+LDAUL=2 2 -1 -1                  #库伦排斥的轨道，对应元素
+LDAUU=0.5 2.0 0.0 0.0        #几个元素几个数
+LDAUJ=0.0 0.0 0.0 0.0           #stoner交换参数大小
+LDAUPRINT = 2

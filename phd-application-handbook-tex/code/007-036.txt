@@ -1,0 +1,8 @@
+Element: Te
+Name: Te3
+Oxidation state: 0
+Occupancy: 1.0
+
+a = 0.58986
+b = 0.58986
+c = 0.5000

@@ -1,0 +1,2 @@
+converted/*.tex
+_tmp_md/*.md

@@ -1,0 +1,2 @@
+
+wfa = WFArray(lattice, mesh)

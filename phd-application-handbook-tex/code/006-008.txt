@@ -1,0 +1,4 @@
+Changsong Xu, Bin Xu, Bertrand Dupé, and Laurent Bellaiche,
+Magnetic interactions in BiFeO3: A first-principles study,
+Physical Review B 99, 104420 (2019).
+DOI: 10.1103/PhysRevB.99.104420

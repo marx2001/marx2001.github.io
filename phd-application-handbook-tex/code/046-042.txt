@@ -1,0 +1,7 @@
+# Only files under category/categories: sci-note will be included.
+# One Markdown filename per line.
+# Lines beginning with # are ignored.
+
+2026-2-5-绘制精美的投影能带图.md
+2026-3-10-另一个科研脚本.md
+2026-4-1-某个计算流程记录.md

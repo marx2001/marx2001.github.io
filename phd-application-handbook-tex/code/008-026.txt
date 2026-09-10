@@ -1,0 +1,1 @@
+The pairwise exchange parameters were further evaluated using a Green's-function-based magnetic force theorem approach, which allows the calculation of isotropic exchange, anisotropic exchange, and Dzyaloshinskii--Moriya interaction from Wannier Hamiltonians.
