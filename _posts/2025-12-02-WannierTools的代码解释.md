@@ -7,9 +7,8 @@ categories: sci-note
 permalink: /sci-note_posts/20251202-code
 ---
 
-
-
 创建虚拟环境
+
 ```fortran
 
 ! 子程序：计算单个k点的Berry曲率（基于费米能级）
@@ -2064,6 +2063,7 @@ subroutine Berry_curvature_slab
      return
   end subroutine Chern_halftorus
 ```
+
 ```fortran
 
 ! 子程序：计算给定路径的Berry相位

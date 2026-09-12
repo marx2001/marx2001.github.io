@@ -9,11 +9,12 @@ featured: true
 ---
 
 ## <center>说明</center>
+
 为验证MNX2Y6体系铁磁基态的产生机制，用wannier提取跃迁矩阵元，判断哪个元素主导超超交换路径。
 
 1step.py 是提取在位能，2step.py是对各个原子进行超超交换路径组合，然后除以对应的在位能，形成一个值，根据这个值的大小判断超超交换路径贡献，找到路径最大的那个。
 
-## <center>代码的基本用法</center>  
+## <center>代码的基本用法</center>
 
 (1)第一步，将 Wannier 轨道“编号”与“物理含义”一一对应，也就是建立一张 WF index →（原子、轨道类型、位置） 的映射表。缺少这张表时，从 wannier90_hr.dat 抽出来的矩阵元只是数字，无法明确其对应 Tc–Se、Se–Ir 还是 Tc–Tc 的哪条路径。
 
@@ -31,14 +32,16 @@ wannier90.wout
 
 workflow:
 
-准备：
+**准备：**
+
 ```python
 wannier90_hr.dat
 wannier90_centres.xyz
 wannier90.win
 ```
 
-输出：
+**输出：**
+
 ```python
 1step.csv
 2step.csv
@@ -46,7 +49,8 @@ wannier90.win
 
 名字随意，可以通过代码修改
 
-代码：
+**代码：**
+
 ```python
 
 import re
@@ -410,18 +414,20 @@ if __name__ == "__main__":
 
 ```
 
-命令行输入：
+**命令行输入：**
+
 ```shell
 
 python 1step.py --win wannier90.win --centres wannier90_centres.xyz --hr wannier90_hr.dat --tol 0.10 --min_absH 1e-4 --topk 30 --out_summary 1step.csv --pairs ALL --skip_same_atom_R0 --out_edges 2step.csv
 
 ```
+
 可以调整命令来规定输出文件名
 
-(3) 读取已经生成的 2step.csv（跨原子 edges），自动筛选 Tc–Se 与 Se–Ir 的近邻 hopping，构
-造 Tc → Se → Ir → Se → Tc 的候选“超超交换路径”，并按路径权重排序输出一个csv文件。
+(3) 读取已经生成的 2step.csv（跨原子 edges），自动筛选 Tc–Se 与 Se–Ir 的近邻 hopping，构造 Tc → Se → Ir → Se → Tc 的候选“超超交换路径”，并按路径权重排序输出一个csv文件。
 
-对于三跳跃体系，类似超交换，可用下方脚本：
+**对于三跳跃体系，类似超交换，可用下方脚本：**
+
 ```python
 
 import csv
@@ -699,7 +705,7 @@ if __name__ == "__main__":
 
 ```
 
-运行方法（针对当前文件名：2step.csv）：
+**运行方法（针对当前文件名：2step.csv）：**
 
 ```shell
 python step4_build_paths.py --edges 2step.csv --out top_paths.csv ^
@@ -711,7 +717,7 @@ python step4_build_paths.py --edges 2step.csv --out top_paths.csv ^
   --max_netR_L1 6
 ```
 
-如果尽可能不漏(慢)：
+**如果尽可能不漏(慢)：**
 
 ```shell
 
@@ -725,8 +731,8 @@ python step4_build_paths.py --edges 2step.csv --out top_paths.csv ^
 
 
 ```
-上面这个脚本没有测试过，使用需谨慎。
 
+上面这个脚本没有测试过，使用需谨慎。
 
 四跃迁桥连结构
 
@@ -1001,7 +1007,7 @@ if __name__ == "__main__":
 
 ```
 
-使用方法：
+**使用方法：**
 
 ```shell
 python 2step.py --edges 2step.csv --out Ir.csv --mediators Ir --d_tcse 3.0 --d_sex 3.0 --min_absH 1e-4 --top_paths 2000 --require_same_tc_atom --max_netR_L1 6 --exclude_netR0 --delta_mode sequential --delta_floor 1e-3 --hr wannier90_hr.dat
@@ -1010,17 +1016,12 @@ python 2step.py --edges 2step.csv --out Ir.csv --mediators Ir --d_tcse 3.0 --d_s
 ```shell
 python 2step.py --edges 2step.csv --out Ir_0.1_delta_floor.csv --mediators Ir --d_tcse 3.0 --d_sex 3.0 --min_absH 1e-4 --top_paths 2000 --require_same_tc_atom --max_netR_L1 6 --exclude_netR0 --delta_mode sequential --delta_floor 1e-1 --hr wannier90_hr.dat
 ```
+
 分别输出Ge和Ir
 
+源文件目录：/public/home/cssong/song/1mrx/9_single_layer/19_ReIrGe2S6/TcIrGeSe/ 3_static_band/4_wannier/ncl
 
-源文件目录：/public/home/cssong/song/1mrx/9_single_layer/19_ReIrGe2S6/TcIrGeSe/
-3_static_band/4_wannier/ncl
-
-
-
-(4) 根据研究目标，需要判断超超交换路径主要由提供铁电性的迁移原子 Ge 还是非磁性原子 Ir 主导，
-我们可以修改脚本，让它在输出路径时能够分别计算 Ge 和 Ir 路径的贡献，并将这些路径的 权重贡献 
-和参与原子频率明确标识出来。
+(4) 根据研究目标，需要判断超超交换路径主要由提供铁电性的迁移原子 Ge 还是非磁性原子 Ir 主导，我们可以修改脚本，让它在输出路径时能够分别计算 Ge 和 Ir 路径的贡献，并将这些路径的 权重贡献  和参与原子频率明确标识出来。
 
 这一步与(3)不矛盾，但代码有所不同，选择(4)也许更准一些。
 
@@ -1253,12 +1254,14 @@ if __name__ == "__main__":
 
 
 ```
+
 要依次修改delta_floor的值来确保全局不会因为分子过小而导致错误。分别测试0.1，0.5，1 。
 
 (5) 与DFT结果的对比
 
 上述代码都是从全局角度分析Ir和Ge究竟谁占超超交换的主导，而J1是DFT计算得到的J的主导，通过在
-TB模型中计算J1元素分辨，来判断谁的贡献更大，代码如下：
+
+**TB模型中计算J1元素分辨，来判断谁的贡献更大，代码如下：**
 
 ```python
 
@@ -1312,27 +1315,27 @@ if __name__ == "__main__":
 
 ```
 
-运行方法：
+**运行方法：**
 
 ```shell
 python j1_filter_sum.py --csv Ir_1.0_delta_floor.csv --topk 100
 python j1_filter_sum.py --csv Ge_1.0_delta_floor.csv --topk 100
 ```
 
-
-上述依据：
+**上述依据：**
 
 <img src="/img/超超交换路径/bg-t1.png" style="width:100%; margin-bottom:5px;">
-<img src="/img/超超交换路径/bg-t2.png" style="width:100%; margin-bottom:5px;">
-<img src="/img/超超交换路径/bg-t3.png" style="width:100%; margin-bottom:5px;">
 
+<img src="/img/超超交换路径/bg-t2.png" style="width:100%; margin-bottom:5px;">
+
+<img src="/img/超超交换路径/bg-t3.png" style="width:100%; margin-bottom:5px;">
 
 ## <center>实际应用</center>
 
 比较Ir和Ge哪个贡献更大（上面已经完成），下方是在不考虑soc的情况下，分别对spin up和spin down进行贡献比较，确保spin up能代表性的指出交换路径是d-p杂化组成的。
 
-
 (1) 产生1step文件
+
 ```shell
     python 1step.py --win wannier90.1.win --centres wannier90.1_centres.xyz --hr wannier90.1_hr.dat --tol 0.10 --min_absH 1e-3 --topk 30 --out_summary 1step_up.csv --pairs ALL --skip_same_atom_R0 --out_edges 2step_up.csv
 
@@ -1350,12 +1353,14 @@ python j1_filter_sum.py --csv Ge_1.0_delta_floor.csv --topk 100
 
     python 2step.py --edges 2step_up.csv --out up.csv --mediators Ge --d_tcse 3.0 --d_sex 3.0 --min_absH 1e-3 --top_paths 2000 --require_same_tc_atom --max_netR_L1 6 --exclude_netR0 --delta_mode sequential --delta_floor 1e-3 --hr wannier90.1_hr.dat
 ```
+
 (3)与DFT进行对比
 
 ```shell
     python compare_DFT_J1.py --csv dw.csv --topk 100
     python compare_DFT_J1.py --csv up.csv --topk 100
 ```
+
 这一步的输出类似于
 
 ```shell
@@ -1366,5 +1371,4 @@ python j1_filter_sum.py --csv Ge_1.0_delta_floor.csv --topk 100
     [INFO] sum top100 score: 2565.74
 ```
 
-结论是，Ir比Ge贡献大的多，经过改变dleta_floor，也是一样的结论，spin up和spin down并不能在数量上严格一致，但只要都支持d-p-d-p-d结论即可，用前面的评分标准定量分析，用MLWFS
-的spin up通道定性演示(因为spin down的图极为混乱，看不清化学键)
+结论是，Ir比Ge贡献大的多，经过改变dleta_floor，也是一样的结论，spin up和spin down并不能在数量上严格一致，但只要都支持d-p-d-p-d结论即可，用前面的评分标准定量分析，用MLWFS 的spin up通道定性演示(因为spin down的图极为混乱，看不清化学键)

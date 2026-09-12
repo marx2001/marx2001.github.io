@@ -4,6 +4,11 @@
 
 @import "styles";
 
+/* Keep long paths, URLs and inline code within the article column. */
+.post-content {
+  overflow-wrap: anywhere;
+}
+
 /* ====================== */
 /* 分页文章列表样式 - 精确匹配图片效果 */
 /* ====================== */
