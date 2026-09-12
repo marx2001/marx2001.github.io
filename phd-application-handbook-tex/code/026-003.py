@@ -1,4 +1,3 @@
-
 # some times for sake of symmetry we can set local axis for each atom in wannier. if not
 # set line 20 is 0. if set, line 20 is number of atoms with local axis followed with the 
 # serial number of atom in wann/projection and local z-axis, x-axisthe. As for the examples

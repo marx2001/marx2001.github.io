@@ -1,1641 +1,1892 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-TTS Step 08M — 机制感知机器学习：从相分类转向 valley 质量规律发现
+Step 18: three-system WannierTools-style edge spectra and Hall examples.
 
-本步骤承接冻结的 Step 01–07 结果与 formal r3-r4 相图，目标不是重新计算
-Hamiltonian 或 Chern 数，而是回答机器学习在 TTS 中能否提炼出可验证的
-物理规律：
+The workflow selects exactly three states for each of the Lieb, TTS and FES
+models:
 
-1. 在 Step 03 独立 Sobol 数据上，用稀疏逻辑回归检验参数组合是否能够
-   区分 |C_up|=1 与 |C_up|=2，并单独检验 Chern 手性符号是否存在稳定全局规则；
-2. 将 Step 04–06 的九个严格相变扩展为 transition-grouped 机制数据集，
-   使用 leave-one-transition-out 验证，避免同一路径数据泄漏；
-3. 学习“高对称单谷”与“Sigma/Sigma' 对称双谷”机制，并分别检验
-   Gamma/M 与 Sigma/Sigma' 的可分性；
-4. 对 Step 05 的局域质量梯度做无监督聚类，寻找质量方向族；
-5. 在 formal 上侧 +2<->0 相图中，用分区 group holdout 的线性/二次逻辑回归
-   恢复数值边界，并与 Step 06 的 Sigma' 局域质量方向比较；
-6. 对 formal 下侧两个 C_up=-2 连通分量进行局域质量图册对齐，判断它们是否
-   对应不同的局部 valley 质量机制；
-7. 输出“支持什么、不支持什么”的机制发现证书，不把预测准确率当成拓扑证明。
+1. a comparatively large-gap topological representative;
+2. the refined critical Hamiltonian on the same transition path;
+3. a gapped Hamiltonian on the Chern-changed side of that boundary.
 
-重要原则
---------
-- 所有标签均来自已冻结的严格物理结果；
-- 机器学习只提炼候选规律，最终机制仍需 Step 05/06 的 valley 电荷和解析质量验证；
-- transition 数据采用整条相变留出，不进行随机点拆分；
-- formal 相图采用参数条带 group holdout，避免相邻网格泄漏；
-- 本步骤不修改 Step 01–07 的任何输出。
+It then calculates:
+
+- square-lattice bulk bands;
+- a finite ribbon spectrum with left/right edge weights and spin character;
+- a semi-infinite surface spectral function using the iterative Sancho method;
+- energy-resolved spin-up, spin-down, charge and spin Hall responses.
+
+The numerical definitions follow the existing WannierTools-style project
+scripts.  Plot colors are taken exactly from the corresponding phase maps.
+No existing result directory is modified.
 """
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 import argparse
-import io
+import importlib.util
 import json
 import math
-import re
+import os
+import sys
 import time
-import warnings
-import zipfile
 
-# Silence scikit-learn version-deprecation messages without hiding numerical warnings.
-warnings.filterwarnings("ignore", category=FutureWarning, module="sklearn")
-warnings.filterwarnings(
-    "ignore",
-    message=r"Inconsistent values: penalty=l1.*",
-    category=UserWarning,
-)
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
+import matplotlib as mpl
 import matplotlib.pyplot as plt
+from matplotlib.colors import to_rgb
 import numpy as np
 import pandas as pd
+from scipy.linalg import eigh
+from threadpoolctl import threadpool_limits
 
-try:
-    from joblib import dump
-    from sklearn.cluster import KMeans
-    from sklearn.decomposition import PCA
-    from sklearn.ensemble import RandomForestClassifier
-    from sklearn.linear_model import LogisticRegression
-    from sklearn.metrics import (
-        accuracy_score,
-        balanced_accuracy_score,
-        classification_report,
-        confusion_matrix,
-        f1_score,
-        silhouette_score,
-    )
-    from sklearn.model_selection import (
-        GroupKFold,
-        LeaveOneGroupOut,
-        RepeatedStratifiedKFold,
-        cross_val_predict,
-        cross_val_score,
-    )
-    from sklearn.pipeline import Pipeline
-    from sklearn.preprocessing import PolynomialFeatures, StandardScaler
-except ImportError as exc:  # pragma: no cover
-    raise ImportError(
-        "Step 08M 需要 numpy、pandas、matplotlib、scikit-learn 与 joblib。\n"
-        "请运行：pip install numpy pandas matplotlib scikit-learn joblib"
-    ) from exc
+_THREADPOOL_LIMITER = threadpool_limits(limits=1)
 
 
-CODE_VERSION = "TTS_STEP08M_V1_20260724"
-WORKFLOW_STEP = "step08M"
-SYSTEM_TAG = "tts8_bns127391"
-TASK_TAG = "mechanism_aware_machine_learning"
+CODE_VERSION = "TTS_STEP18_THREE_SYSTEM_WT_STYLE_V1_20260730"
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+LIEB_ROOT = PROJECT_ROOT / "lieb"
+TTS_ROOT = PROJECT_ROOT / "tts"
+FES_ROOT = PROJECT_ROOT / "fes"
 
-REDUCED7 = ["m_e", "t1", "t2", "r1", "r2", "r3", "r4"]
-EXPECTED_VERSIONS = {
-    "TTS_step01_model_and_label_audit_v2.py": "TTS_STEP01_V2_20260713",
-    "TTS_step02v3_robust_hamiltonian_fingerprint_and_ML.py": "TTS_STEP02V3_20260713",
-    "TTS_step03_global_sobol_hierarchical_topology_ML.py": "TTS_STEP03_V1_20260713",
-    "TTS_step04_chern_sector_boundary_valley_tracking.py": "TTS_STEP04_V1_20260713",
-    "TTS_step05_kp_valley_topological_charge.py": "TTS_STEP05_V2_20260714",
-    "TTS_step06_analytic_mass_branch_chern_atlas.py": "TTS_STEP06_V1_20260714",
-    "TTS_step07_observable_validation.py": "TTS_STEP07_V1_20260714",
+DEFAULT_OUTPUT = (
+    TTS_ROOT / "outputs_three_system_wanniertools_style_edge_ahc_examples"
+)
+
+STATE_ORDER = ("topological", "critical", "chern_changed")
+STATE_LABELS = {
+    "topological": "Topological",
+    "critical": "Critical",
+    "chern_changed": "Chern-changed",
 }
+SYSTEM_LABELS = {"lieb": "Lieb", "tts": "TTS", "fes": "FES"}
 
-SYMMETRY_FEATURES = [
-    "abs_m_e", "abs_t1", "abs_t2",
-    "t_sum", "t_diff", "t_product", "t_norm", "t_s", "t_d",
-    "r13_sum", "r13_diff", "r24_sum", "r24_diff",
-    "r12_sum", "r34_sum", "r_all_sum", "r_all_norm",
-    "r13_product", "r24_product", "r_cross_product",
-    "r_anisotropy_norm", "r_pair_sum_mismatch", "r_pair_diff_mismatch",
-    "m_e_t_sum", "m_e_t_diff", "m_e_r13_sum", "m_e_r24_sum",
-    "t_product_r_cross",
-]
-PARAMETER_FEATURES = REDUCED7 + SYMMETRY_FEATURES
-
-MECHANISM_ORDER = ["Gamma", "M", "Sigma", "SigmaPrime"]
+# Exact strong colors used by the phase maps.  Region backgrounds are derived
+# by blending these colors toward white.
+LIEB_FES_COLORS = {
+    +1: "#A92425",
+    0: "#D3D3D3",
+    -1: "#3F63AD",
+}
+TTS_COLORS = {
+    +2: "#F28E8B",
+    +1: "#7FCBA1",
+    0: "#B2B2B2",
+    -1: "#8AA3CD",
+    -2: "#3F63AD",
+}
+CRITICAL_COLOR = "#4D4D4D"
+BODY_COLOR = "#D7D7D7"
+BODY_DARK = "#AFAFAF"
+BLACK = "#111111"
 
 
 @dataclass
-class Step08MConfig:
-    output_dir: Path = Path("outputs_tts_step08M_mechanism_aware_ml")
-    tts_archive: Path = Path("tts(1).zip")
-    formal_scan_input: Path = Path("TTS_Cup2_Formal_Refined_Scans(1).zip")
-
-    random_seed: int = 20260724
-    n_jobs: int = 1
-    random_forest_estimators: int = 700
-    bootstrap_repeats: int = 300
-
-    transition_lambda_window: float = 0.18
-    upper_group_bins: int = 8
-    upper_linear_C: float = 100.0
-    upper_quadratic_C: float = 1.0
-
-    global_logistic_C_grid: tuple[float, ...] = (0.03, 0.1, 0.3, 1.0, 3.0)
-    transition_logistic_C: float = 0.3
-    mass_cluster_k_min: int = 2
-    mass_cluster_k_max: int = 5
-
-    require_frozen_versions: bool = True
-
-    def normalized(self) -> "Step08MConfig":
-        self.output_dir = Path(self.output_dir)
-        self.tts_archive = Path(self.tts_archive)
-        self.formal_scan_input = Path(self.formal_scan_input)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        (self.output_dir / "figures").mkdir(parents=True, exist_ok=True)
-        (self.output_dir / "models").mkdir(parents=True, exist_ok=True)
-        if not self.tts_archive.exists():
-            raise FileNotFoundError(f"未找到 TTS 冻结档案：{self.tts_archive}")
-        if not self.formal_scan_input.exists():
-            raise FileNotFoundError(f"未找到 formal 相图结果：{self.formal_scan_input}")
-        if self.transition_lambda_window <= 0:
-            raise ValueError("transition_lambda_window must be > 0")
-        if self.upper_group_bins < 4:
-            raise ValueError("upper_group_bins must be >= 4")
-        return self
+class ModelSpec:
+    key: str
+    label: str
+    h_periodic: Callable[[float, float, dict[str, float]], np.ndarray]
+    h_atomic: Callable[[float, float, dict[str, float]], np.ndarray]
+    spin_up_indices: tuple[int, ...]
+    spin_down_indices: tuple[int, ...]
+    n_occ_total: int
+    n_occ_spin: int
+    palette: dict[int, str]
+    parameter_names: tuple[str, ...]
+    ribbon_width: int
+    energy_reference: str = "global_midgap"
 
 
-# =============================================================================
-# Safe I/O
-# =============================================================================
-
-def atomic_write_csv(df: pd.DataFrame, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    df.to_csv(tmp, index=False, encoding="utf-8-sig")
-    tmp.replace(path)
-
-
-def atomic_write_json(obj: dict[str, Any], path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
-    tmp.replace(path)
+@dataclass
+class SelectedState:
+    system: str
+    state: str
+    source_id: str
+    path_id: str
+    params: dict[str, float]
+    expected_chern_up: int | None
+    expected_chern_down: int | None
+    critical_kx: float
+    critical_ky: float
+    selection_note: str
 
 
-def atomic_write_text(text: str, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)
+@dataclass
+class RunSettings:
+    gap_nk: int
+    chern_nk: int
+    band_points_per_segment: int
+    ribbon_k_points: int
+    surface_k_points: int
+    surface_energy_points: int
+    response_nk: int
+    response_energy_points: int
+    fourier_n: int
+    dpi: int
+    quick: bool
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def load_module(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Unable to load module from {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def configure_plot_style() -> None:
-    plt.rcParams.update({
-        "font.family": "DejaVu Serif",
-        "font.size": 9,
-        "axes.labelsize": 9,
-        "axes.titlesize": 9,
-        "xtick.labelsize": 8,
-        "ytick.labelsize": 8,
-        "legend.fontsize": 8,
-        "axes.linewidth": 0.8,
-        "xtick.direction": "in",
-        "ytick.direction": "in",
-        "xtick.top": True,
-        "ytick.right": True,
-        "pdf.fonttype": 42,
-        "ps.fonttype": 42,
-        "svg.fonttype": "none",
-    })
-
-
-def _list_members(source: Path) -> list[str]:
-    if source.is_file() and source.suffix.lower() == ".zip":
-        with zipfile.ZipFile(source) as zf:
-            return zf.namelist()
-    if source.is_dir():
-        return [str(p.relative_to(source)).replace("\\", "/") for p in source.rglob("*") if p.is_file()]
-    raise FileNotFoundError(source)
-
-
-def _read_bytes(source: Path, member: str) -> bytes:
-    if source.is_file() and source.suffix.lower() == ".zip":
-        with zipfile.ZipFile(source) as zf:
-            return zf.read(member)
-    path = source / member
-    return path.read_bytes()
-
-
-def _find_member(source: Path, *, exact_basename: str | None = None,
-                 contains: str | None = None, suffix: str | None = None) -> str:
-    members = _list_members(source)
-    matches = []
-    for member in members:
-        name = Path(member).name
-        if exact_basename is not None and name != exact_basename:
-            continue
-        if contains is not None and contains not in name:
-            continue
-        if suffix is not None and not name.lower().endswith(suffix.lower()):
-            continue
-        matches.append(member)
-    if len(matches) != 1:
-        raise FileNotFoundError(
-            f"{source} 中匹配 exact={exact_basename!r}, contains={contains!r}, "
-            f"suffix={suffix!r} 的文件数为 {len(matches)}：{matches[:20]}"
-        )
-    return matches[0]
-
-
-def read_csv_pattern(source: Path, pattern: str) -> pd.DataFrame:
-    member = _find_member(source, contains=pattern, suffix=".csv")
-    return pd.read_csv(io.BytesIO(_read_bytes(source, member)), low_memory=False)
-
-
-def read_json_member(source: Path, member: str) -> dict[str, Any]:
-    return json.loads(_read_bytes(source, member).decode("utf-8"))
-
-
-def read_json_pattern(source: Path, pattern: str) -> dict[str, Any]:
-    member = _find_member(source, contains=pattern, suffix=".json")
-    return read_json_member(source, member)
-
-
-# =============================================================================
-# Frozen-version audit
-# =============================================================================
-
-def audit_frozen_versions(config: Step08MConfig) -> dict[str, Any]:
-    members = _list_members(config.tts_archive)
-    rows = []
-    all_pass = True
-    for basename, expected in EXPECTED_VERSIONS.items():
-        matches = [m for m in members if Path(m).name == basename]
-        loaded = None
-        status = "missing"
-        if len(matches) == 1:
-            text = _read_bytes(config.tts_archive, matches[0]).decode("utf-8", errors="replace")
-            match = re.search(r'CODE_VERSION\s*=\s*"([^"]+)"', text)
-            loaded = match.group(1) if match else None
-            status = "pass" if loaded == expected else "mismatch"
-        if status != "pass":
-            all_pass = False
-        rows.append({
-            "script": basename,
-            "expected_version": expected,
-            "loaded_version": loaded,
-            "status": status,
-        })
-    audit = {
-        "step08M_code_version": CODE_VERSION,
-        "all_frozen_versions_pass": bool(all_pass),
-        "version_rows": rows,
-    }
-    if config.require_frozen_versions and not all_pass:
-        raise RuntimeError(
-            "Step 01–07 冻结版本审计失败。详见输入审计表；"
-            "如确需分析其他版本，请显式设置 require_frozen_versions=False。"
-        )
-    return audit
-
-
-# =============================================================================
-# Data loading and feature engineering
-# =============================================================================
-
-def load_inputs(config: Step08MConfig) -> dict[str, Any]:
-    tts = config.tts_archive
-    formal = config.formal_scan_input
-
-    inputs = {
-        "step03_combined": read_csv_pattern(tts, "step03_04_combined_ml_feature_table"),
-        "step04_path_parameters": read_csv_pattern(tts, "step04_04_path_parameters"),
-        "step04_transition_brackets": read_csv_pattern(tts, "step04_05_transition_brackets"),
-        "step04_refined_valleys": read_csv_pattern(tts, "step04_05_refined_critical_valleys"),
-        "step05_assignment": read_csv_pattern(tts, "step05_02_spin_valley_assignment"),
-        "step05_gradients": read_csv_pattern(tts, "step05_03_local_mass_gradients"),
-        "step05_charge_certificate": read_csv_pattern(tts, "step05_05_valley_charge_certificate"),
-        "step06_atlas": read_csv_pattern(tts, "step06_02_transition_mass_atlas"),
-        "step06_dense_mass": read_csv_pattern(tts, "step06_03_dense_path_mass_phase_map"),
-    }
-
-    if formal.is_file() and formal.suffix.lower() == ".zip":
-        # There are two files with the same basename, so use full folder names explicitly.
-        with zipfile.ZipFile(formal) as zf:
-            inputs["formal_upper"] = pd.read_csv(
-                zf.open("outputs_formal_upper_Cup2_to_0_boundary/tts_scan_r3_r4_grid.csv"),
-                low_memory=False,
-            )
-            inputs["formal_lower"] = pd.read_csv(
-                zf.open("outputs_formal_lower_Cup2_Cum2_region/tts_scan_r3_r4_grid.csv"),
-                low_memory=False,
-            )
-            inputs["formal_upper_meta"] = json.load(
-                zf.open("outputs_formal_upper_Cup2_to_0_boundary/scan_metadata.json")
-            )
-            inputs["formal_lower_meta"] = json.load(
-                zf.open("outputs_formal_lower_Cup2_Cum2_region/scan_metadata.json")
-            )
-    elif formal.is_dir():
-        inputs["formal_upper"] = pd.read_csv(
-            formal / "outputs_formal_upper_Cup2_to_0_boundary" / "tts_scan_r3_r4_grid.csv"
-        )
-        inputs["formal_lower"] = pd.read_csv(
-            formal / "outputs_formal_lower_Cup2_Cum2_region" / "tts_scan_r3_r4_grid.csv"
-        )
-        inputs["formal_upper_meta"] = json.loads(
-            (formal / "outputs_formal_upper_Cup2_to_0_boundary" / "scan_metadata.json")
-            .read_text(encoding="utf-8")
-        )
-        inputs["formal_lower_meta"] = json.loads(
-            (formal / "outputs_formal_lower_Cup2_Cum2_region" / "scan_metadata.json")
-            .read_text(encoding="utf-8")
-        )
-    else:
-        raise FileNotFoundError(formal)
-
-    return inputs
-
-
-def add_symmetry_features(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-    for name in REDUCED7:
-        out[name] = pd.to_numeric(out[name], errors="coerce")
-    me, t1, t2, r1, r2, r3, r4 = [out[name] for name in REDUCED7]
-    root2 = math.sqrt(2.0)
-    out["abs_m_e"] = me.abs()
-    out["abs_t1"] = t1.abs()
-    out["abs_t2"] = t2.abs()
-    out["t_sum"] = t1 + t2
-    out["t_diff"] = t1 - t2
-    out["t_product"] = t1 * t2
-    out["t_norm"] = np.sqrt(t1*t1 + t2*t2)
-    out["t_s"] = (t1 + t2) / root2
-    out["t_d"] = (t1 - t2) / root2
-    out["r13_sum"] = r1 + r3
-    out["r13_diff"] = r1 - r3
-    out["r24_sum"] = r2 + r4
-    out["r24_diff"] = r2 - r4
-    out["r12_sum"] = r1 + r2
-    out["r34_sum"] = r3 + r4
-    out["r_all_sum"] = r1 + r2 + r3 + r4
-    out["r_all_norm"] = np.sqrt(r1*r1 + r2*r2 + r3*r3 + r4*r4)
-    out["r13_product"] = r1 * r3
-    out["r24_product"] = r2 * r4
-    out["r_cross_product"] = (r1 + r3) * (r2 + r4)
-    out["r_anisotropy_norm"] = np.sqrt((r1-r3)**2 + (r2-r4)**2)
-    out["r_pair_sum_mismatch"] = (r1 + r3) - (r2 + r4)
-    out["r_pair_diff_mismatch"] = (r1 - r3) - (r2 - r4)
-    out["m_e_t_sum"] = me * (t1 + t2)
-    out["m_e_t_diff"] = me * (t1 - t2)
-    out["m_e_r13_sum"] = me * (r1 + r3)
-    out["m_e_r24_sum"] = me * (r2 + r4)
-    out["t_product_r_cross"] = (t1*t2) * ((r1+r3)*(r2+r4))
-    return out
-
-
-def normalize_mechanism(region: str) -> str:
-    mapping = {
-        "Gamma": "Gamma",
-        "M": "M",
-        "generic_Sigma_kx_eq_ky": "Sigma",
-        "generic_SigmaPrime_kx_eq_minus_ky": "SigmaPrime",
-    }
-    return mapping.get(str(region), str(region))
-
-
-# =============================================================================
-# Global Sobol rule discovery
-# =============================================================================
-
-def _sparse_logistic(C: float, seed: int) -> Pipeline:
-    return Pipeline([
-        ("scale", StandardScaler()),
-        ("model", LogisticRegression(
-            penalty="l1",
-            solver="liblinear",
-            C=float(C),
-            class_weight="balanced",
-            max_iter=5000,
-            random_state=seed,
-        )),
-    ])
-
-
-def _rf(config: Step08MConfig) -> RandomForestClassifier:
-    return RandomForestClassifier(
-        n_estimators=config.random_forest_estimators,
-        class_weight="balanced_subsample",
-        min_samples_leaf=2,
-        max_features="sqrt",
-        random_state=config.random_seed,
-        n_jobs=config.n_jobs,
-    )
-
-
-def select_logistic_C(X: pd.DataFrame, y: pd.Series, config: Step08MConfig) -> tuple[float, pd.DataFrame]:
-    min_class = int(y.value_counts().min())
-    n_splits = min(5, min_class)
-    if n_splits < 2:
-        return float(config.global_logistic_C_grid[0]), pd.DataFrame()
-    cv = RepeatedStratifiedKFold(
-        n_splits=n_splits,
-        n_repeats=10,
-        random_state=config.random_seed,
-    )
-    rows = []
-    for C in config.global_logistic_C_grid:
-        model = _sparse_logistic(C, config.random_seed)
-        scores = cross_val_score(model, X, y, scoring="balanced_accuracy", cv=cv)
-        rows.append({
-            "C": float(C),
-            "cv_balanced_accuracy_mean": float(scores.mean()),
-            "cv_balanced_accuracy_std": float(scores.std(ddof=1)),
-        })
-    table = pd.DataFrame(rows).sort_values(
-        ["cv_balanced_accuracy_mean", "cv_balanced_accuracy_std", "C"],
-        ascending=[False, True, True],
-    )
-    return float(table.iloc[0]["C"]), table
-
-
-def bootstrap_sparse_coefficients(
-    X: pd.DataFrame,
-    y: pd.Series,
-    feature_names: list[str],
-    C: float,
-    config: Step08MConfig,
-) -> pd.DataFrame:
-    rng = np.random.default_rng(config.random_seed)
-    coeffs = []
-    n = len(X)
-    for _ in range(config.bootstrap_repeats):
-        for _attempt in range(100):
-            idx = rng.integers(0, n, size=n)
-            yb = y.iloc[idx]
-            if yb.nunique() == 2:
-                break
-        else:
-            continue
-        model = _sparse_logistic(C, config.random_seed)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            model.fit(X.iloc[idx], yb)
-        coeffs.append(model.named_steps["model"].coef_[0])
-    if not coeffs:
-        return pd.DataFrame()
-    arr = np.asarray(coeffs, float)
-    rows = []
-    for j, feature in enumerate(feature_names):
-        values = arr[:, j]
-        nonzero = np.abs(values) > 1.0e-12
-        nz_values = values[nonzero]
-        rows.append({
-            "feature": feature,
-            "coefficient_median": float(np.median(values)),
-            "coefficient_abs_median": float(np.median(np.abs(values))),
-            "nonzero_fraction": float(nonzero.mean()),
-            "positive_fraction": float((values > 0).mean()),
-            "negative_fraction": float((values < 0).mean()),
-            "sign_stability": float(max((values > 0).mean(), (values < 0).mean())),
-            "q05": float(np.quantile(values, 0.05)),
-            "q95": float(np.quantile(values, 0.95)),
-            "n_bootstrap": int(arr.shape[0]),
-        })
-    return pd.DataFrame(rows).sort_values(
-        ["coefficient_abs_median", "nonzero_fraction"], ascending=False
-    )
-
-
-def run_global_rules(inputs: dict[str, Any], config: Step08MConfig) -> dict[str, Any]:
-    df = inputs["step03_combined"].copy()
-    df = add_symmetry_features(df)
-    strict_ti = df[
-        (df["phase_label"] == "spin_chern_TI_candidate")
-        & (pd.to_numeric(df["is_ml_eligible"], errors="coerce").fillna(0).astype(int) == 1)
-        & df["chern_up_int"].notna()
-    ].copy()
-
-    tasks = {
-        "chern_magnitude_abs2_vs_abs1": strict_ti.copy(),
-        "high_chern_sign_positive_vs_negative": strict_ti[
-            strict_ti["chern_up_int"].abs() == 2
-        ].copy(),
-    }
-
-    metric_rows = []
-    coef_tables = []
-    dataset_rows = []
-    model_paths = {}
-    cv_tables = []
-
-    for task_name, task_df in tasks.items():
-        if task_name.startswith("chern_magnitude"):
-            task_df["target"] = (task_df["chern_up_int"].abs() == 2).astype(int)
-            positive_label = "|C_up|=2"
-            negative_label = "|C_up|=1"
-        else:
-            task_df["target"] = (task_df["chern_up_int"] > 0).astype(int)
-            positive_label = "C_up=+2"
-            negative_label = "C_up=-2"
-
-        train = task_df[task_df["sample_source"] == "train_sobol"].copy()
-        external = task_df[task_df["sample_source"] == "external_sobol"].copy()
-        if train["target"].nunique() < 2 or external["target"].nunique() < 2:
-            continue
-
-        X_train = train[PARAMETER_FEATURES].astype(float)
-        y_train = train["target"].astype(int)
-        X_external = external[PARAMETER_FEATURES].astype(float)
-        y_external = external["target"].astype(int)
-
-        selected_C, cv_table = select_logistic_C(X_train, y_train, config)
-        if not cv_table.empty:
-            cv_table.insert(0, "task", task_name)
-            cv_tables.append(cv_table)
-
-        models = {
-            "sparse_logistic": _sparse_logistic(selected_C, config.random_seed),
-            "random_forest": _rf(config),
+    mpl.rcParams.update(
+        {
+            "font.family": "Times New Roman",
+            "font.weight": "bold",
+            "axes.labelweight": "bold",
+            "axes.titleweight": "bold",
+            "axes.linewidth": 1.8,
+            "font.size": 10.5,
+            "axes.labelsize": 12,
+            "axes.titlesize": 11.5,
+            "xtick.labelsize": 10,
+            "ytick.labelsize": 10,
+            "legend.fontsize": 8.5,
+            "mathtext.fontset": "stix",
+            "mathtext.default": "it",
+            "savefig.facecolor": "white",
+            "figure.facecolor": "white",
+            "svg.fonttype": "none",
+            "pdf.fonttype": 42,
+            "ps.fonttype": 42,
         }
-        for model_name, model in models.items():
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                model.fit(X_train, y_train)
-            pred = model.predict(X_external)
-            metric_rows.append({
-                "task": task_name,
-                "model": model_name,
-                "n_train": int(len(train)),
-                "n_external": int(len(external)),
-                "train_class_0": int((y_train == 0).sum()),
-                "train_class_1": int((y_train == 1).sum()),
-                "external_class_0": int((y_external == 0).sum()),
-                "external_class_1": int((y_external == 1).sum()),
-                "balanced_accuracy": float(balanced_accuracy_score(y_external, pred)),
-                "accuracy": float(accuracy_score(y_external, pred)),
-                "macro_f1": float(f1_score(y_external, pred, average="macro")),
-                "tn": int(confusion_matrix(y_external, pred, labels=[0, 1])[0, 0]),
-                "fp": int(confusion_matrix(y_external, pred, labels=[0, 1])[0, 1]),
-                "fn": int(confusion_matrix(y_external, pred, labels=[0, 1])[1, 0]),
-                "tp": int(confusion_matrix(y_external, pred, labels=[0, 1])[1, 1]),
-                "positive_label": positive_label,
-                "negative_label": negative_label,
-                "selected_C": selected_C if model_name == "sparse_logistic" else np.nan,
-            })
-            model_path = config.output_dir / "models" / f"step08M_global_{task_name}_{model_name}.joblib"
-            dump(model, model_path)
-            model_paths[f"{task_name}:{model_name}"] = str(model_path)
-
-        sparse = models["sparse_logistic"]
-        scale = sparse.named_steps["scale"]
-        clf = sparse.named_steps["model"]
-        standardized = clf.coef_[0]
-        raw_coef = standardized / scale.scale_
-        raw_intercept = float(clf.intercept_[0] - np.dot(standardized, scale.mean_ / scale.scale_))
-        coef = pd.DataFrame({
-            "task": task_name,
-            "feature": PARAMETER_FEATURES,
-            "standardized_coefficient": standardized,
-            "raw_space_coefficient": raw_coef,
-            "abs_standardized_coefficient": np.abs(standardized),
-            "selected_C": selected_C,
-            "raw_space_intercept": raw_intercept,
-        }).sort_values("abs_standardized_coefficient", ascending=False)
-
-        boot = bootstrap_sparse_coefficients(
-            X_train, y_train, PARAMETER_FEATURES, selected_C, config
-        )
-        if not boot.empty:
-            boot.insert(0, "task", task_name)
-            coef = coef.merge(boot, on=["task", "feature"], how="left")
-        coef_tables.append(coef)
-
-        task_export = task_df[
-            ["sample_id", "sample_source", "chern_up_int", "target"] + PARAMETER_FEATURES
-        ].copy()
-        task_export.insert(0, "task", task_name)
-        dataset_rows.append(task_export)
-
-    metrics = pd.DataFrame(metric_rows)
-    coefficients = pd.concat(coef_tables, ignore_index=True) if coef_tables else pd.DataFrame()
-    datasets = pd.concat(dataset_rows, ignore_index=True) if dataset_rows else pd.DataFrame()
-    cv_results = pd.concat(cv_tables, ignore_index=True) if cv_tables else pd.DataFrame()
-
-    atomic_write_csv(datasets, config.output_dir / "step08M_01_global_rule_dataset.csv")
-    atomic_write_csv(cv_results, config.output_dir / "step08M_02_global_logistic_C_selection.csv")
-    atomic_write_csv(metrics, config.output_dir / "step08M_03_global_external_metrics.csv")
-    atomic_write_csv(coefficients, config.output_dir / "step08M_04_global_sparse_coefficients.csv")
-
-    plot_global_coefficients(coefficients, config.output_dir / "figures" / "step08M_global_sparse_coefficients.png")
-
-    return {
-        "metrics": metrics,
-        "coefficients": coefficients,
-        "datasets": datasets,
-        "model_paths": model_paths,
-    }
+    )
 
 
-def plot_global_coefficients(coefficients: pd.DataFrame, output: Path) -> None:
-    if coefficients.empty:
-        return
-    configure_plot_style()
-    tasks = coefficients["task"].unique().tolist()
-    fig, axes = plt.subplots(1, len(tasks), figsize=(6.4 * len(tasks), 5.2), squeeze=False)
-    for ax, task in zip(axes[0], tasks):
-        sub = coefficients[coefficients["task"] == task].nlargest(
-            12, "abs_standardized_coefficient"
-        ).sort_values("standardized_coefficient")
-        ax.barh(sub["feature"], sub["standardized_coefficient"])
-        ax.axvline(0, color="black", linewidth=0.8)
-        ax.set_title(task.replace("_", " "))
-        ax.set_xlabel("standardized sparse-logistic coefficient")
-    fig.tight_layout()
-    fig.savefig(output, dpi=350, bbox_inches="tight")
+def style_axis(ax: plt.Axes) -> None:
+    ax.tick_params(
+        which="both",
+        direction="in",
+        top=True,
+        right=True,
+        width=1.35,
+        length=4.5,
+    )
+    for spine in ax.spines.values():
+        spine.set_linewidth(1.8)
+        spine.set_color(BLACK)
+    for label in ax.get_xticklabels() + ax.get_yticklabels():
+        label.set_fontweight("bold")
+
+
+def save_figure(fig: plt.Figure, stem: Path, dpi: int) -> list[str]:
+    paths: list[str] = []
+    for suffix in (".png", ".pdf", ".svg"):
+        path = stem.with_suffix(suffix)
+        fig.savefig(path, dpi=dpi, bbox_inches="tight", pad_inches=0.04)
+        paths.append(str(path))
     plt.close(fig)
+    return paths
 
 
-# =============================================================================
-# Transition-grouped mechanism learning
-# =============================================================================
+def lighten(color: str, factor: float = 0.78) -> tuple[float, float, float]:
+    rgb = np.asarray(to_rgb(color), dtype=float)
+    return tuple(np.clip(rgb * (1.0 - factor) + factor, 0.0, 1.0))
 
-def build_transition_dataset(inputs: dict[str, Any], config: Step08MConfig) -> pd.DataFrame:
-    params = inputs["step04_path_parameters"].copy()
-    mass = inputs["step06_dense_mass"].copy()
-    atlas = inputs["step06_atlas"].copy()
 
-    merged = params.merge(
-        mass,
-        on=["path_id", "path_point_id", "path_index", "lambda"],
-        how="inner",
-        validate="one_to_one",
+def phase_color(spec: ModelSpec, chern: int | None) -> str:
+    if chern is None:
+        return CRITICAL_COLOR
+    return spec.palette[int(chern)]
+
+
+def build_model_specs() -> tuple[dict[str, ModelSpec], dict[str, Any]]:
+    lieb = load_module(
+        "step18_lieb_source",
+        LIEB_ROOT / "08_Lieb8_Analytic_Mechanism_and_WannierTools_Edge_v5.py",
     )
-    rows = []
-    for path_id, transitions in atlas.groupby("path_id"):
-        transitions = transitions.sort_values("critical_lambda").reset_index(drop=True)
-        path_rows = merged[merged["path_id"] == path_id].copy()
-        for chart_index, transition in transitions.iterrows():
-            mass_column = f"chart{chart_index:02d}_oriented_mass"
-            if mass_column not in path_rows.columns:
-                raise KeyError(
-                    f"{path_id} 缺少 {mass_column}；Step06 path chart 顺序与 atlas 不一致。"
-                )
-            near = path_rows[
-                (path_rows["lambda"] - float(transition["critical_lambda"])).abs()
-                <= config.transition_lambda_window
-            ].copy()
-            near["transition_id"] = str(transition["transition_id"])
-            near["critical_lambda"] = float(transition["critical_lambda"])
-            near["critical_k_region"] = str(transition["critical_k_region"])
-            near["mechanism_fine"] = normalize_mechanism(transition["critical_k_region"])
-            near["mechanism_coarse"] = np.where(
-                near["mechanism_fine"].isin(["Gamma", "M"]),
-                "single_high_symmetry_valley",
-                "paired_generic_valleys",
-            )
-            near["delta_chern_up"] = int(transition["delta_chern_up"])
-            near["abs_delta_chern_up"] = abs(int(transition["delta_chern_up"]))
-            near["oriented_mass"] = pd.to_numeric(near[mass_column], errors="coerce")
-            near["mass_sign"] = np.sign(near["oriented_mass"]).astype(int)
-            near["lambda_minus_critical"] = near["lambda"] - near["critical_lambda"]
-            near["chart_index"] = int(chart_index)
-            rows.append(near)
-
-    dataset = pd.concat(rows, ignore_index=True)
-    dataset = add_symmetry_features(dataset)
-    keep = [
-        "transition_id", "path_id", "path_point_id", "path_index", "lambda",
-        "critical_lambda", "lambda_minus_critical", "critical_k_region",
-        "mechanism_fine", "mechanism_coarse", "delta_chern_up",
-        "abs_delta_chern_up", "oriented_mass", "mass_sign",
-    ] + PARAMETER_FEATURES
-    return dataset[keep].copy()
-
-
-def _logo_predictions(
-    X: pd.DataFrame,
-    y: pd.Series,
-    groups: pd.Series,
-    model: Any,
-) -> np.ndarray:
-    logo = LeaveOneGroupOut()
-    pred = np.empty(len(y), dtype=object)
-    for train_idx, test_idx in logo.split(X, y, groups):
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            model.fit(X.iloc[train_idx], y.iloc[train_idx])
-        pred[test_idx] = model.predict(X.iloc[test_idx])
-    return pred
-
-
-def run_transition_mechanism_learning(
-    inputs: dict[str, Any], config: Step08MConfig
-) -> dict[str, Any]:
-    dataset = build_transition_dataset(inputs, config)
-    atomic_write_csv(dataset, config.output_dir / "step08M_05_transition_mechanism_dataset.csv")
-
-    task_specs = {
-        "coarse_single_vs_paired": (
-            dataset,
-            "mechanism_coarse",
-            ["single_high_symmetry_valley", "paired_generic_valleys"],
-        ),
-        "fine_four_family": (
-            dataset,
-            "mechanism_fine",
-            MECHANISM_ORDER,
-        ),
-        "high_symmetry_Gamma_vs_M": (
-            dataset[dataset["mechanism_fine"].isin(["Gamma", "M"])].copy(),
-            "mechanism_fine",
-            ["Gamma", "M"],
-        ),
-        "generic_Sigma_vs_SigmaPrime": (
-            dataset[dataset["mechanism_fine"].isin(["Sigma", "SigmaPrime"])].copy(),
-            "mechanism_fine",
-            ["Sigma", "SigmaPrime"],
-        ),
-    }
-
-    metric_rows = []
-    prediction_rows = []
-    coefficient_rows = []
-    model_paths = {}
-
-    for task_name, (task_df, target_col, labels) in task_specs.items():
-        if task_df[target_col].nunique() < 2:
-            continue
-        # Require at least two independent transitions per class for meaningful LOGO.
-        group_class = task_df[["transition_id", target_col]].drop_duplicates()
-        if group_class.groupby(target_col)["transition_id"].nunique().min() < 2:
-            continue
-
-        X = task_df[PARAMETER_FEATURES].astype(float)
-        y = task_df[target_col].astype(str)
-        groups = task_df["transition_id"].astype(str)
-
-        models = {
-            "logistic": Pipeline([
-                ("scale", StandardScaler()),
-                ("model", LogisticRegression(
-                    C=config.transition_logistic_C,
-                    solver="lbfgs",
-                    class_weight="balanced",
-                    max_iter=5000,
-                    random_state=config.random_seed,
-                )),
-            ]),
-            "random_forest": _rf(config),
-        }
-
-        for model_name, model in models.items():
-            pred = _logo_predictions(X, y, groups, model)
-            metric_rows.append({
-                "task": task_name,
-                "model": model_name,
-                "n_rows": int(len(task_df)),
-                "n_transitions": int(groups.nunique()),
-                "n_classes": int(y.nunique()),
-                "balanced_accuracy": float(balanced_accuracy_score(y, pred)),
-                "accuracy": float(accuracy_score(y, pred)),
-                "macro_f1": float(f1_score(y, pred, average="macro")),
-            })
-            prediction_rows.append(pd.DataFrame({
-                "task": task_name,
-                "model": model_name,
-                "transition_id": groups.to_numpy(),
-                "path_point_id": task_df["path_point_id"].to_numpy(),
-                "actual": y.to_numpy(),
-                "predicted": pred,
-                "correct": (y.to_numpy() == pred).astype(int),
-            }))
-
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                model.fit(X, y)
-            model_path = config.output_dir / "models" / f"step08M_transition_{task_name}_{model_name}.joblib"
-            dump(model, model_path)
-            model_paths[f"{task_name}:{model_name}"] = str(model_path)
-
-            if model_name == "logistic":
-                clf = model.named_steps["model"]
-                if clf.coef_.shape[0] == 1 and len(clf.classes_) == 2:
-                    class_vectors = [
-                        (str(clf.classes_[0]), -clf.coef_[0]),
-                        (str(clf.classes_[1]), clf.coef_[0]),
-                    ]
-                else:
-                    class_vectors = [
-                        (str(class_name), clf.coef_[class_index])
-                        for class_index, class_name in enumerate(clf.classes_)
-                    ]
-                for class_name, vector in class_vectors:
-                    for feature, value in zip(PARAMETER_FEATURES, vector):
-                        coefficient_rows.append({
-                            "task": task_name,
-                            "class": class_name,
-                            "feature": feature,
-                            "standardized_coefficient": float(value),
-                            "abs_standardized_coefficient": float(abs(value)),
-                        })
-
-    metrics = pd.DataFrame(metric_rows)
-    predictions = pd.concat(prediction_rows, ignore_index=True) if prediction_rows else pd.DataFrame()
-    coefficients = pd.DataFrame(coefficient_rows)
-
-    atomic_write_csv(metrics, config.output_dir / "step08M_06_transition_grouped_cv_metrics.csv")
-    atomic_write_csv(predictions, config.output_dir / "step08M_07_transition_grouped_predictions.csv")
-    atomic_write_csv(coefficients, config.output_dir / "step08M_08_transition_logistic_coefficients.csv")
-
-    plot_transition_confusions(
-        predictions,
-        config.output_dir / "figures" / "step08M_transition_grouped_confusions.png",
+    fes = load_module("step18_fes_source", FES_ROOT / "FES_step01_v2.py")
+    tts = load_module(
+        "step18_tts_source",
+        TTS_ROOT / "TTS_step01_model_and_label_audit_v2.py",
     )
-    return {
-        "dataset": dataset,
-        "metrics": metrics,
-        "predictions": predictions,
-        "coefficients": coefficients,
-        "model_paths": model_paths,
-    }
-
-
-def plot_transition_confusions(predictions: pd.DataFrame, output: Path) -> None:
-    if predictions.empty:
-        return
-    configure_plot_style()
-    tasks = [
-        task for task in [
-            "coarse_single_vs_paired",
-            "fine_four_family",
-            "high_symmetry_Gamma_vs_M",
-            "generic_Sigma_vs_SigmaPrime",
-        ]
-        if task in set(predictions["task"])
-    ]
-    fig, axes = plt.subplots(2, 2, figsize=(10, 8))
-    for ax, task in zip(axes.ravel(), tasks):
-        sub = predictions[
-            (predictions["task"] == task) & (predictions["model"] == "logistic")
-        ]
-        labels = sorted(set(sub["actual"]) | set(sub["predicted"]))
-        cm = confusion_matrix(sub["actual"], sub["predicted"], labels=labels)
-        im = ax.imshow(cm, cmap="Blues")
-        ax.set_xticks(range(len(labels)), labels=labels, rotation=30, ha="right")
-        ax.set_yticks(range(len(labels)), labels=labels)
-        ax.set_xlabel("predicted")
-        ax.set_ylabel("actual")
-        ax.set_title(task.replace("_", " "))
-        for i in range(cm.shape[0]):
-            for j in range(cm.shape[1]):
-                ax.text(j, i, str(cm[i, j]), ha="center", va="center")
-    for ax in axes.ravel()[len(tasks):]:
-        ax.axis("off")
-    fig.tight_layout()
-    fig.savefig(output, dpi=350, bbox_inches="tight")
-    plt.close(fig)
-
-
-# =============================================================================
-# Local-mass-gradient clustering
-# =============================================================================
-
-def build_mass_gradient_table(inputs: dict[str, Any]) -> pd.DataFrame:
-    assignment = inputs["step05_assignment"].copy()
-    gradients = inputs["step05_gradients"].copy()
-    active = assignment[
-        (assignment["spin"] == "up")
-        & (pd.to_numeric(assignment["is_active_valley"], errors="coerce").fillna(0).astype(int) == 1)
-    ][["transition_id", "closure_id", "valley_id", "critical_k_region"]].copy()
-
-    merged = gradients[
-        gradients["spin"] == "up"
-    ].merge(
-        active,
-        on=["transition_id", "closure_id", "valley_id"],
-        how="inner",
-    )
-    pivot = merged.pivot_table(
-        index=["transition_id", "critical_k_region"],
-        columns="parameter",
-        values="normalized_mass_gradient",
-        aggfunc="mean",
-    ).reset_index()
-    pivot = pivot[["transition_id", "critical_k_region"] + REDUCED7].copy()
-
-    vectors = pivot[REDUCED7].to_numpy(float)
-    for i, vector in enumerate(vectors):
-        max_index = int(np.argmax(np.abs(vector)))
-        if vector[max_index] < 0:
-            vectors[i] *= -1.0
-    pivot.loc[:, REDUCED7] = vectors
-    pivot["mechanism_fine"] = pivot["critical_k_region"].map(normalize_mechanism)
-    return pivot
-
-
-def run_mass_gradient_clustering(
-    inputs: dict[str, Any], config: Step08MConfig
-) -> dict[str, Any]:
-    table = build_mass_gradient_table(inputs)
-    X = table[REDUCED7].to_numpy(float)
-
-    selection_rows = []
-    fits = {}
-    max_k = min(config.mass_cluster_k_max, len(table) - 1)
-    for k in range(config.mass_cluster_k_min, max_k + 1):
-        model = KMeans(
-            n_clusters=k,
-            random_state=config.random_seed,
-            n_init=100,
-        ).fit(X)
-        score = float(silhouette_score(X, model.labels_, metric="cosine"))
-        selection_rows.append({"n_clusters": k, "cosine_silhouette": score})
-        fits[k] = model
-    selection = pd.DataFrame(selection_rows).sort_values(
-        ["cosine_silhouette", "n_clusters"], ascending=[False, True]
-    )
-    best_k = int(selection.iloc[0]["n_clusters"])
-    model = fits[best_k]
-    table["mass_direction_cluster"] = model.labels_.astype(int)
-
-    pca = PCA(n_components=2, random_state=config.random_seed)
-    xy = pca.fit_transform(X)
-    table["pca_1"] = xy[:, 0]
-    table["pca_2"] = xy[:, 1]
-
-    centroid_rows = []
-    for cluster_id, centroid in enumerate(model.cluster_centers_):
-        row = {"mass_direction_cluster": int(cluster_id)}
-        row.update({name: float(value) for name, value in zip(REDUCED7, centroid)})
-        centroid_rows.append(row)
-    centroids = pd.DataFrame(centroid_rows)
-
-    atomic_write_csv(table, config.output_dir / "step08M_09_mass_gradient_clusters.csv")
-    atomic_write_csv(selection, config.output_dir / "step08M_10_mass_cluster_selection.csv")
-    atomic_write_csv(centroids, config.output_dir / "step08M_11_mass_cluster_centroids.csv")
-    dump(model, config.output_dir / "models" / "step08M_mass_gradient_kmeans.joblib")
-
-    plot_mass_gradient_pca(
-        table,
-        config.output_dir / "figures" / "step08M_mass_gradient_clusters.png",
-    )
-    return {
-        "table": table,
-        "selection": selection,
-        "centroids": centroids,
-        "best_k": best_k,
-        "best_silhouette": float(selection.iloc[0]["cosine_silhouette"]),
-    }
-
-
-def plot_mass_gradient_pca(table: pd.DataFrame, output: Path) -> None:
-    configure_plot_style()
-    fig, ax = plt.subplots(figsize=(6.4, 5.2))
-    for mechanism, sub in table.groupby("mechanism_fine"):
-        ax.scatter(sub["pca_1"], sub["pca_2"], s=55, label=mechanism)
-        for _, row in sub.iterrows():
-            short = str(row["transition_id"]).replace("_anchor01", "").replace("__transition00", "0").replace("__transition01", "1")
-            ax.annotate(short, (row["pca_1"], row["pca_2"]), fontsize=6, xytext=(3, 3), textcoords="offset points")
-    ax.set_xlabel("PCA 1 of canonicalized mass gradients")
-    ax.set_ylabel("PCA 2 of canonicalized mass gradients")
-    ax.legend(frameon=True)
-    fig.tight_layout()
-    fig.savefig(output, dpi=350, bbox_inches="tight")
-    plt.close(fig)
-
-
-# =============================================================================
-# Formal upper boundary: ML recovery of the valley-mass direction
-# =============================================================================
-
-def parse_linear_mass_formula(formula: str) -> dict[str, float]:
-    compact = str(formula).replace(" ", "")
-    pairs = re.findall(r"([+-]?\d+(?:\.\d+)?)\*([A-Za-z0-9_]+)", compact)
-    return {parameter: float(coefficient) for coefficient, parameter in pairs}
-
-
-def upper_mass_chart(meta: dict[str, Any]) -> dict[str, Any]:
-    charts = meta.get("generic_mass_charts", [])
-    for chart in charts:
-        if (
-            int(chart.get("chern_left", 999)) == 2
-            and int(chart.get("chern_right", 999)) == 0
-            and "SigmaPrime" in str(chart.get("critical_k_region", ""))
-        ):
-            coeff = parse_linear_mass_formula(chart["mass_formula"])
-            return {**chart, "coefficients": coeff}
-    raise ValueError("formal upper metadata 中未找到 +2->0 SigmaPrime 质量图。")
-
-
-def grouped_upper_cv(
-    data: pd.DataFrame,
-    config: Step08MConfig,
-) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
-    work = data[data["phase_code"].isin([0, 2])].copy()
-    work["target"] = (work["phase_code"] == 2).astype(int)
-    work["r3_group"] = pd.qcut(
-        work["scan_x"],
-        q=config.upper_group_bins,
-        labels=False,
-        duplicates="drop",
-    )
-    n_groups = int(work["r3_group"].nunique())
-    cv = GroupKFold(n_splits=n_groups)
 
     specs = {
-        "linear_r3_r4": Pipeline([
-            ("scale", StandardScaler()),
-            ("model", LogisticRegression(
-                C=config.upper_linear_C,
-                solver="lbfgs",
-                class_weight="balanced",
-                max_iter=5000,
-                random_state=config.random_seed,
-            )),
-        ]),
-        "quadratic_r3_r4": Pipeline([
-            ("poly", PolynomialFeatures(degree=2, include_bias=False)),
-            ("scale", StandardScaler()),
-            ("model", LogisticRegression(
-                C=config.upper_quadratic_C,
-                solver="lbfgs",
-                class_weight="balanced",
-                max_iter=5000,
-                random_state=config.random_seed,
-            )),
-        ]),
+        "lieb": ModelSpec(
+            key="lieb",
+            label="Lieb",
+            h_periodic=lieb.h_periodic,
+            h_atomic=lieb.h_lieb_atomic,
+            spin_up_indices=tuple(int(x) for x in lieb.SPIN_INDICES["up"]),
+            spin_down_indices=tuple(int(x) for x in lieb.SPIN_INDICES["down"]),
+            n_occ_total=2,
+            n_occ_spin=1,
+            palette=LIEB_FES_COLORS,
+            parameter_names=tuple(lieb.RAW8),
+            ribbon_width=60,
+        ),
+        "tts": ModelSpec(
+            key="tts",
+            label="TTS",
+            h_periodic=tts.h_tts_periodic,
+            h_atomic=tts.h_tts_atomic,
+            spin_up_indices=tuple(int(x) for x in tts.SPIN_UP_INDICES),
+            spin_down_indices=tuple(int(x) for x in tts.SPIN_DOWN_INDICES),
+            n_occ_total=int(tts.N_OCC_TOTAL),
+            n_occ_spin=int(tts.N_OCC_SPIN),
+            palette=TTS_COLORS,
+            parameter_names=tuple(tts.RAW8),
+            ribbon_width=36,
+        ),
+        "fes": ModelSpec(
+            key="fes",
+            label="FES",
+            h_periodic=fes.h_fes_periodic,
+            h_atomic=fes.h_fes_atomic,
+            spin_up_indices=tuple(int(x) for x in fes.SPIN_UP_INDICES),
+            spin_down_indices=tuple(int(x) for x in fes.SPIN_DOWN_INDICES),
+            n_occ_total=int(fes.N_OCC_TOTAL),
+            n_occ_spin=int(fes.N_OCC_SPIN),
+            palette=LIEB_FES_COLORS,
+            parameter_names=tuple(fes.RAW6),
+            ribbon_width=44,
+            energy_reference="critical_valley_midgap",
+        ),
     }
-    metric_rows = []
-    prediction_rows = []
-    fitted = {}
-    X = work[["scan_x", "scan_y"]].astype(float)
-    y = work["target"].astype(int)
-    groups = work["r3_group"]
-
-    for name, model in specs.items():
-        pred = cross_val_predict(model, X, y, groups=groups, cv=cv)
-        metric_rows.append({
-            "model": name,
-            "n_points": int(len(work)),
-            "n_groups": n_groups,
-            "balanced_accuracy": float(balanced_accuracy_score(y, pred)),
-            "accuracy": float(accuracy_score(y, pred)),
-            "macro_f1": float(f1_score(y, pred, average="macro")),
-        })
-        prediction_rows.append(pd.DataFrame({
-            "model": name,
-            "sample_id": work["sample_id"].to_numpy(),
-            "scan_x": work["scan_x"].to_numpy(),
-            "scan_y": work["scan_y"].to_numpy(),
-            "actual": y.to_numpy(),
-            "predicted": pred,
-            "r3_group": groups.to_numpy(),
-        }))
-        model.fit(X, y)
-        fitted[name] = model
-
-    return pd.DataFrame(metric_rows), pd.concat(prediction_rows, ignore_index=True), fitted
+    return specs, {"lieb": lieb, "tts": tts, "fes": fes}
 
 
-def raw_linear_logistic_rule(model: Pipeline) -> dict[str, float]:
-    scale = model.named_steps["scale"]
-    clf = model.named_steps["model"]
-    standardized = clf.coef_[0]
-    beta = standardized / scale.scale_
-    intercept = float(clf.intercept_[0] - np.dot(standardized, scale.mean_ / scale.scale_))
-    if abs(beta[1]) < 1.0e-14:
-        slope = np.nan
-        line_intercept = np.nan
-    else:
-        slope = float(-beta[0] / beta[1])
-        line_intercept = float(-intercept / beta[1])
-    return {
-        "beta_r3": float(beta[0]),
-        "beta_r4": float(beta[1]),
-        "intercept": intercept,
-        "boundary_slope": slope,
-        "boundary_intercept": line_intercept,
+def _clean_params(
+    params: dict[str, float],
+    names: Iterable[str],
+) -> dict[str, float]:
+    return {name: float(params[name]) for name in names}
+
+
+def select_lieb_states(lieb: Any) -> list[SelectedState]:
+    output = (
+        LIEB_ROOT
+        / "outputs_step08_analytic_boundary_wanniertools_edge_msg123342_lieb8_from_step06_n1024_pairs4_seed20260711"
+    )
+    roots = pd.read_csv(output / "step08_04_refined_analytic_transition_roots.csv")
+    profiles = pd.read_csv(output / "step08_04_dense_transition_path_profiles.csv")
+
+    direct_flip = roots[
+        (roots["boundary"].astype(str) == "t2")
+        & (pd.to_numeric(roots["before_chern_up_int"], errors="coerce")
+           * pd.to_numeric(roots["after_chern_up_int"], errors="coerce") < 0)
+    ].copy()
+    if direct_flip.empty:
+        raise RuntimeError("No direct Lieb Chern-sign flip was found")
+    root = direct_flip.sort_values("verified_direct_gap").iloc[0]
+    pair_id = int(root["pair_id"])
+    tc = float(root["t_critical"])
+
+    pair_roots = roots[roots["pair_id"].astype(int) == pair_id].sort_values("t_critical")
+    later_roots = pair_roots[pair_roots["t_critical"] > tc + 1.0e-8]
+    upper = float(later_roots["t_critical"].min()) if not later_roots.empty else 1.0
+
+    profile = profiles[profiles["pair_id"].astype(int) == pair_id].copy()
+    pre = profile[profile["t"] <= tc - 0.04].sort_values(
+        ["indirect_gap", "direct_gap"], ascending=False
+    ).iloc[0]
+    post = profile[
+        (profile["t"] >= tc + 0.04) & (profile["t"] <= upper - 0.04)
+    ].sort_values(["indirect_gap", "direct_gap"], ascending=False).iloc[0]
+
+    def raw_from_row(row: pd.Series) -> dict[str, float]:
+        vector = [float(row[name]) for name in lieb.PHYS7]
+        return _clean_params(lieb.phys7_to_raw8(vector), lieb.RAW8)
+
+    critical_params = raw_from_row(root)
+    pre_c = int(root["before_chern_up_int"])
+    post_c = int(root["after_chern_up_int"])
+    critical_kx = float(root["global_direct_kx"])
+    critical_ky = float(root["global_direct_ky"])
+    path_id = f"pair_{pair_id}_direct_t2_flip"
+    return [
+        SelectedState(
+            system="lieb",
+            state="topological",
+            source_id=f"pair{pair_id}_t{float(pre['t']):.6f}",
+            path_id=path_id,
+            params=raw_from_row(pre),
+            expected_chern_up=pre_c,
+            expected_chern_down=-pre_c,
+            critical_kx=critical_kx,
+            critical_ky=critical_ky,
+            selection_note=(
+                "Largest indirect gap on the pre-critical Chern-sign segment "
+                f"(t < {tc:.8f})."
+            ),
+        ),
+        SelectedState(
+            system="lieb",
+            state="critical",
+            source_id=f"pair{pair_id}_tcritical_{tc:.10f}",
+            path_id=path_id,
+            params=critical_params,
+            expected_chern_up=None,
+            expected_chern_down=None,
+            critical_kx=critical_kx,
+            critical_ky=critical_ky,
+            selection_note="Refined exact t2=0 Chern-sign-flip root.",
+        ),
+        SelectedState(
+            system="lieb",
+            state="chern_changed",
+            source_id=f"pair{pair_id}_t{float(post['t']):.6f}",
+            path_id=path_id,
+            params=raw_from_row(post),
+            expected_chern_up=post_c,
+            expected_chern_down=-post_c,
+            critical_kx=critical_kx,
+            critical_ky=critical_ky,
+            selection_note=(
+                "Largest indirect gap after the direct sign flip and before "
+                "the next analytic boundary."
+            ),
+        ),
+    ]
+
+
+def select_tts_states(tts: Any) -> list[SelectedState]:
+    output = TTS_ROOT / "outputs_tts_step04_chern_sector_boundary_valley_tracking"
+    refined = pd.read_csv(output / "step04_05_refined_critical_valleys.csv")
+    gaps = pd.read_csv(output / "step04_04_path_dense_gap_scan.csv")
+
+    path_id = "Cup+1_anchor01__nearest"
+    candidates = refined[
+        (refined["path_id"].astype(str) == path_id)
+        & (pd.to_numeric(refined["chern_left"], errors="coerce") == 1)
+        & (pd.to_numeric(refined["chern_right"], errors="coerce") == 0)
+    ]
+    if candidates.empty:
+        raise RuntimeError("The requested TTS C_up=+1 to 0 transition is missing")
+    root = candidates.iloc[0]
+    lc = float(root["critical_lambda"])
+    path = gaps[gaps["path_id"].astype(str) == path_id].copy()
+    pre = path[path["lambda"] <= lc - 0.05].sort_values(
+        ["indirect_gap", "min_direct_gap"], ascending=False
+    ).iloc[0]
+    post = path[path["lambda"] >= lc + 0.05].sort_values(
+        ["indirect_gap", "min_direct_gap"], ascending=False
+    ).iloc[0]
+
+    def raw_from_row(row: pd.Series) -> dict[str, float]:
+        reduced = {name: float(row[name]) for name in tts.REDUCED7}
+        return _clean_params(tts.raw8_from_reduced7(reduced), tts.RAW8)
+
+    kx = float(root["critical_kx"])
+    ky = float(root["critical_ky"])
+    return [
+        SelectedState(
+            system="tts",
+            state="topological",
+            source_id=str(pre["path_point_id"]),
+            path_id=path_id,
+            params=raw_from_row(pre),
+            expected_chern_up=1,
+            expected_chern_down=-1,
+            critical_kx=kx,
+            critical_ky=ky,
+            selection_note="Largest indirect gap on the C_up=+1 side of the path.",
+        ),
+        SelectedState(
+            system="tts",
+            state="critical",
+            source_id=str(root["transition_id"]),
+            path_id=path_id,
+            params=raw_from_row(root),
+            expected_chern_up=None,
+            expected_chern_down=None,
+            critical_kx=kx,
+            critical_ky=ky,
+            selection_note="Refined M-valley critical Hamiltonian.",
+        ),
+        SelectedState(
+            system="tts",
+            state="chern_changed",
+            source_id=str(post["path_point_id"]),
+            path_id=path_id,
+            params=raw_from_row(post),
+            expected_chern_up=0,
+            expected_chern_down=0,
+            critical_kx=kx,
+            critical_ky=ky,
+            selection_note="Largest indirect gap on the C_up=0 side of the same path.",
+        ),
+    ]
+
+
+def select_fes_states(fes: Any) -> list[SelectedState]:
+    boundary = FES_ROOT / "outputs_fes6_step04_boundary"
+    kp = FES_ROOT / "outputs_fes6_step06_kp"
+    strict = pd.read_csv(boundary / "fes_step04_strict_verified_results.csv")
+    roots = pd.read_csv(kp / "fes_step06_critical_mass_roots.csv")
+
+    reliable = strict[
+        (pd.to_numeric(strict["verified_chern_reliable"], errors="coerce") == 1)
+        & (pd.to_numeric(strict["verified_chern_up_int"], errors="coerce").abs() == 1)
+    ].copy()
+    topo = reliable.sort_values(
+        ["verified_min_direct_gap", "verified_indirect_gap"],
+        ascending=False,
+    ).iloc[0]
+    point_id = str(topo["point_id"])
+    root_candidates = roots[
+        (roots["point_id"].astype(str) == point_id)
+        & (roots["valley"].astype(str) == "Gamma")
+        & (pd.to_numeric(roots["root_found"], errors="coerce") == 1)
+    ]
+    if root_candidates.empty:
+        raise RuntimeError(f"No FES Gamma critical root for {point_id}")
+    root = root_candidates.iloc[0]
+
+    reduced_topo = {
+        name: float(topo[name]) for name in ("m_e", "t1", "t2", "r1", "r2")
     }
+    reduced_critical = dict(reduced_topo)
+    reduced_critical["m_e"] = float(root["m_critical"])
 
+    direction = float(np.sign(float(root["m_critical"]) - float(topo["m_e"])))
+    if direction == 0.0:
+        direction = 1.0
+    reduced_changed = dict(reduced_critical)
+    reduced_changed["m_e"] += direction * 0.03
 
-def run_upper_boundary_rule(
-    inputs: dict[str, Any], config: Step08MConfig
-) -> dict[str, Any]:
-    upper = inputs["formal_upper"].copy()
-    meta = inputs["formal_upper_meta"]
-    metrics, predictions, fitted = grouped_upper_cv(upper, config)
-    linear_rule = raw_linear_logistic_rule(fitted["linear_r3_r4"])
-
-    chart = upper_mass_chart(meta)
-    coeff = chart["coefficients"]
-    mass_vector = np.array([coeff["r3"], coeff["r4"]], float)
-    ml_vector = np.array([linear_rule["beta_r3"], linear_rule["beta_r4"]], float)
-    cosine = float(abs(np.dot(mass_vector, ml_vector)) / (
-        np.linalg.norm(mass_vector) * np.linalg.norm(ml_vector)
-    ))
-
-    anchor = meta["anchor_params"]
-    constant = sum(
-        float(value) * float(anchor[parameter])
-        for parameter, value in coeff.items()
-        if parameter not in {"r3", "r4"}
+    raw_topo = _clean_params(fes.raw6_from_reduced5(reduced_topo), fes.RAW6)
+    raw_critical = _clean_params(
+        fes.raw6_from_reduced5(reduced_critical), fes.RAW6
     )
-    mass_slope = float(-coeff["r3"] / coeff["r4"])
-    mass_intercept = float(-constant / coeff["r4"])
-
-    rule_table = pd.DataFrame([{
-        **linear_rule,
-        "step06_mass_r3_coefficient": float(coeff["r3"]),
-        "step06_mass_r4_coefficient": float(coeff["r4"]),
-        "step06_mass_boundary_slope": mass_slope,
-        "step06_mass_boundary_intercept": mass_intercept,
-        "absolute_cosine_ml_vs_step06_mass_direction": cosine,
-        "transition_id": chart["transition_id"],
-        "critical_k_region": chart["critical_k_region"],
-        "mass_formula": chart["mass_formula"],
-    }])
-
-    atomic_write_csv(metrics, config.output_dir / "step08M_12_upper_grouped_cv_metrics.csv")
-    atomic_write_csv(predictions, config.output_dir / "step08M_13_upper_grouped_predictions.csv")
-    atomic_write_csv(rule_table, config.output_dir / "step08M_14_upper_mass_direction_recovery.csv")
-    dump(
-        fitted["linear_r3_r4"],
-        config.output_dir / "models" / "step08M_upper_linear_boundary_logistic.joblib",
+    raw_changed = _clean_params(
+        fes.raw6_from_reduced5(reduced_changed), fes.RAW6
     )
-    dump(
-        fitted["quadratic_r3_r4"],
-        config.output_dir / "models" / "step08M_upper_quadratic_boundary_logistic.joblib",
+    expected_topo = int(topo["verified_chern_up_int"])
+    path_id = f"{point_id}_Gamma_mass_crossing"
+    return [
+        SelectedState(
+            system="fes",
+            state="topological",
+            source_id=point_id,
+            path_id=path_id,
+            params=raw_topo,
+            expected_chern_up=expected_topo,
+            expected_chern_down=-expected_topo,
+            critical_kx=0.0,
+            critical_ky=0.0,
+            selection_note=(
+                "Largest verified direct gap among reliable FES |C_up|=1 "
+                "samples; the indirect gap remains negative by the FES no-go result."
+            ),
+        ),
+        SelectedState(
+            system="fes",
+            state="critical",
+            source_id=f"{point_id}_Gamma_mcrit",
+            path_id=path_id,
+            params=raw_critical,
+            expected_chern_up=None,
+            expected_chern_down=None,
+            critical_kx=0.0,
+            critical_ky=0.0,
+            selection_note="Analytic Gamma-valley mass root from FES Step06.",
+        ),
+        SelectedState(
+            system="fes",
+            state="chern_changed",
+            source_id=f"{point_id}_Gamma_post_0p03",
+            path_id=path_id,
+            params=raw_changed,
+            expected_chern_up=0,
+            expected_chern_down=0,
+            critical_kx=0.0,
+            critical_ky=0.0,
+            selection_note=(
+                "C_up=0 point 0.03 in m_e beyond the same Gamma boundary."
+            ),
+        ),
+    ]
+
+
+def select_all_states(modules: dict[str, Any]) -> list[SelectedState]:
+    return (
+        select_lieb_states(modules["lieb"])
+        + select_tts_states(modules["tts"])
+        + select_fes_states(modules["fes"])
     )
 
-    plot_upper_boundary_rule(
-        upper,
-        linear_rule,
-        mass_slope,
-        mass_intercept,
-        config.output_dir / "figures" / "step08M_upper_boundary_mass_recovery.png",
-    )
-    return {
-        "metrics": metrics,
-        "predictions": predictions,
-        "rule_table": rule_table,
-        "linear_rule": linear_rule,
-        "mass_slope": mass_slope,
-        "mass_intercept": mass_intercept,
-        "cosine": cosine,
-    }
 
-
-def plot_upper_boundary_rule(
-    upper: pd.DataFrame,
-    linear_rule: dict[str, float],
-    mass_slope: float,
-    mass_intercept: float,
-    output: Path,
-) -> None:
-    configure_plot_style()
-    phase_colors = {2: "#F28E8B", 0: "#B2B2B2", -2: "#3F63AD", 99: "white"}
-    fig, ax = plt.subplots(figsize=(6.4, 5.2))
-    for phase, sub in upper.groupby("phase_code"):
-        ax.scatter(
-            sub["scan_x"], sub["scan_y"],
-            s=10,
-            color=phase_colors.get(int(phase), "white"),
-            edgecolors="black" if int(phase) == 99 else "none",
-            linewidths=0.3,
-            label=f"C_up={int(phase)}" if int(phase) != 99 else "unresolved",
+def extract_hoppings(
+    spec: ModelSpec,
+    params: dict[str, float],
+    nfft: int,
+    tolerance: float = 1.0e-10,
+) -> dict[tuple[int, int], np.ndarray]:
+    nfft = int(nfft)
+    ks = 2.0 * np.pi * np.arange(nfft) / nfft
+    dim = int(spec.h_periodic(0.0, 0.0, params).shape[0])
+    hk = np.empty((nfft, nfft, dim, dim), dtype=np.complex128)
+    for ix, kx in enumerate(ks):
+        for iy, ky in enumerate(ks):
+            hk[ix, iy] = spec.h_periodic(float(kx), float(ky), params)
+    coeff = np.fft.fft2(hk, axes=(0, 1)) / float(nfft * nfft)
+    hoppings: dict[tuple[int, int], np.ndarray] = {}
+    for ix in range(nfft):
+        rx = ix if ix <= nfft // 2 else ix - nfft
+        for iy in range(nfft):
+            ry = iy if iy <= nfft // 2 else iy - nfft
+            mat = coeff[ix, iy]
+            if float(np.max(np.abs(mat))) > tolerance:
+                hoppings[(int(rx), int(ry))] = np.asarray(
+                    mat, dtype=np.complex128
+                )
+    for kx, ky in ((0.173, -1.029), (2.037, 0.691), (-2.4, 2.1)):
+        rec = np.zeros((dim, dim), dtype=np.complex128)
+        for (rx, ry), mat in hoppings.items():
+            rec += mat * np.exp(1j * (kx * rx + ky * ry))
+        ref = spec.h_periodic(kx, ky, params)
+        error = float(np.max(np.abs(rec - ref)))
+        if error > 2.0e-9:
+            raise RuntimeError(
+                f"{spec.key} Fourier reconstruction failed: {error:.3e}"
+            )
+    if any(abs(ry) > 1 for _, ry in hoppings):
+        raise RuntimeError(
+            f"{spec.key} axial principal layer is too thin for hoppings "
+            f"{sorted(hoppings)}"
         )
-    xs = np.linspace(float(upper["scan_x"].min()), float(upper["scan_x"].max()), 300)
-    ax.plot(
-        xs,
-        linear_rule["boundary_slope"] * xs + linear_rule["boundary_intercept"],
-        color="black",
-        linewidth=1.4,
-        label="grouped-CV ML boundary",
-    )
-    ax.plot(
-        xs,
-        mass_slope * xs + mass_intercept,
-        color="black",
-        linewidth=1.0,
-        linestyle="--",
-        label="Step06 local mass zero",
-    )
-    ax.set_xlabel(r"$r_3$")
-    ax.set_ylabel(r"$r_4$")
-    ax.legend(frameon=True)
-    fig.tight_layout()
-    fig.savefig(output, dpi=350, bbox_inches="tight")
-    plt.close(fig)
+    return hoppings
 
 
-# =============================================================================
-# Formal lower scan: disconnected -2 components and mass-chart alignment
-# =============================================================================
+def bloch_from_hoppings(
+    kx: float,
+    ky: float,
+    hoppings: dict[tuple[int, int], np.ndarray],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    dim = next(iter(hoppings.values())).shape[0]
+    h = np.zeros((dim, dim), dtype=np.complex128)
+    vx = np.zeros_like(h)
+    vy = np.zeros_like(h)
+    for (rx, ry), mat in hoppings.items():
+        phase = np.exp(1j * (float(kx) * rx + float(ky) * ry))
+        h += mat * phase
+        vx += 1j * rx * mat * phase
+        vy += 1j * ry * mat * phase
+    h = 0.5 * (h + h.conj().T)
+    vx = 0.5 * (vx + vx.conj().T)
+    vy = 0.5 * (vy + vy.conj().T)
+    return h, vx, vy
 
-def connected_components(
-    df: pd.DataFrame,
-    phase_code: int,
-) -> list[list[Any]]:
-    rows = {
-        (int(row.scan_ix), int(row.scan_iy)): row
-        for row in df.itertuples()
-        if int(row.phase_code) == int(phase_code)
+
+def axial_blocks(
+    k_parallel: float,
+    hoppings: dict[tuple[int, int], np.ndarray],
+) -> tuple[np.ndarray, np.ndarray]:
+    dim = next(iter(hoppings.values())).shape[0]
+    blocks = {
+        -1: np.zeros((dim, dim), dtype=np.complex128),
+        0: np.zeros((dim, dim), dtype=np.complex128),
+        1: np.zeros((dim, dim), dtype=np.complex128),
     }
-    visited: set[tuple[int, int]] = set()
-    components: list[list[Any]] = []
-    for key in rows:
-        if key in visited:
-            continue
-        stack = [key]
-        visited.add(key)
-        component = []
-        while stack:
-            node = stack.pop()
-            component.append(rows[node])
-            ix, iy = node
-            for neighbor in ((ix+1, iy), (ix-1, iy), (ix, iy+1), (ix, iy-1)):
-                if neighbor in rows and neighbor not in visited:
-                    visited.add(neighbor)
-                    stack.append(neighbor)
-        components.append(component)
-    components.sort(key=len, reverse=True)
-    return components
+    for (rx, ry), mat in hoppings.items():
+        blocks[int(ry)] += mat * np.exp(1j * float(k_parallel) * rx)
+    h0 = 0.5 * (blocks[0] + blocks[0].conj().T)
+    hp = 0.5 * (blocks[1] + blocks[-1].conj().T)
+    return h0, hp
 
 
-def run_lower_component_alignment(
-    inputs: dict[str, Any], config: Step08MConfig
-) -> dict[str, Any]:
-    lower = inputs["formal_lower"].copy()
-    meta = inputs["formal_lower_meta"]
-    grid = {
-        (int(row.scan_ix), int(row.scan_iy)): row
-        for row in lower.itertuples()
-    }
-    charts = meta["generic_mass_charts"]
-    chart_columns = [chart["column"] for chart in charts]
-    chart_map = {chart["column"]: chart for chart in charts}
+def gap_audit(
+    spec: ModelSpec,
+    selected: SelectedState,
+    nk: int,
+) -> dict[str, float | int]:
+    nk = int(nk)
+    if nk % 2:
+        nk += 1
+    ks = np.linspace(-np.pi, np.pi, nk, endpoint=False)
+    min_direct = np.inf
+    direct_kx = np.nan
+    direct_ky = np.nan
+    vbm = -np.inf
+    cbm = np.inf
+    vbm_kx = vbm_ky = cbm_kx = cbm_ky = np.nan
+    for kx in ks:
+        for ky in ks:
+            energies = np.linalg.eigvalsh(
+                spec.h_periodic(float(kx), float(ky), selected.params)
+            )
+            dg = float(
+                energies[spec.n_occ_total] - energies[spec.n_occ_total - 1]
+            )
+            if dg < min_direct:
+                min_direct = dg
+                direct_kx, direct_ky = float(kx), float(ky)
+            valence = float(energies[spec.n_occ_total - 1])
+            conduction = float(energies[spec.n_occ_total])
+            if valence > vbm:
+                vbm, vbm_kx, vbm_ky = valence, float(kx), float(ky)
+            if conduction < cbm:
+                cbm, cbm_kx, cbm_ky = conduction, float(kx), float(ky)
 
-    components = connected_components(lower, -2)
-    component_rows = []
-    alignment_rows = []
-
-    for component_id, component in enumerate(components):
-        if len(component) < 5:
-            continue
-        keys = {(int(row.scan_ix), int(row.scan_iy)) for row in component}
-        boundary = []
-        for key in keys:
-            ix, iy = key
-            if any(
-                neighbor in grid and int(grid[neighbor].phase_code) != -2
-                for neighbor in ((ix+1, iy), (ix-1, iy), (ix, iy+1), (ix, iy-1))
-            ):
-                boundary.append(grid[key])
-        boundary_df = pd.DataFrame([row._asdict() for row in boundary])
-
-        component_rows.append({
-            "component_id": component_id,
-            "n_points": len(component),
-            "n_boundary_points": len(boundary),
-            "r3_min": min(float(row.scan_x) for row in component),
-            "r3_max": max(float(row.scan_x) for row in component),
-            "r4_min": min(float(row.scan_y) for row in component),
-            "r4_max": max(float(row.scan_y) for row in component),
-            "median_indirect_gap": float(np.median([float(row.indirect_gap) for row in component])),
-            "max_indirect_gap": float(np.max([float(row.indirect_gap) for row in component])),
-        })
-
-        nearest = boundary_df[chart_columns].abs().idxmin(axis=1)
-        for column in chart_columns:
-            chart = chart_map[column]
-            alignment_rows.append({
-                "component_id": component_id,
-                "component_size": len(component),
-                "n_boundary_points": len(boundary_df),
-                "chart_column": column,
-                "transition_id": chart["transition_id"],
-                "chern_left": chart["chern_left"],
-                "chern_right": chart["chern_right"],
-                "critical_k_region": chart["critical_k_region"],
-                "median_abs_mass_on_component_boundary": float(boundary_df[column].abs().median()),
-                "mean_abs_mass_on_component_boundary": float(boundary_df[column].abs().mean()),
-                "fraction_nearest_mass_chart": float((nearest == column).mean()),
-                "mass_formula": chart["mass_formula"],
-            })
-
-    components_df = pd.DataFrame(component_rows)
-    alignment = pd.DataFrame(alignment_rows).sort_values(
-        ["component_id", "median_abs_mass_on_component_boundary"]
+    kc_e = np.linalg.eigvalsh(
+        spec.h_periodic(
+            float(selected.critical_kx),
+            float(selected.critical_ky),
+            selected.params,
+        )
     )
+    critical_valence = float(kc_e[spec.n_occ_total - 1])
+    critical_conduction = float(kc_e[spec.n_occ_total])
+    critical_gap = critical_conduction - critical_valence
+    # The Lieb sign-flip closes at an off-grid axis momentum.  Include the
+    # explicitly refined transition momentum in the global extrema audit so
+    # the reported indirect gap cannot spuriously exceed the exact direct gap.
+    if critical_valence > vbm:
+        vbm = critical_valence
+        vbm_kx = float(selected.critical_kx)
+        vbm_ky = float(selected.critical_ky)
+    if critical_conduction < cbm:
+        cbm = critical_conduction
+        cbm_kx = float(selected.critical_kx)
+        cbm_ky = float(selected.critical_ky)
+    if critical_gap < min_direct:
+        min_direct = critical_gap
+        direct_kx = float(selected.critical_kx)
+        direct_ky = float(selected.critical_ky)
 
-    atomic_write_csv(components_df, config.output_dir / "step08M_15_lower_minus2_components.csv")
-    atomic_write_csv(alignment, config.output_dir / "step08M_16_lower_component_mass_alignment.csv")
-    plot_lower_alignment(
-        alignment,
-        config.output_dir / "figures" / "step08M_lower_component_mass_alignment.png",
+    global_midgap = 0.5 * (vbm + cbm)
+    local_midgap = 0.5 * (critical_valence + critical_conduction)
+    if selected.state == "critical":
+        ef = local_midgap
+        reference_kind = "critical_closing_energy"
+    elif spec.energy_reference == "critical_valley_midgap":
+        ef = local_midgap
+        reference_kind = "critical_valley_local_midgap"
+    else:
+        ef = global_midgap
+        reference_kind = "global_midgap"
+
+    return {
+        "gap_nk": int(nk),
+        "min_direct_gap": float(min_direct),
+        "indirect_gap": float(cbm - vbm),
+        "direct_gap_kx": float(direct_kx),
+        "direct_gap_ky": float(direct_ky),
+        "vbm": float(vbm),
+        "vbm_kx": float(vbm_kx),
+        "vbm_ky": float(vbm_ky),
+        "cbm": float(cbm),
+        "cbm_kx": float(cbm_kx),
+        "cbm_ky": float(cbm_ky),
+        "critical_valley_gap": float(critical_gap),
+        "critical_valley_midgap": float(local_midgap),
+        "energy_reference": float(ef),
+        "energy_reference_kind": reference_kind,
+        "is_direct_gapped": int(min_direct > 1.0e-4),
+        "is_global_insulator": int((cbm - vbm) > 1.0e-4),
+    }
+
+
+def _normalized_link(value: complex, floor: float = 1.0e-14) -> complex:
+    amplitude = abs(value)
+    if amplitude < floor:
+        raise FloatingPointError(f"Link determinant too small: {amplitude:.3e}")
+    return value / amplitude
+
+
+def fukui_chern(
+    h_func: Callable[[float, float], np.ndarray],
+    n_occ: int,
+    nk: int,
+) -> tuple[float, float]:
+    sample = h_func(0.0, 0.0)
+    dim = sample.shape[0]
+    ks = 2.0 * np.pi * np.arange(int(nk)) / int(nk)
+    occupied = np.empty((nk, nk, dim, n_occ), dtype=np.complex128)
+    for ix, kx in enumerate(ks):
+        for iy, ky in enumerate(ks):
+            _, vectors = np.linalg.eigh(h_func(float(kx), float(ky)))
+            occupied[ix, iy] = vectors[:, :n_occ]
+    total = 0.0
+    min_det = 1.0
+    for ix in range(nk):
+        for iy in range(nk):
+            v = occupied[ix, iy]
+            vx = occupied[(ix + 1) % nk, iy]
+            vy = occupied[ix, (iy + 1) % nk]
+            vxy = occupied[(ix + 1) % nk, (iy + 1) % nk]
+            lx = np.linalg.det(v.conj().T @ vx)
+            ly = np.linalg.det(v.conj().T @ vy)
+            lx_y = np.linalg.det(vy.conj().T @ vxy)
+            ly_x = np.linalg.det(vx.conj().T @ vxy)
+            min_det = min(min_det, abs(lx), abs(ly), abs(lx_y), abs(ly_x))
+            plaquette = (
+                _normalized_link(lx)
+                * _normalized_link(ly_x)
+                / (_normalized_link(lx_y) * _normalized_link(ly))
+            )
+            total += float(np.angle(plaquette))
+    return float(total / (2.0 * np.pi)), float(min_det)
+
+
+def chern_audit(
+    spec: ModelSpec,
+    selected: SelectedState,
+    nk: int,
+) -> dict[str, float | int]:
+    if selected.state == "critical":
+        return {
+            "chern_nk": int(nk),
+            "chern_up": np.nan,
+            "chern_down": np.nan,
+            "chern_up_int": np.nan,
+            "chern_down_int": np.nan,
+            "min_link_up": np.nan,
+            "min_link_down": np.nan,
+            "chern_defined": 0,
+        }
+    up_idx = np.asarray(spec.spin_up_indices, dtype=int)
+    down_idx = np.asarray(spec.spin_down_indices, dtype=int)
+
+    def block(indices: np.ndarray, kx: float, ky: float) -> np.ndarray:
+        h = spec.h_periodic(kx, ky, selected.params)
+        return h[np.ix_(indices, indices)]
+
+    cup, det_up = fukui_chern(
+        lambda kx, ky: block(up_idx, kx, ky),
+        spec.n_occ_spin,
+        int(nk),
+    )
+    cdown, det_down = fukui_chern(
+        lambda kx, ky: block(down_idx, kx, ky),
+        spec.n_occ_spin,
+        int(nk),
     )
     return {
-        "components": components_df,
-        "alignment": alignment,
+        "chern_nk": int(nk),
+        "chern_up": float(cup),
+        "chern_down": float(cdown),
+        "chern_up_int": int(np.rint(cup)),
+        "chern_down_int": int(np.rint(cdown)),
+        "min_link_up": float(det_up),
+        "min_link_down": float(det_down),
+        "chern_defined": 1,
     }
 
 
-def plot_lower_alignment(alignment: pd.DataFrame, output: Path) -> None:
-    if alignment.empty:
-        return
-    configure_plot_style()
-    component_ids = sorted(alignment["component_id"].unique())
-    fig, axes = plt.subplots(1, len(component_ids), figsize=(6.2 * len(component_ids), 4.6), squeeze=False)
-    for ax, component_id in zip(axes[0], component_ids):
-        sub = alignment[alignment["component_id"] == component_id].copy()
-        sub["short"] = sub["transition_id"].str.replace("_anchor01", "", regex=False)
-        sub = sub.sort_values("median_abs_mass_on_component_boundary")
-        ax.barh(sub["short"], sub["median_abs_mass_on_component_boundary"])
-        ax.set_title(f"C_up=-2 component {component_id}")
-        ax.set_xlabel("median |local chart mass| on boundary")
-    fig.tight_layout()
-    fig.savefig(output, dpi=350, bbox_inches="tight")
-    plt.close(fig)
+def high_symmetry_path(
+    points_per_segment: int,
+) -> tuple[np.ndarray, np.ndarray, list[float], list[str]]:
+    named = [
+        (r"$\Gamma$", (0.0, 0.0)),
+        ("X", (np.pi, 0.0)),
+        ("M", (np.pi, np.pi)),
+        (r"$\Gamma$", (0.0, 0.0)),
+    ]
+    klist: list[np.ndarray] = []
+    distance: list[float] = []
+    ticks = [0.0]
+    labels = [named[0][0]]
+    current = 0.0
+    previous: np.ndarray | None = None
+    for iseg in range(len(named) - 1):
+        p0 = np.asarray(named[iseg][1], dtype=float)
+        p1 = np.asarray(named[iseg + 1][1], dtype=float)
+        for j in range(points_per_segment + 1):
+            if iseg > 0 and j == 0:
+                continue
+            t = j / float(points_per_segment)
+            k = (1.0 - t) * p0 + t * p1
+            if previous is not None:
+                current += float(np.linalg.norm(k - previous))
+            klist.append(k)
+            distance.append(current)
+            previous = k
+        ticks.append(current)
+        labels.append(named[iseg + 1][0])
+    return np.asarray(klist), np.asarray(distance), ticks, labels
 
 
-# =============================================================================
-# Summary and certificate
-# =============================================================================
+def calculate_bulk_bands(
+    spec: ModelSpec,
+    selected: SelectedState,
+    ef: float,
+    points_per_segment: int,
+) -> tuple[pd.DataFrame, list[float], list[str]]:
+    klist, distance, ticks, labels = high_symmetry_path(points_per_segment)
+    spin_diag = np.zeros(
+        spec.h_atomic(0.0, 0.0, selected.params).shape[0], dtype=float
+    )
+    spin_diag[list(spec.spin_up_indices)] = 1.0
+    spin_diag[list(spec.spin_down_indices)] = -1.0
+    rows: list[dict[str, float | int]] = []
+    for ik, ((kx, ky), xpos) in enumerate(zip(klist, distance)):
+        energies, vectors = np.linalg.eigh(
+            spec.h_atomic(float(kx), float(ky), selected.params)
+        )
+        probability = np.abs(vectors) ** 2
+        spin = np.sum(probability * spin_diag[:, None], axis=0)
+        for ib, energy in enumerate(energies):
+            rows.append(
+                {
+                    "k_index": int(ik),
+                    "path_coordinate": float(xpos),
+                    "kx": float(kx),
+                    "ky": float(ky),
+                    "band": int(ib + 1),
+                    "energy": float(energy - ef),
+                    "spin_z": float(spin[ib]),
+                }
+            )
+    return pd.DataFrame(rows), ticks, labels
 
-def _best_metric(metrics: pd.DataFrame, task: str) -> dict[str, Any] | None:
-    sub = metrics[metrics["task"] == task]
-    if sub.empty:
-        return None
-    row = sub.sort_values(["balanced_accuracy", "macro_f1"], ascending=False).iloc[0]
-    return row.to_dict()
+
+def ribbon_hamiltonian(
+    k_parallel: float,
+    width: int,
+    hoppings: dict[tuple[int, int], np.ndarray],
+) -> tuple[np.ndarray, int]:
+    h0, hp = axial_blocks(k_parallel, hoppings)
+    dim = h0.shape[0]
+    h = np.zeros((width * dim, width * dim), dtype=np.complex128)
+    for layer in range(width):
+        sl = slice(layer * dim, (layer + 1) * dim)
+        h[sl, sl] = h0
+        if layer + 1 < width:
+            sr = slice((layer + 1) * dim, (layer + 2) * dim)
+            h[sl, sr] = hp
+            h[sr, sl] = hp.conj().T
+    return 0.5 * (h + h.conj().T), dim
 
 
-def write_rule_summary(
-    global_result: dict[str, Any],
-    transition_result: dict[str, Any],
-    cluster_result: dict[str, Any],
-    upper_result: dict[str, Any],
-    lower_result: dict[str, Any],
-    config: Step08MConfig,
+def calculate_ribbon(
+    spec: ModelSpec,
+    selected: SelectedState,
+    hoppings: dict[tuple[int, int], np.ndarray],
+    ef: float,
+    k_points: int,
+    width: int,
+    edge_layers: int = 3,
+) -> pd.DataFrame:
+    kvalues = np.linspace(-np.pi, np.pi, int(k_points), endpoint=True)
+    spin_primitive = np.zeros(
+        next(iter(hoppings.values())).shape[0], dtype=float
+    )
+    spin_primitive[list(spec.spin_up_indices)] = 1.0
+    spin_primitive[list(spec.spin_down_indices)] = -1.0
+    rows: list[dict[str, float | int]] = []
+    for ik, kp in enumerate(kvalues):
+        h, dim = ribbon_hamiltonian(float(kp), int(width), hoppings)
+        energies, vectors = eigh(h, overwrite_a=True, check_finite=False)
+        probability = np.abs(vectors) ** 2
+        nedge = min(edge_layers, max(1, width // 3))
+        left_weight = np.sum(probability[: nedge * dim], axis=0)
+        right_weight = np.sum(probability[(width - nedge) * dim :], axis=0)
+        total_edge = left_weight + right_weight
+        spin_diag = np.tile(spin_primitive, width)
+        spin_z = np.real(np.sum(probability * spin_diag[:, None], axis=0))
+        for ib, energy in enumerate(energies):
+            rows.append(
+                {
+                    "k_index": int(ik),
+                    "k_parallel": float(kp),
+                    "band": int(ib + 1),
+                    "energy": float(energy - ef),
+                    "left_edge_weight": float(left_weight[ib]),
+                    "right_edge_weight": float(right_weight[ib]),
+                    "total_edge_weight": float(total_edge[ib]),
+                    "spin_z": float(spin_z[ib]),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def sancho_surface_green(
+    energy: float,
+    eta: float,
+    h0: np.ndarray,
+    hp: np.ndarray,
+    max_iter: int = 100,
+    tolerance: float = 1.0e-12,
+) -> np.ndarray:
+    z = complex(float(energy), float(eta))
+    identity = np.eye(h0.shape[0], dtype=np.complex128)
+    eps = h0.copy()
+    eps_surface = h0.copy()
+    alpha = hp.copy()
+    beta = hp.conj().T
+    for _ in range(max_iter):
+        g = np.linalg.inv(z * identity - eps)
+        agb = alpha @ g @ beta
+        bga = beta @ g @ alpha
+        eps_surface += agb
+        eps += agb + bga
+        alpha_new = alpha @ g @ alpha
+        beta_new = beta @ g @ beta
+        alpha, beta = alpha_new, beta_new
+        if max(
+            float(np.linalg.norm(alpha, ord="fro")),
+            float(np.linalg.norm(beta, ord="fro")),
+        ) < tolerance:
+            break
+    return np.linalg.inv(z * identity - eps_surface)
+
+
+def calculate_surface(
+    spec: ModelSpec,
+    hoppings: dict[tuple[int, int], np.ndarray],
+    ef: float,
+    energy_window: float,
+    k_points: int,
+    energy_points: int,
+    eta: float,
+) -> dict[str, np.ndarray | float]:
+    kvalues = np.linspace(-np.pi, np.pi, int(k_points), endpoint=True)
+    energies = np.linspace(-energy_window, energy_window, int(energy_points))
+    dim = next(iter(hoppings.values())).shape[0]
+    up_mask = np.zeros(dim, dtype=float)
+    down_mask = np.zeros(dim, dtype=float)
+    up_mask[list(spec.spin_up_indices)] = 1.0
+    down_mask[list(spec.spin_down_indices)] = 1.0
+    total = np.zeros((len(energies), len(kvalues)), dtype=float)
+    up = np.zeros_like(total)
+    down = np.zeros_like(total)
+    for ik, kp in enumerate(kvalues):
+        h0, hp = axial_blocks(float(kp), hoppings)
+        for ie, energy_rel in enumerate(energies):
+            g = sancho_surface_green(float(energy_rel + ef), eta, h0, hp)
+            diagonal = np.maximum(
+                0.0, -np.imag(np.diag(g)) / np.pi
+            )
+            total[ie, ik] = float(np.sum(diagonal))
+            up[ie, ik] = float(np.sum(diagonal * up_mask))
+            down[ie, ik] = float(np.sum(diagonal * down_mask))
+    return {
+        "k_parallel": kvalues,
+        "energy": energies,
+        "surface_dos": total,
+        "surface_dos_up": up,
+        "surface_dos_down": down,
+        "eta": float(eta),
+    }
+
+
+def band_berry_curvature(
+    h: np.ndarray,
+    vx: np.ndarray,
+    vy: np.ndarray,
+    denominator_floor: float = 1.0e-12,
+) -> tuple[np.ndarray, np.ndarray]:
+    energies, vectors = np.linalg.eigh(h)
+    omega = np.zeros(len(energies), dtype=float)
+    for ib in range(len(energies)):
+        value = 0.0
+        for jb in range(len(energies)):
+            if ib == jb:
+                continue
+            de = float(energies[ib] - energies[jb])
+            denom = max(de * de, denominator_floor)
+            a = np.vdot(vectors[:, ib], vx @ vectors[:, jb])
+            b = np.vdot(vectors[:, jb], vy @ vectors[:, ib])
+            value += 2.0 * float(np.imag(a * b)) / denom
+        omega[ib] = value
+    return energies, omega
+
+
+def calculate_hall(
+    spec: ModelSpec,
+    hoppings: dict[tuple[int, int], np.ndarray],
+    ef: float,
+    energy_window: float,
+    nk: int,
+    energy_points: int,
+) -> tuple[pd.DataFrame, dict[str, float]]:
+    records: dict[str, list[tuple[float, float]]] = {"up": [], "down": []}
+    area_weight = (2.0 * np.pi / nk) ** 2 / (2.0 * np.pi)
+    kvalues = -np.pi + 2.0 * np.pi * (np.arange(nk) + 0.5) / nk
+    spin_blocks = (
+        ("up", np.asarray(spec.spin_up_indices, dtype=int)),
+        ("down", np.asarray(spec.spin_down_indices, dtype=int)),
+    )
+    for kx in kvalues:
+        for ky in kvalues:
+            h, vx, vy = bloch_from_hoppings(float(kx), float(ky), hoppings)
+            for spin_name, indices in spin_blocks:
+                es, omega = band_berry_curvature(
+                    h[np.ix_(indices, indices)],
+                    vx[np.ix_(indices, indices)],
+                    vy[np.ix_(indices, indices)],
+                )
+                for energy, curvature in zip(es, omega):
+                    records[spin_name].append(
+                        (float(energy - ef), float(curvature * area_weight))
+                    )
+
+    energy = np.linspace(-energy_window, energy_window, int(energy_points))
+    cumulative: dict[str, np.ndarray] = {}
+    for spin_name, values in records.items():
+        rec = np.asarray(values, dtype=float)
+        order = np.argsort(rec[:, 0])
+        e_sorted = rec[order, 0]
+        w_sorted = rec[order, 1]
+        cumulative_weight = np.cumsum(w_sorted)
+        indices = np.searchsorted(e_sorted, energy, side="right") - 1
+        curve = np.zeros_like(energy)
+        valid = indices >= 0
+        curve[valid] = cumulative_weight[indices[valid]]
+        cumulative[spin_name] = curve
+    charge = cumulative["up"] + cumulative["down"]
+    spin = 0.5 * (cumulative["up"] - cumulative["down"])
+    df = pd.DataFrame(
+        {
+            "energy": energy,
+            "sigma_xy_up_e2_over_h": cumulative["up"],
+            "sigma_xy_down_e2_over_h": cumulative["down"],
+            "sigma_xy_charge_e2_over_h": charge,
+            "sigma_xy_spin_e_over_2pi": spin,
+        }
+    )
+    mid = int(np.argmin(np.abs(energy)))
+    summary = {
+        "response_nk": int(nk),
+        "mid_reference_sigma_up": float(cumulative["up"][mid]),
+        "mid_reference_sigma_down": float(cumulative["down"][mid]),
+        "mid_reference_sigma_charge": float(charge[mid]),
+        "mid_reference_sigma_spin": float(spin[mid]),
+    }
+    return df, summary
+
+
+def choose_system_window(
+    audits: list[dict[str, Any]],
+    system: str,
+) -> float:
+    direct = [
+        abs(float(row["min_direct_gap"]))
+        for row in audits
+        if row["system"] == system and row["state"] != "critical"
+    ]
+    base = max(direct, default=0.05)
+    minimum = {"lieb": 0.24, "tts": 0.36, "fes": 0.10}[system]
+    maximum = {"lieb": 0.55, "tts": 0.60, "fes": 0.24}[system]
+    return float(np.clip(2.2 * base + 0.08, minimum, maximum))
+
+
+def state_title(selected: SelectedState) -> str:
+    if selected.expected_chern_up is None:
+        return "Critical"
+    return rf"{STATE_LABELS[selected.state]}  $C_\uparrow={selected.expected_chern_up:+d}$"
+
+
+def spin_colors(spec: ModelSpec, selected: SelectedState) -> tuple[str, str]:
+    if selected.expected_chern_up is None:
+        return CRITICAL_COLOR, BODY_DARK
+    return (
+        phase_color(spec, selected.expected_chern_up),
+        phase_color(spec, selected.expected_chern_down),
+    )
+
+
+def surface_rgb(
+    spec: ModelSpec,
+    selected: SelectedState,
+    surface: dict[str, np.ndarray | float],
+) -> np.ndarray:
+    up = np.log1p(np.asarray(surface["surface_dos_up"], dtype=float))
+    down = np.log1p(np.asarray(surface["surface_dos_down"], dtype=float))
+    scale = max(float(np.max(up)), float(np.max(down)), 1.0e-14)
+    up /= scale
+    down /= scale
+    intensity = np.maximum(up, down)
+    total = np.maximum(up + down, 1.0e-14)
+    color_up, color_down = spin_colors(spec, selected)
+    cup = np.asarray(to_rgb(color_up), dtype=float)
+    cdown = np.asarray(to_rgb(color_down), dtype=float)
+    mixed = (
+        up[..., None] * cup[None, None, :]
+        + down[..., None] * cdown[None, None, :]
+    ) / total[..., None]
+    white = np.ones_like(mixed)
+    rgb = white * (1.0 - intensity[..., None]) + mixed * intensity[..., None]
+    return np.clip(rgb, 0.0, 1.0)
+
+
+def plot_bulk_grid(
+    results: list[dict[str, Any]],
+    specs: dict[str, ModelSpec],
+    systems: list[str],
+    output_stem: Path,
+    dpi: int,
+) -> list[str]:
+    fig, axes = plt.subplots(
+        len(systems),
+        3,
+        figsize=(10.7, 3.0 * len(systems)),
+        squeeze=False,
+        sharey="row",
+    )
+    for irow, system in enumerate(systems):
+        spec = specs[system]
+        for icol, state in enumerate(STATE_ORDER):
+            result = next(
+                x for x in results
+                if x["selected"].system == system and x["selected"].state == state
+            )
+            selected = result["selected"]
+            df = result["bulk"]
+            ax = axes[irow, icol]
+            color_up, color_down = spin_colors(spec, selected)
+            for _, band in df.groupby("band"):
+                mean_spin = float(band["spin_z"].mean())
+                color = color_up if mean_spin >= 0.0 else color_down
+                ax.plot(
+                    band["path_coordinate"],
+                    band["energy"],
+                    color=color,
+                    lw=1.35,
+                    alpha=0.96,
+                )
+            for tick in result["bulk_ticks"]:
+                ax.axvline(tick, color="#B8B8B8", lw=0.65, zorder=0)
+            ax.axhline(0.0, color=BLACK, lw=1.0, ls="--")
+            ax.set_xticks(result["bulk_ticks"])
+            ax.set_xticklabels(result["bulk_labels"])
+            ax.set_ylim(-result["window"], result["window"])
+            ax.set_title(state_title(selected))
+            if icol == 0:
+                ax.set_ylabel(
+                    f"{spec.label}\n" + r"$E-E_{\mathrm{ref}}$"
+                )
+            style_axis(ax)
+    fig.supxlabel("Bulk momentum path", fontweight="bold", y=0.01)
+    fig.tight_layout(rect=(0.0, 0.025, 1.0, 1.0))
+    return save_figure(fig, output_stem, dpi)
+
+
+def plot_ribbon_grid(
+    results: list[dict[str, Any]],
+    specs: dict[str, ModelSpec],
+    systems: list[str],
+    output_stem: Path,
+    dpi: int,
+) -> list[str]:
+    fig, axes = plt.subplots(
+        len(systems),
+        3,
+        figsize=(10.7, 3.0 * len(systems)),
+        squeeze=False,
+        sharex=True,
+        sharey="row",
+    )
+    for irow, system in enumerate(systems):
+        spec = specs[system]
+        for icol, state in enumerate(STATE_ORDER):
+            result = next(
+                x for x in results
+                if x["selected"].system == system and x["selected"].state == state
+            )
+            selected = result["selected"]
+            df = result["ribbon"]
+            ax = axes[irow, icol]
+            visible = df[np.abs(df["energy"]) <= result["window"]]
+            ax.scatter(
+                visible["k_parallel"],
+                visible["energy"],
+                s=2.0,
+                color=BODY_COLOR,
+                alpha=0.40,
+                linewidths=0,
+                rasterized=True,
+            )
+            edge = visible[visible["total_edge_weight"] >= 0.28].copy()
+            up = edge[edge["spin_z"] >= 0.0]
+            down = edge[edge["spin_z"] < 0.0]
+            color_up, color_down = spin_colors(spec, selected)
+            for frame, color, marker in (
+                (up, color_up, "o"),
+                (down, color_down, "o"),
+            ):
+                ax.scatter(
+                    frame["k_parallel"],
+                    frame["energy"],
+                    s=4.0 + 9.0 * frame["total_edge_weight"],
+                    color=color,
+                    alpha=0.92,
+                    marker=marker,
+                    linewidths=0,
+                    rasterized=True,
+                )
+            ax.axhline(0.0, color=BLACK, lw=1.0, ls="--")
+            ax.set_xlim(-np.pi, np.pi)
+            ax.set_ylim(-result["window"], result["window"])
+            ax.set_xticks([-np.pi, 0.0, np.pi])
+            ax.set_xticklabels([r"$-\pi$", "0", r"$\pi$"])
+            ax.set_title(state_title(selected))
+            if icol == 0:
+                ax.set_ylabel(
+                    f"{spec.label}\n" + r"$E-E_{\mathrm{ref}}$"
+                )
+            style_axis(ax)
+    fig.supxlabel(r"$k_{\parallel}$", fontweight="bold", y=0.01)
+    fig.tight_layout(rect=(0.0, 0.025, 1.0, 1.0))
+    return save_figure(fig, output_stem, dpi)
+
+
+def plot_surface_grid(
+    results: list[dict[str, Any]],
+    specs: dict[str, ModelSpec],
+    systems: list[str],
+    output_stem: Path,
+    dpi: int,
+) -> list[str]:
+    fig, axes = plt.subplots(
+        len(systems),
+        3,
+        figsize=(10.7, 3.0 * len(systems)),
+        squeeze=False,
+        sharex=True,
+        sharey="row",
+    )
+    for irow, system in enumerate(systems):
+        spec = specs[system]
+        for icol, state in enumerate(STATE_ORDER):
+            result = next(
+                x for x in results
+                if x["selected"].system == system and x["selected"].state == state
+            )
+            selected = result["selected"]
+            surface = result["surface"]
+            rgb = surface_rgb(spec, selected, surface)
+            ax = axes[irow, icol]
+            ax.imshow(
+                rgb,
+                origin="lower",
+                extent=[
+                    -np.pi,
+                    np.pi,
+                    -result["window"],
+                    result["window"],
+                ],
+                aspect="auto",
+                interpolation="nearest",
+                rasterized=True,
+            )
+            ax.axhline(0.0, color=BLACK, lw=1.0, ls="--")
+            ax.set_xticks([-np.pi, 0.0, np.pi])
+            ax.set_xticklabels([r"$-\pi$", "0", r"$\pi$"])
+            ax.set_title(state_title(selected))
+            if icol == 0:
+                ax.set_ylabel(
+                    f"{spec.label}\n" + r"$E-E_{\mathrm{ref}}$"
+                )
+            style_axis(ax)
+    fig.supxlabel(r"$k_{\parallel}$", fontweight="bold", y=0.01)
+    fig.tight_layout(rect=(0.0, 0.025, 1.0, 1.0))
+    return save_figure(fig, output_stem, dpi)
+
+
+def plot_hall_grid(
+    results: list[dict[str, Any]],
+    specs: dict[str, ModelSpec],
+    systems: list[str],
+    output_stem: Path,
+    dpi: int,
+) -> list[str]:
+    fig, axes = plt.subplots(
+        len(systems),
+        3,
+        figsize=(10.7, 3.0 * len(systems)),
+        squeeze=False,
+        sharex="row",
+        sharey=True,
+    )
+    for irow, system in enumerate(systems):
+        spec = specs[system]
+        for icol, state in enumerate(STATE_ORDER):
+            result = next(
+                x for x in results
+                if x["selected"].system == system and x["selected"].state == state
+            )
+            selected = result["selected"]
+            df = result["hall"]
+            ax = axes[irow, icol]
+            color_up, color_down = spin_colors(spec, selected)
+            ax.axvspan(
+                -0.04 * result["window"],
+                0.04 * result["window"],
+                color=lighten(
+                    phase_color(spec, selected.expected_chern_up), 0.76
+                ),
+                alpha=0.65,
+                zorder=0,
+            )
+            ax.plot(
+                df["energy"],
+                df["sigma_xy_up_e2_over_h"],
+                color=color_up,
+                lw=2.0,
+                label=r"$\sigma_{xy}^{\uparrow}$",
+            )
+            ax.plot(
+                df["energy"],
+                df["sigma_xy_down_e2_over_h"],
+                color=color_down,
+                lw=2.0,
+                label=r"$\sigma_{xy}^{\downarrow}$",
+            )
+            ax.plot(
+                df["energy"],
+                df["sigma_xy_charge_e2_over_h"],
+                color=BLACK,
+                lw=1.3,
+                ls="--",
+                label=r"$\sigma_{xy}^{\mathrm{tot}}$",
+            )
+            ax.axhline(0.0, color="#777777", lw=0.8)
+            ax.axvline(0.0, color=BLACK, lw=0.9, ls=":")
+            ax.set_xlim(-result["window"], result["window"])
+            ax.set_ylim(-2.35, 2.35)
+            ax.set_title(state_title(selected))
+            if icol == 0:
+                ax.set_ylabel(
+                    f"{spec.label}\n" + r"$\sigma_{xy}\ (e^2/h)$"
+                )
+            if irow == 0 and icol == 0:
+                ax.legend(
+                    loc="upper left",
+                    frameon=False,
+                    handlelength=2.0,
+                )
+            style_axis(ax)
+    fig.supxlabel(r"$E-E_{\mathrm{ref}}$", fontweight="bold", y=0.01)
+    fig.tight_layout(rect=(0.0, 0.025, 1.0, 1.0))
+    return save_figure(fig, output_stem, dpi)
+
+
+def build_settings(quick: bool) -> RunSettings:
+    if quick:
+        return RunSettings(
+            gap_nk=48,
+            chern_nk=21,
+            band_points_per_segment=28,
+            ribbon_k_points=51,
+            surface_k_points=51,
+            surface_energy_points=71,
+            response_nk=25,
+            response_energy_points=101,
+            fourier_n=8,
+            dpi=150,
+            quick=True,
+        )
+    return RunSettings(
+        gap_nk=120,
+        chern_nk=41,
+        band_points_per_segment=70,
+        ribbon_k_points=161,
+        surface_k_points=141,
+        surface_energy_points=181,
+        response_nk=81,
+        response_energy_points=241,
+        fourier_n=8,
+        dpi=320,
+        quick=False,
+    )
+
+
+def hall_mesh_for_state(
+    selected: SelectedState,
+    settings: RunSettings,
+) -> int:
+    """Use denser Hall meshes only where the Berry curvature is concentrated."""
+    if settings.quick:
+        return int(settings.response_nk)
+    if selected.system == "lieb":
+        # The post-t2 sign-flip state has a small generic-valley gap and needs
+        # a much denser Kubo mesh to recover the integer plateau.
+        return 241 if selected.state == "chern_changed" else 121
+    if selected.system == "fes":
+        # The topological and critical FES examples have millielectronvolt-
+        # scale direct gaps, although the topological point is an indirect
+        # overlap metal and therefore has no quantized Fermi-level plateau.
+        # At the exact Gamma critical point an odd midpoint mesh contains
+        # k=(0,0), where the band-resolved Kubo curvature is singular.  The
+        # neighboring even mesh is the symmetric principal-value convention.
+        if selected.state == "critical":
+            return 160
+        return 161 if selected.state == "topological" else 81
+    return 81
+
+
+def refresh_hall_outputs(
+    output_dir: Path,
+    quick: bool = False,
 ) -> dict[str, Any]:
-    global_metrics = global_result["metrics"]
-    transition_metrics = transition_result["metrics"]
+    """Refresh Hall data whose stored mesh differs from the current policy."""
+    configure_plot_style()
+    settings = build_settings(quick)
+    output_dir = Path(output_dir)
+    figures_dir = output_dir / "figures"
+    data_dir = output_dir / "data"
+    audit_path = output_dir / "step18_01_selected_state_audit.csv"
+    summary_path = output_dir / "step18_02_hall_summary.csv"
+    if not audit_path.is_file():
+        raise FileNotFoundError(audit_path)
+    specs, modules = build_model_specs()
+    selected_states = select_all_states(modules)
+    audit_df = pd.read_csv(audit_path)
+    old_summary = (
+        pd.read_csv(summary_path)
+        if summary_path.is_file()
+        else pd.DataFrame()
+    )
+    old_lookup = {
+        (str(row.system), str(row.state)): row
+        for row in old_summary.itertuples(index=False)
+    }
+    audit_records = audit_df.to_dict(orient="records")
+    windows = {
+        system: choose_system_window(audit_records, system)
+        for system in ("lieb", "tts", "fes")
+    }
+    results: list[dict[str, Any]] = []
+    summaries: list[dict[str, Any]] = []
+    refreshed: list[str] = []
+    for selected in selected_states:
+        spec = specs[selected.system]
+        desired_nk = hall_mesh_for_state(selected, settings)
+        sample_dir = data_dir / f"{selected.system}_{selected.state}"
+        hall_path = sample_dir / "wanniertools_style_hall.csv"
+        old = old_lookup.get((selected.system, selected.state))
+        stored_nk = int(old.response_nk) if old is not None else -1
+        audit = audit_df[
+            (audit_df["system"].astype(str) == selected.system)
+            & (audit_df["state"].astype(str) == selected.state)
+        ].iloc[0]
+        ef = float(audit["energy_reference"])
+        window = float(windows[selected.system])
+        if hall_path.is_file() and stored_nk == desired_nk:
+            hall = pd.read_csv(hall_path)
+        else:
+            hoppings = extract_hoppings(
+                spec,
+                selected.params,
+                nfft=settings.fourier_n,
+            )
+            hall, _ = calculate_hall(
+                spec,
+                hoppings,
+                ef,
+                window,
+                desired_nk,
+                settings.response_energy_points,
+            )
+            hall.to_csv(hall_path, index=False)
+            refreshed.append(f"{selected.system}:{selected.state}")
+        mid = int(np.argmin(np.abs(hall["energy"].to_numpy(float))))
+        summaries.append(
+            {
+                "system": selected.system,
+                "state": selected.state,
+                "source_id": selected.source_id,
+                "expected_chern_up": selected.expected_chern_up,
+                "response_nk": int(desired_nk),
+                "mid_reference_sigma_up": float(
+                    hall["sigma_xy_up_e2_over_h"].iloc[mid]
+                ),
+                "mid_reference_sigma_down": float(
+                    hall["sigma_xy_down_e2_over_h"].iloc[mid]
+                ),
+                "mid_reference_sigma_charge": float(
+                    hall["sigma_xy_charge_e2_over_h"].iloc[mid]
+                ),
+                "mid_reference_sigma_spin": float(
+                    hall["sigma_xy_spin_e_over_2pi"].iloc[mid]
+                ),
+            }
+        )
+        results.append(
+            {
+                "selected": selected,
+                "window": window,
+                "hall": hall,
+            }
+        )
+    pd.DataFrame(summaries).to_csv(summary_path, index=False)
+    plot_hall_grid(
+        results,
+        specs,
+        ["lieb", "tts", "fes"],
+        figures_dir / "step18_three_system_hall_triptychs",
+        settings.dpi,
+    )
+    for system in ("lieb", "tts", "fes"):
+        plot_hall_grid(
+            results,
+            specs,
+            [system],
+            figures_dir / f"step18_{system}_hall_triptych",
+            settings.dpi,
+        )
+    certificate_path = output_dir / "step18_04_final_certificate.json"
+    if certificate_path.is_file():
+        certificate = json.loads(certificate_path.read_text(encoding="utf-8"))
+        certificate["hall_refresh_utc"] = utc_now()
+        certificate["hall_refreshed_states"] = refreshed
+        certificate["critical_hall_policy"] = (
+            "The exact FES Gamma critical state uses an even 160x160 midpoint "
+            "mesh, which excludes the singular closing momentum and implements "
+            "the symmetric principal-value Kubo limit. Critical Hall values are "
+            "not topological plateaus."
+        )
+        certificate_path.write_text(
+            json.dumps(certificate, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    return {"refreshed": refreshed, "summary_rows": len(summaries)}
 
-    magnitude = _best_metric(global_metrics, "chern_magnitude_abs2_vs_abs1")
-    sign = _best_metric(global_metrics, "high_chern_sign_positive_vs_negative")
-    coarse = _best_metric(transition_metrics, "coarse_single_vs_paired")
-    fine = _best_metric(transition_metrics, "fine_four_family")
-    high = _best_metric(transition_metrics, "high_symmetry_Gamma_vs_M")
-    generic = _best_metric(transition_metrics, "generic_Sigma_vs_SigmaPrime")
 
-    upper_linear = upper_result["metrics"][
-        upper_result["metrics"]["model"] == "linear_r3_r4"
-    ].iloc[0].to_dict()
-    upper_quad = upper_result["metrics"][
-        upper_result["metrics"]["model"] == "quadratic_r3_r4"
-    ].iloc[0].to_dict()
+def run(
+    output_dir: Path,
+    quick: bool = False,
+) -> dict[str, Any]:
+    started = time.time()
+    configure_plot_style()
+    settings = build_settings(quick)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    figures_dir = output_dir / "figures"
+    data_dir = output_dir / "data"
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    data_dir.mkdir(parents=True, exist_ok=True)
 
-    alignment = lower_result["alignment"]
-    dominant_rows = []
-    if not alignment.empty:
-        for component_id, sub in alignment.groupby("component_id"):
-            dominant_rows.append(
-                sub.sort_values(
-                    ["fraction_nearest_mass_chart", "median_abs_mass_on_component_boundary"],
-                    ascending=[False, True],
-                ).iloc[0].to_dict()
+    specs, modules = build_model_specs()
+    selected_states = select_all_states(modules)
+    if len(selected_states) != 9:
+        raise RuntimeError(f"Expected exactly 9 selected states, got {len(selected_states)}")
+
+    print("[1/6] Gap and Chern audits for nine selected states", flush=True)
+    audits: list[dict[str, Any]] = []
+    for selected in selected_states:
+        spec = specs[selected.system]
+        gap = gap_audit(spec, selected, settings.gap_nk)
+        chern = chern_audit(spec, selected, settings.chern_nk)
+        audit = {
+            "system": selected.system,
+            "state": selected.state,
+            "source_id": selected.source_id,
+            "path_id": selected.path_id,
+            "expected_chern_up": selected.expected_chern_up,
+            "expected_chern_down": selected.expected_chern_down,
+            "critical_kx": selected.critical_kx,
+            "critical_ky": selected.critical_ky,
+            "selection_note": selected.selection_note,
+            **selected.params,
+            **gap,
+            **chern,
+        }
+        if selected.expected_chern_up is None:
+            audit["chern_matches_selection"] = np.nan
+            audit["critical_gap_pass"] = int(
+                float(gap["critical_valley_gap"]) < 2.0e-5
+            )
+        else:
+            audit["chern_matches_selection"] = int(
+                int(chern["chern_up_int"]) == selected.expected_chern_up
+                and int(chern["chern_down_int"]) == selected.expected_chern_down
+            )
+            audit["critical_gap_pass"] = np.nan
+        audits.append(audit)
+        print(
+            f"  {selected.system:4s} {selected.state:13s} "
+            f"gap={float(gap['min_direct_gap']):.4e} "
+            f"indirect={float(gap['indirect_gap']):.4e} "
+            f"Cup={chern['chern_up_int']}",
+            flush=True,
+        )
+    audit_df = pd.DataFrame(audits)
+    audit_df.to_csv(output_dir / "step18_01_selected_state_audit.csv", index=False)
+
+    windows = {
+        system: choose_system_window(audits, system)
+        for system in ("lieb", "tts", "fes")
+    }
+
+    print("[2/6] Wannier hopping reconstruction and bulk bands", flush=True)
+    results: list[dict[str, Any]] = []
+    hall_summaries: list[dict[str, Any]] = []
+    for index, selected in enumerate(selected_states, start=1):
+        spec = specs[selected.system]
+        audit = next(
+            row for row in audits
+            if row["system"] == selected.system and row["state"] == selected.state
+        )
+        ef = float(audit["energy_reference"])
+        window = float(windows[selected.system])
+        sample_dir = data_dir / f"{selected.system}_{selected.state}"
+        sample_dir.mkdir(parents=True, exist_ok=True)
+
+        print(
+            f"  [{index}/9] {selected.system} {selected.state}: Fourier/bulk",
+            flush=True,
+        )
+        hoppings = extract_hoppings(
+            spec, selected.params, nfft=settings.fourier_n
+        )
+        hopping_rows = [
+            {
+                "rx": rx,
+                "ry": ry,
+                "max_abs_hopping": float(np.max(np.abs(mat))),
+            }
+            for (rx, ry), mat in sorted(hoppings.items())
+        ]
+        pd.DataFrame(hopping_rows).to_csv(
+            sample_dir / "wannier_hopping_summary.csv", index=False
+        )
+        bulk, ticks, labels = calculate_bulk_bands(
+            spec,
+            selected,
+            ef,
+            settings.band_points_per_segment,
+        )
+        bulk.to_csv(sample_dir / "bulk_bands.csv", index=False)
+
+        width = spec.ribbon_width
+        if quick:
+            width = min(width, 18 if selected.system == "lieb" else 16)
+        print(
+            f"  [{index}/9] {selected.system} {selected.state}: ribbon width={width}",
+            flush=True,
+        )
+        ribbon = calculate_ribbon(
+            spec,
+            selected,
+            hoppings,
+            ef,
+            settings.ribbon_k_points,
+            width,
+        )
+        ribbon.to_csv(
+            sample_dir / "wanniertools_style_ribbon.csv.gz",
+            index=False,
+            compression="gzip",
+        )
+
+        eta = max(
+            5.0e-4 if selected.system == "fes" else 1.5e-3,
+            0.006 * window,
+        )
+        print(
+            f"  [{index}/9] {selected.system} {selected.state}: "
+            f"semi-infinite surface eta={eta:.3e}",
+            flush=True,
+        )
+        surface = calculate_surface(
+            spec,
+            hoppings,
+            ef,
+            window,
+            settings.surface_k_points,
+            settings.surface_energy_points,
+            eta,
+        )
+        np.savez_compressed(
+            sample_dir / "wanniertools_style_surface_spectrum.npz",
+            **surface,
+        )
+
+        print(
+            f"  [{index}/9] {selected.system} {selected.state}: Hall response",
+            flush=True,
+        )
+        hall_nk = hall_mesh_for_state(selected, settings)
+        hall, hall_summary = calculate_hall(
+            spec,
+            hoppings,
+            ef,
+            window,
+            hall_nk,
+            settings.response_energy_points,
+        )
+        hall.to_csv(sample_dir / "wanniertools_style_hall.csv", index=False)
+        hall_summaries.append(
+            {
+                "system": selected.system,
+                "state": selected.state,
+                "source_id": selected.source_id,
+                "expected_chern_up": selected.expected_chern_up,
+                **hall_summary,
+            }
+        )
+        results.append(
+            {
+                "selected": selected,
+                "audit": audit,
+                "window": window,
+                "bulk": bulk,
+                "bulk_ticks": ticks,
+                "bulk_labels": labels,
+                "ribbon": ribbon,
+                "surface": surface,
+                "hall": hall,
+                "width": int(width),
+            }
+        )
+
+    pd.DataFrame(hall_summaries).to_csv(
+        output_dir / "step18_02_hall_summary.csv", index=False
+    )
+
+    print("[3/6] Three-system publication figures", flush=True)
+    figure_manifest: list[dict[str, str]] = []
+    plotters = (
+        ("bulk", plot_bulk_grid),
+        ("ribbon", plot_ribbon_grid),
+        ("surface", plot_surface_grid),
+        ("hall", plot_hall_grid),
+    )
+    for kind, plotter in plotters:
+        paths = plotter(
+            results,
+            specs,
+            ["lieb", "tts", "fes"],
+            figures_dir / f"step18_three_system_{kind}_triptychs",
+            settings.dpi,
+        )
+        for path in paths:
+            figure_manifest.append(
+                {"scope": "three_system", "kind": kind, "path": path}
             )
 
+    print("[4/6] Individual-system figures", flush=True)
+    for system in ("lieb", "tts", "fes"):
+        for kind, plotter in plotters:
+            paths = plotter(
+                results,
+                specs,
+                [system],
+                figures_dir / f"step18_{system}_{kind}_triptych",
+                settings.dpi,
+            )
+            for path in paths:
+                figure_manifest.append(
+                    {"scope": system, "kind": kind, "path": path}
+                )
+    pd.DataFrame(figure_manifest).to_csv(
+        output_dir / "step18_03_figure_manifest.csv", index=False
+    )
+
+    print("[5/6] Physics and color certificates", flush=True)
+    noncritical = audit_df[audit_df["state"] != "critical"]
+    critical = audit_df[audit_df["state"] == "critical"]
     certificate = {
         "code_version": CODE_VERSION,
-        "global_abs_chern_rule_supported": bool(
-            magnitude is not None and magnitude["balanced_accuracy"] >= 0.75
+        "created_utc": utc_now(),
+        "quick": bool(quick),
+        "selected_state_count": int(len(audit_df)),
+        "exactly_three_states_per_system": bool(
+            audit_df.groupby("system")["state"].nunique().eq(3).all()
         ),
-        "global_high_chern_sign_rule_supported": bool(
-            sign is not None and sign["balanced_accuracy"] >= 0.70
+        "noncritical_chern_match": bool(
+            noncritical["chern_matches_selection"].fillna(0).astype(int).eq(1).all()
         ),
-        "coarse_single_vs_paired_valley_rule_supported": bool(
-            coarse is not None and coarse["balanced_accuracy"] >= 0.65
+        "critical_gap_closure_pass": bool(
+            critical["critical_gap_pass"].fillna(0).astype(int).eq(1).all()
         ),
-        "single_global_four_family_classifier_supported": bool(
-            fine is not None and fine["balanced_accuracy"] >= 0.75
+        "fes_topological_global_insulator": bool(
+            audit_df[
+                (audit_df["system"] == "fes")
+                & (audit_df["state"] == "topological")
+            ]["is_global_insulator"].iloc[0]
         ),
-        "high_symmetry_Gamma_vs_M_rule_supported": bool(
-            high is not None and high["balanced_accuracy"] >= 0.80
+        "fes_topological_classification": (
+            "global_insulator"
+            if bool(
+                audit_df[
+                    (audit_df["system"] == "fes")
+                    & (audit_df["state"] == "topological")
+                ]["is_global_insulator"].iloc[0]
+            )
+            else "spin_chern_band_metal"
         ),
-        "global_Sigma_vs_SigmaPrime_rule_supported": bool(
-            generic is not None and generic["balanced_accuracy"] >= 0.70
-        ),
-        "upper_linear_boundary_rule_supported": bool(
-            upper_linear["balanced_accuracy"] >= 0.95
-        ),
-        "upper_quadratic_correction_useful": bool(
-            upper_quad["balanced_accuracy"] - upper_linear["balanced_accuracy"] >= 0.005
-        ),
-        "upper_step06_mass_direction_recovered": bool(
-            upper_result["cosine"] >= 0.98
-        ),
-        "multiple_minus2_components_supported": bool(
-            len(lower_result["components"]) >= 2
-        ),
-        "distinct_minus2_local_mass_charts_supported": bool(
-            len({row["transition_id"] for row in dominant_rows}) >= 2
-        ),
-        "mass_gradient_best_cluster_count": int(cluster_result["best_k"]),
-        "mass_gradient_cosine_silhouette": float(cluster_result["best_silhouette"]),
-        "key_metrics": {
-            "global_magnitude": magnitude,
-            "global_sign": sign,
-            "transition_coarse": coarse,
-            "transition_fine": fine,
-            "high_symmetry_axis": high,
-            "generic_diagonal_axis": generic,
-            "upper_linear": upper_linear,
-            "upper_quadratic": upper_quad,
-            "upper_mass_direction_cosine": upper_result["cosine"],
+        "palettes": {
+            "lieb": LIEB_FES_COLORS,
+            "fes": LIEB_FES_COLORS,
+            "tts": TTS_COLORS,
+            "critical": CRITICAL_COLOR,
+            "bulk": BODY_COLOR,
         },
-        "dominant_minus2_component_charts": dominant_rows,
-        "interpretation": {
-            "supported": [
-                "参数规则能够在独立 Sobol 上较好地区分 |C_up|=1 与 |C_up|=2。",
-                "transition-grouped 学习能够识别单个高对称谷与成对普通谷两类粗机制。",
-                "Gamma 与 M 高对称单谷机制具有稳定可分的参数特征。",
-                "formal 上侧相图中的 ML 线性边界方向与 Step06 Sigma' 质量方向一致。",
-                "两个主要 C_up=-2 连通分量分别对齐到不同的局部质量图表。",
-            ],
-            "not_supported": [
-                "高 Chern 手性符号不存在可靠的单一全局参数判据。",
-                "Sigma 与 Sigma' 不能由一个跨 transition 的全局分类器稳定区分。",
-                "四类 valley 机制不能压缩为单一全局分类规则。",
-            ],
+        "color_policy": (
+            "Exact phase-map strong colors for spin-resolved edge and Hall data; "
+            "critical spectra use neutral dark gray; bulk states use light gray."
+        ),
+        "energy_reference_policy": {
+            "lieb": "global midpoint between VBM and CBM",
+            "tts": "global midpoint between VBM and CBM",
+            "fes": (
+                "local midpoint at the selected Gamma transition valley because "
+                "the topological representative is an indirect-overlap band metal"
+            ),
+            "critical": "critical closing energy",
         },
+        "hall_units": {
+            "spin_resolved_and_charge": "e^2/h",
+            "spin_hall": "e/(2*pi)",
+        },
+        "run_settings": settings.__dict__,
+        "elapsed_seconds": float(time.time() - started),
     }
+    with (output_dir / "step18_04_final_certificate.json").open(
+        "w", encoding="utf-8"
+    ) as handle:
+        json.dump(certificate, handle, indent=2, ensure_ascii=False)
 
-    lines = [
-        "# TTS Step 08M 机制感知机器学习结论",
-        "",
-        "## 一、机器学习支持的规律",
-        "",
-    ]
-    for item in certificate["interpretation"]["supported"]:
-        lines.append(f"- {item}")
-    lines += ["", "## 二、机器学习不支持的过度简化", ""]
-    for item in certificate["interpretation"]["not_supported"]:
-        lines.append(f"- {item}")
-    lines += [
-        "",
-        "## 三、上侧 +2↔0 质量方向",
-        "",
-        (
-            f"- grouped-CV 线性逻辑回归 balanced accuracy = "
-            f"{upper_linear['balanced_accuracy']:.4f}"
-        ),
-        (
-            f"- 二次逻辑回归 balanced accuracy = "
-            f"{upper_quad['balanced_accuracy']:.4f}"
-        ),
-        (
-            f"- ML 边界方向与 Step06 Sigma' 局域质量方向的 |cosine| = "
-            f"{upper_result['cosine']:.6f}"
-        ),
-        (
-            f"- ML 边界：r4 = {upper_result['linear_rule']['boundary_slope']:.6f} r3 "
-            f"+ {upper_result['linear_rule']['boundary_intercept']:.6f}"
-        ),
-        (
-            f"- Step06 质量零线：r4 = {upper_result['mass_slope']:.6f} r3 "
-            f"+ {upper_result['mass_intercept']:.6f}"
-        ),
-        "",
-        "## 四、推荐物理表述",
-        "",
-        (
-            "TTS 的机器学习结果不支持 Lieb 式单一全局质量坐标。更合适的结论是："
-            "七维参数中存在可学习的层级规律——首先区分高对称单谷与成对普通谷机制，"
-            "随后在各机制内部使用局部质量坐标。ML 可以恢复上侧 Sigma' 质量方向并识别"
-            "两个 -2 区域对应不同局部质量图表，但不能用一个全局公式同时决定 valley "
-            "方向、Chern 手性和全部相区。"
-        ),
-    ]
-
-    atomic_write_json(
-        certificate,
-        config.output_dir / "step08M_17_mechanism_discovery_certificate.json",
-    )
-    atomic_write_text(
-        "\n".join(lines),
-        config.output_dir / "step08M_18_candidate_mechanism_rules.md",
-    )
+    print("[6/6] Complete", flush=True)
+    print(json.dumps(certificate, indent=2, ensure_ascii=False), flush=True)
     return certificate
 
 
-# =============================================================================
-# Main workflow
-# =============================================================================
-
-def run_step08M(config: Step08MConfig) -> dict[str, Any]:
-    config = config.normalized()
-    start = time.time()
-
-    audit = audit_frozen_versions(config)
-    atomic_write_csv(
-        pd.DataFrame(audit["version_rows"]),
-        config.output_dir / "step08M_00_frozen_version_audit.csv",
-    )
-
-    inputs = load_inputs(config)
-    input_summary = {
-        key: (
-            {"rows": int(value.shape[0]), "columns": int(value.shape[1])}
-            if isinstance(value, pd.DataFrame)
-            else {"type": type(value).__name__}
-        )
-        for key, value in inputs.items()
-    }
-    atomic_write_json(
-        {
-            "code_version": CODE_VERSION,
-            "configuration": asdict(config),
-            "frozen_version_audit": audit,
-            "input_summary": input_summary,
-        },
-        config.output_dir / "step08M_00_run_configuration.json",
-    )
-
-    global_result = run_global_rules(inputs, config)
-    transition_result = run_transition_mechanism_learning(inputs, config)
-    cluster_result = run_mass_gradient_clustering(inputs, config)
-    upper_result = run_upper_boundary_rule(inputs, config)
-    lower_result = run_lower_component_alignment(inputs, config)
-
-    certificate = write_rule_summary(
-        global_result,
-        transition_result,
-        cluster_result,
-        upper_result,
-        lower_result,
-        config,
-    )
-
-    summary = {
-        "code_version": CODE_VERSION,
-        "output_dir": str(config.output_dir.resolve()),
-        "elapsed_seconds": float(time.time() - start),
-        "all_frozen_versions_pass": audit["all_frozen_versions_pass"],
-        "certificate": certificate,
-        "output_files": [
-            str(path.relative_to(config.output_dir))
-            for path in sorted(config.output_dir.rglob("*"))
-            if path.is_file()
-        ],
-    }
-    atomic_write_json(summary, config.output_dir / "step08M_19_run_summary.json")
-    return summary
-
-
-def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="TTS Step08M mechanism-aware machine learning"
-    )
-    parser.add_argument(
-        "--tts-archive",
-        type=Path,
-        default=Path("tts(1).zip"),
-    )
-    parser.add_argument(
-        "--formal-scan-input",
-        type=Path,
-        default=Path("TTS_Cup2_Formal_Refined_Scans(1).zip"),
-    )
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("outputs_tts_step08M_mechanism_aware_ml"),
+        default=DEFAULT_OUTPUT,
     )
-    parser.add_argument("--n-jobs", type=int, default=1)
-    parser.add_argument("--bootstrap-repeats", type=int, default=300)
-    parser.add_argument("--transition-lambda-window", type=float, default=0.18)
-    parser.add_argument("--allow-version-mismatch", action="store_true")
+    parser.add_argument("--quick", action="store_true")
+    parser.add_argument(
+        "--refresh-hall-only",
+        action="store_true",
+        help="Reuse existing nine-state outputs and refresh Hall data/figures only.",
+    )
     return parser
 
 
-def main() -> None:
-    args = build_arg_parser().parse_args()
-    config = Step08MConfig(
-        output_dir=args.output_dir,
-        tts_archive=args.tts_archive,
-        formal_scan_input=args.formal_scan_input,
-        n_jobs=args.n_jobs,
-        bootstrap_repeats=args.bootstrap_repeats,
-        transition_lambda_window=args.transition_lambda_window,
-        require_frozen_versions=not args.allow_version_mismatch,
-    )
-    summary = run_step08M(config)
-    print("TTS Step08M completed.")
-    print("Output directory:", summary["output_dir"])
-    print(
-        "Upper mass direction recovered:",
-        summary["certificate"]["upper_step06_mass_direction_recovered"],
-    )
-    print(
-        "Single global four-family rule supported:",
-        summary["certificate"]["single_global_four_family_classifier_supported"],
-    )
+def main() -> int:
+    args = build_parser().parse_args()
+    if args.refresh_hall_only:
+        result = refresh_hall_outputs(
+            Path(args.output_dir),
+            quick=bool(args.quick),
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        run(Path(args.output_dir), quick=bool(args.quick))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

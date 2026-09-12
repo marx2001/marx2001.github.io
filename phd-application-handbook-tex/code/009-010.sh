@@ -1,4 +1,3 @@
-
 EMIN=-15
 EMAX=15
 LORBIT=11

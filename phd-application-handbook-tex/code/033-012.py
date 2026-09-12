@@ -1,4 +1,3 @@
-
 Hamiltonian shape: (400, 2, 2)
 Hamiltonian at first k-point:
  [[-0.1+0.j  3. +0.j]

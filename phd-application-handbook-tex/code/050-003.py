@@ -1,1710 +1,1696 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-TTS Step 03 — 七维全局 Sobol、严格 spin-Chern 分扇区与分层机器学习
-
-研究目标
---------
-1. 在去除整体能量平移后的七维参数空间
-   (m_e, t1, t2, r1, r2, r3, r4)
-   中进行全局 Sobol 低差异采样；
-2. 使用冻结的 TTS Step 01 Hamiltonian、周期规范、完整 BZ 带隙与
-   非阿贝尔 spin-Chern 标签器；
-3. 对所有非零 Chern 或网格不一致样本执行更严格的多网格、多 shift 复核；
-4. 保留 C_up = 0, ±1, ±2, ... 的完整分扇区标签，而不是只做“拓扑/平庸”合并；
-5. 建立分层模型：
-      Level A: 全局绝缘体门控；
-      Level B1: 严格绝缘体中的 spin-Chern 拓扑/平庸二分类；
-      Level B2: C_up 精确扇区多分类（样本数足够时自动运行）；
-6. 使用参数空间整簇留出与独立 Sobol 序列评估空间外推能力。
-
-关键实现原则
-------------
-- 物理计算完全串行；不使用 ProcessPoolExecutor，兼容 Windows/Jupyter。
-- sklearn/joblib 默认 n_jobs=1，避免 BrokenProcessPool。
-- 全局 Sobol 主样本与独立 Sobol 外部样本严格分开。
-- 已知 C_up=-1、C_up=±2 和文献平庸点仅作为回归测试 control，
-  不参与全局相比例统计，也不参与机器学习训练或测试。
-- overall energy shift e0 固定为 0。默认将 Sobol 七维向量归一化到单位范数，
-  消除不改变本征态和拓扑的整体能量缩放自由度。
-- spin_chern_TI_candidate 仍是模型级候选；边缘态、DOS、SHC 在后续步骤验证。
-"""
-
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
-from pathlib import Path
-from typing import Dict, Iterable, Sequence, Any
+"""
+TTS Step12M — right-junction multi-closure repair and publication phase map
+============================================================================
+
+Purpose
+-------
+Resolve the only failed Step11M edge certificate:
+
+    edge_03_03__03_04:
+    (r3, r4) = (0.060, 0.128) -> (0.060, 0.132)
+    C_up      = -2             -> 0
+
+Step11M found a certified Sigma' two-valley closing with Berry charge -2, but
+that charge did not equal the endpoint Chern change +2.  Step12M therefore
+forces a separate full-Brillouin-zone search for a preceding generic four-valley
+closing.  The target hypothesis is
+
+    C_up: -2 --(four generic valleys, +4)--> +2
+              --(two Sigma' valleys, -2)--> 0.
+
+The workflow also recomputes a refined strict 13x13 junction map and produces
+publication-oriented figures with phase colors, unreliable-point markers,
+legends, a junction zoom, the target path, and certified closure annotations.
+
+Scope
+-----
+All background parameters (m_e, t1, t2, r1, r2) remain fixed.  Only the same
+Lieb-aligned r3-r4 plane is studied.  No universal seven-dimensional boundary
+is claimed.
+"""
+
 import argparse
-import hashlib
 import json
 import math
-import time
-import warnings
+import sys
+import zipfile
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any, Iterable
 
 import matplotlib.pyplot as plt
+from matplotlib.colors import BoundaryNorm, ListedColormap
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch, Rectangle
 import numpy as np
 import pandas as pd
-from scipy.stats import qmc
+from scipy.optimize import differential_evolution, minimize, minimize_scalar
 
-try:
-    from joblib import dump
-    from sklearn.cluster import KMeans
-    from sklearn.ensemble import RandomForestClassifier
-    from sklearn.inspection import permutation_importance
-    from sklearn.linear_model import LogisticRegression
-    from sklearn.metrics import (
-        accuracy_score,
-        balanced_accuracy_score,
-        classification_report,
-        ConfusionMatrixDisplay,
-        f1_score,
-        precision_score,
-        recall_score,
-    )
-    from sklearn.model_selection import (
-        GroupShuffleSplit,
-        RepeatedStratifiedKFold,
-        cross_validate,
-        train_test_split,
-    )
-    from sklearn.pipeline import Pipeline
-    from sklearn.preprocessing import StandardScaler
-except ImportError as exc:  # pragma: no cover
-    raise ImportError(
-        "Step 03 需要 scipy、scikit-learn 与 joblib。请运行：\n"
-        "  conda install scipy scikit-learn joblib\n"
-        "或：\n"
-        "  pip install scipy scikit-learn joblib"
-    ) from exc
-
-try:
-    import TTS_step01_model_and_label_audit_v2 as core
-except ImportError as exc:  # pragma: no cover
-    raise ImportError(
-        "未找到 TTS_step01_model_and_label_audit_v2.py。\n"
-        "请把 Step 01 v2 的 py 文件与本脚本放在同一目录。"
-    ) from exc
-
-try:
-    import TTS_step02v3_robust_hamiltonian_fingerprint_and_ML as fp_core
-except ImportError as exc:  # pragma: no cover
-    raise ImportError(
-        "未找到 TTS_step02v3_robust_hamiltonian_fingerprint_and_ML.py。\n"
-        "Step 03 复用 Step 02 v3 已审计的 4x4 自旋块 Hamiltonian fingerprint，\n"
-        "请把配套文件放在同一目录。"
-    ) from exc
-
-EXPECTED_STEP01_VERSION = "TTS_STEP01_V2_20260713"
-EXPECTED_STEP02_VERSION = "TTS_STEP02V3_20260713"
-if getattr(core, "CODE_VERSION", None) != EXPECTED_STEP01_VERSION:
-    raise RuntimeError(
-        "Step 01 核心版本不一致：\n"
-        f"  expected = {EXPECTED_STEP01_VERSION}\n"
-        f"  loaded   = {getattr(core, 'CODE_VERSION', None)}"
-    )
-if getattr(fp_core, "CODE_VERSION", None) != EXPECTED_STEP02_VERSION:
-    raise RuntimeError(
-        "Step 02 fingerprint 版本不一致：\n"
-        f"  expected = {EXPECTED_STEP02_VERSION}\n"
-        f"  loaded   = {getattr(fp_core, 'CODE_VERSION', None)}"
-    )
-
-np.set_printoptions(precision=10, suppress=True)
-
-CODE_VERSION = "TTS_STEP03_V1_20260713"
-WORKFLOW_STEP = "step03"
-SYSTEM_TAG = "tts8_bns127391"
-TASK_TAG = "global_sobol_hierarchical_topology_ml"
-REDUCED7 = core.REDUCED7.copy()
-RAW8 = core.RAW8.copy()
+import TTS_step09M_minus2_local_kp_refinement as base
+import TTS_step09M_minus2_linear_signed_v2 as linear_v2
+import TTS_step09M_D_multiclosure_path_atlas as step09d
+import TTS_step10M_generic_four_valley_boundary_atlas as step10
+import TTS_step11M_lieb_aligned_fixed_slice as step11
 
 
-# =============================================================================
-# Configuration
-# =============================================================================
+CODE_VERSION = "TTS_STEP12M_JUNCTION_MULTICLOSURE_REPAIR_V1_2_FORCE_SOURCE_LOAD_20260724"
+REDUCED7 = list(base.REDUCED7)
+FIXED5 = ["m_e", "t1", "t2", "r1", "r2"]
+TARGET_EDGE_ID = "edge_03_03__03_04"
+
+PHASE_COLORS = {
+    -2: "#3B6FB6",
+    -1: "#7FB6D6",
+     0: "#F2F2F2",
+     1: "#F2B36D",
+     2: "#C84A3A",
+}
+PHASE_ORDER = [-2, -1, 0, 1, 2]
+
 
 @dataclass
-class Step03Config:
-    output_dir: Path = Path("outputs_tts_step03_global_sobol_hierarchical_topology_ml")
+class Step12Config:
+    output_dir: Path
 
-    # Independent Sobol sequences.
-    train_sobol_power: int = 9       # 2^9 = 512
-    external_sobol_power: int = 7    # 2^7 = 128
-    train_seed: int = 20260713
-    external_seed: int = 20260731
-    normalize_sobol_vectors: bool = True
-    include_control_points: bool = True
+    # Target edge is fixed by the Step11M junction grid.
+    target_edge_id: str = TARGET_EDGE_ID
 
-    # Physics label: all samples first receive this full-BZ audit.
-    gap_nk: int = 60
-    initial_chern_grids: tuple[int, ...] = (21, 31)
-    initial_chern_shifts: tuple[tuple[float, float], ...] = (
-        (0.0, 0.0),
-        (0.5, 0.5),
-    )
+    # Targeted generic four-valley search.  The expected direct boundary from
+    # the certified right-upper branch intersects r3=0.060 near lambda~0.624.
+    generic_lambda_bracket: tuple[float, float] = (0.42, 0.80)
+    sigma_prime_lambda_bracket: tuple[float, float] = (0.80, 1.00)
+    generic_predicted_lambda: float = 0.6244
+    generic_k_box_half_width: float = 0.90
+    generic_powell_restarts: int = 12
+    generic_de_repeats: int = 4
+    closure_gap_tol: float = 2.0e-8
+    closure_lambda_dedup_tol: float = 8.0e-4
 
-    # Any nonzero Chern or inconsistent initial result is sent here.
-    strict_gap_grids: tuple[int, ...] = (51, 71)
-    strict_gap_shifts: tuple[tuple[float, float], ...] = (
-        (0.0, 0.0),
-        (0.5, 0.0),
-        (0.0, 0.5),
-        (0.5, 0.5),
-    )
-    strict_chern_grids: tuple[int, ...] = (31, 41, 51)
+    # Diagnostic gap tracks along the edge.
+    gap_track_lambda_points: int = 241
+    sigma_prime_kappa_points: int = 241
+
+    # Refined strict junction map.  This range contains r3=0.060 and both
+    # endpoints r4=0.128, 0.132, while extending above the second closing.
+    refined_r3_range: tuple[float, float] = (0.056, 0.064)
+    refined_r4_range: tuple[float, float] = (0.128, 0.134)
+    refined_grid_n: int = 13
+
+    strict_gap_grids: tuple[int, ...] = (71, 101)
+    strict_chern_grids: tuple[int, ...] = (61, 81, 101)
     strict_chern_shifts: tuple[tuple[float, float], ...] = (
         (0.0, 0.0),
         (0.5, 0.5),
     )
 
-    direct_gap_skip_chern: float = 5.0e-3
-    gap_tol: float = 1.0e-3
-    chern_integer_tol: float = 0.08
-    min_link_tol: float = 1.0e-7
-    sum_rule_tol: float = 0.15
+    quick: bool = False
+    force_recalculate: bool = False
+    random_seed: int = 20260724
 
-    # Hamiltonian fingerprint reused from Step 02 v3.
-    fingerprint_path_n: int = 21
-
-    # Machine learning.
-    n_parameter_clusters: int = 8
-    group_holdout_splits: int = 20
-    group_holdout_fraction: float = 0.25
-    random_validation_fraction: float = 0.25
-    cv_splits: int = 5
-    cv_repeats: int = 3
-    random_forest_estimators: int = 500
-    permutation_repeats: int = 20
-    min_class_count_for_training: int = 5
-    ml_n_jobs: int = 1
-
-    # Workflow controls.
-    checkpoint_every: int = 10
-    force_recalculate_physics: bool = False
-    force_recalculate_fingerprint: bool = False
-    force_recalculate_ml: bool = False
-
-    def normalized(self) -> "Step03Config":
-        self.output_dir = Path(self.output_dir)
+    def normalized(self) -> "Step12Config":
+        self.output_dir = Path(self.output_dir).expanduser().resolve()
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        (self.output_dir / "figures").mkdir(parents=True, exist_ok=True)
-        (self.output_dir / "models").mkdir(parents=True, exist_ok=True)
-        if self.train_sobol_power < 2:
-            raise ValueError("train_sobol_power must be >= 2")
-        if self.external_sobol_power < 0:
-            raise ValueError("external_sobol_power must be >= 0")
-        if self.gap_nk < 8:
-            raise ValueError("gap_nk must be >= 8")
-        if self.checkpoint_every < 1:
-            raise ValueError("checkpoint_every must be >= 1")
-        if self.ml_n_jobs == 0:
-            raise ValueError("ml_n_jobs cannot be 0")
-        if self.n_parameter_clusters < 2:
-            raise ValueError("n_parameter_clusters must be >= 2")
+        for sub in [
+            "figures",
+            "refined_junction_points",
+            "_search_core",
+            "_strict_core",
+        ]:
+            (self.output_dir / sub).mkdir(exist_ok=True)
+        if self.refined_grid_n < 5:
+            raise ValueError("refined_grid_n must be >= 5")
+        if self.gap_track_lambda_points < 61:
+            raise ValueError("gap_track_lambda_points must be >= 61")
+        lo, hi = sorted(self.generic_lambda_bracket)
+        if not (0.0 <= lo < hi <= 1.0):
+            raise ValueError("generic_lambda_bracket must lie in [0,1]")
         return self
 
-    @property
-    def n_train(self) -> int:
-        return 2 ** int(self.train_sobol_power)
-
-    @property
-    def n_external(self) -> int:
-        return 0 if self.external_sobol_power == 0 else 2 ** int(self.external_sobol_power)
-
-
-# Known points are controls only. They are excluded from all ML datasets and global fractions.
-CONTROL_REDUCED7: dict[str, dict[str, float]] = {
-    "control_topological_Cm1": core.reduced7_from_raw8(core.TOPO_PARAMS),
-    "control_trivial_paper": core.reduced7_from_raw8(core.PAPER_PARAMS),
-    "control_high_chern_Cp2": {
-        "m_e": 0.227401,
-        "t1": -0.325125,
-        "t2": 0.494735,
-        "r1": -0.970710,
-        "r2": -0.332244,
-        "r3": 0.448718,
-        "r4": -0.575438,
-    },
-    "control_high_chern_Cm2": {
-        "m_e": 0.251241,
-        "t1": -0.907558,
-        "t2": 0.610720,
-        "r1": -0.609335,
-        "r2": 0.657497,
-        "r3": 0.597549,
-        "r4": -0.532312,
-    },
-}
-CONTROL_EXPECTED_CUP = {
-    "control_topological_Cm1": -1,
-    "control_trivial_paper": 0,
-    "control_high_chern_Cp2": 2,
-    "control_high_chern_Cm2": -2,
-}
-
 
 # =============================================================================
-# Output registry and safe file helpers
+# Generic I/O
 # =============================================================================
 
 
-def _run_tag(config: Step03Config) -> str:
-    return (
-        f"{SYSTEM_TAG}_train{config.n_train}_external{config.n_external}"
-        f"_gap{config.gap_nk}"
-        f"_chern{'-'.join(map(str, config.initial_chern_grids))}"
-        f"_strict{'-'.join(map(str, config.strict_chern_grids))}"
-        f"_seed{config.train_seed}"
-    )
-
-
-def build_output_registry(config: Step03Config) -> Dict[str, Path]:
-    config = config.normalized()
-    run_tag = _run_tag(config)
-    figures = config.output_dir / "figures"
-    models = config.output_dir / "models"
-
-    def out(substep: int, content: str, ext: str, *, figure: bool = False, model: bool = False) -> Path:
-        base = models if model else figures if figure else config.output_dir
-        return base / f"{WORKFLOW_STEP}_{substep:02d}_{content}__{run_tag}.{ext.lstrip('.')}"
-
-    return {
-        "run_config": out(0, "run_configuration", "json"),
-        "registry": out(0, "output_file_registry", "csv"),
-        "parameters": out(1, "train_external_sobol_and_controls", "csv"),
-        "physics_checkpoint": out(2, "physics_labels_checkpoint", "csv"),
-        "physics_final": out(2, "physics_labels_final", "csv"),
-        "chern_attempts": out(2, "chern_attempt_records", "csv"),
-        "strict_gap_checks": out(2, "strict_gap_check_records", "csv"),
-        "phase_counts": out(3, "global_phase_counts", "csv"),
-        "phase_counts_source": out(3, "phase_counts_by_sobol_source", "csv"),
-        "chern_sector_counts": out(3, "strict_insulator_chern_sector_counts", "csv"),
-        "control_audit": out(3, "control_point_regression_audit", "csv"),
-        "topological_candidates": out(3, "strict_spin_chern_TI_candidates", "csv"),
-        "best_by_sector": out(3, "best_gap_candidate_by_chern_sector", "csv"),
-        "phase_counts_fig": out(3, "global_phase_counts", "png", figure=True),
-        "chern_sector_fig": out(3, "strict_insulator_chern_sector_counts", "png", figure=True),
-        "fingerprint": out(4, "hamiltonian_fingerprint", "csv"),
-        "fingerprint_metadata": out(4, "hamiltonian_fingerprint_metadata", "csv"),
-        "analytic_features": out(4, "symmetry_motivated_parameter_features", "csv"),
-        "combined_features": out(4, "combined_ml_feature_table", "csv"),
-        "cluster_assignments": out(5, "train_parameter_space_cluster_assignments", "csv"),
-        "levelA_dataset": out(5, "levelA_global_insulator_gate_dataset", "csv"),
-        "levelB_binary_dataset": out(5, "levelB_binary_topological_vs_trivial_dataset", "csv"),
-        "levelB_multiclass_dataset": out(5, "levelB_multiclass_chern_sector_dataset", "csv"),
-        "random_cv_metrics": out(6, "random_repeated_cv_metrics", "csv"),
-        "cluster_holdout_metrics": out(6, "parameter_cluster_holdout_metrics", "csv"),
-        "external_metrics": out(6, "independent_sobol_external_metrics", "csv"),
-        "best_model_registry": out(6, "best_model_registry", "csv"),
-        "external_predictions": out(7, "independent_sobol_external_predictions", "csv"),
-        "cluster_predictions": out(7, "best_cluster_holdout_predictions", "csv"),
-        "classification_reports": out(7, "classification_reports", "txt"),
-        "levelA_confusion": out(7, "levelA_external_confusion", "png", figure=True),
-        "levelB_confusion": out(7, "levelB_binary_external_confusion", "png", figure=True),
-        "levelB_multi_confusion": out(7, "levelB_multiclass_external_confusion", "png", figure=True),
-        "group_importance": out(8, "levelB_binary_grouped_permutation_importance", "csv"),
-        "individual_importance": out(8, "levelB_binary_individual_permutation_importance", "csv"),
-        "importance_fig": out(8, "levelB_binary_grouped_permutation_importance", "png", figure=True),
-        "misclassified": out(9, "independent_sobol_misclassified_hamiltonians", "csv"),
-        "summary": out(10, "run_summary", "json"),
-        "levelA_model": out(10, "best_levelA_model", "joblib", model=True),
-        "levelB_model": out(10, "best_levelB_binary_model", "joblib", model=True),
-        "levelB_multi_model": out(10, "best_levelB_multiclass_model", "joblib", model=True),
-    }
-
-
-def atomic_write_csv(df: pd.DataFrame, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix(path.suffix + ".tmp")
-    df.to_csv(temp, index=False, encoding="utf-8-sig")
-    temp.replace(path)
-
-
-def atomic_write_text(text: str, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix(path.suffix + ".tmp")
-    temp.write_text(text, encoding="utf-8")
-    temp.replace(path)
-
-
-def file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def write_run_metadata(config: Step03Config, outputs: Dict[str, Path]) -> None:
-    payload = asdict(config)
-    payload["output_dir"] = str(config.output_dir)
-    payload.update({
-        "code_version": CODE_VERSION,
-        "step01_core_version": getattr(core, "CODE_VERSION", None),
-        "step02_fingerprint_version": getattr(fp_core, "CODE_VERSION", None),
-        "n_train": config.n_train,
-        "n_external": config.n_external,
-        "run_tag": _run_tag(config),
-    })
-    atomic_write_text(json.dumps(payload, indent=2, ensure_ascii=False), outputs["run_config"])
-
-    rows = []
-    for key, path in outputs.items():
-        rows.append({"key": key, "path": str(path), "exists": int(path.exists())})
-    atomic_write_csv(pd.DataFrame(rows), outputs["registry"])
-
-
-# =============================================================================
-# Step 1. Global Sobol generation
-# =============================================================================
-
-
-def _sobol_rows(power: int, seed: int, source: str, normalize: bool) -> list[dict]:
-    if power <= 0:
-        return []
-    sampler = qmc.Sobol(d=len(REDUCED7), scramble=True, seed=int(seed))
-    unit = sampler.random_base2(m=int(power))
-    raw_vectors = 2.0 * unit - 1.0
-    norms = np.linalg.norm(raw_vectors, axis=1)
-    if np.any(norms < 1.0e-12):
-        raise RuntimeError("Sobol generated a near-zero parameter vector; change the seed.")
-    vectors = raw_vectors / norms[:, None] if normalize else raw_vectors
-
-    rows: list[dict] = []
-    prefix = "train" if source == "train_sobol" else "external"
-    for index, (raw_vec, vec, norm) in enumerate(zip(raw_vectors, vectors, norms)):
-        reduced = {name: float(value) for name, value in zip(REDUCED7, vec)}
-        raw8 = core.raw8_from_reduced7(reduced, e0=0.0)
-        row = {
-            "sample_id": f"sobol_{prefix}_{index:06d}",
-            "sample_source": source,
-            "sobol_index": int(index),
-            "is_control": 0,
-            "is_ml_eligible": 1,
-            "pre_normalization_norm": float(norm),
-            "post_normalization_norm": float(np.linalg.norm(vec)),
-            **reduced,
-            **raw8,
-        }
-        for name, value in zip(REDUCED7, raw_vec):
-            row[f"pre_norm_{name}"] = float(value)
-        rows.append(row)
-    return rows
-
-
-def generate_parameters(config: Step03Config, outputs: Dict[str, Path]) -> pd.DataFrame:
-    path = outputs["parameters"]
-    if path.exists():
-        existing = pd.read_csv(path, low_memory=False)
-        expected = config.n_train + config.n_external + (len(CONTROL_REDUCED7) if config.include_control_points else 0)
-        if len(existing) == expected:
-            return existing
-
-    rows = _sobol_rows(
-        config.train_sobol_power,
-        config.train_seed,
-        "train_sobol",
-        config.normalize_sobol_vectors,
-    )
-    rows.extend(_sobol_rows(
-        config.external_sobol_power,
-        config.external_seed,
-        "external_sobol",
-        config.normalize_sobol_vectors,
-    ))
-
-    if config.include_control_points:
-        for sample_id, reduced in CONTROL_REDUCED7.items():
-            raw8 = core.raw8_from_reduced7(reduced, e0=0.0)
-            rows.append({
-                "sample_id": sample_id,
-                "sample_source": "control",
-                "sobol_index": -1,
-                "is_control": 1,
-                "is_ml_eligible": 0,
-                "pre_normalization_norm": float(np.linalg.norm([reduced[k] for k in REDUCED7])),
-                "post_normalization_norm": float(np.linalg.norm([reduced[k] for k in REDUCED7])),
-                **reduced,
-                **raw8,
-            })
-
-    df = pd.DataFrame(rows)
-    if df["sample_id"].duplicated().any():
-        raise RuntimeError("Duplicate sample_id generated.")
-    atomic_write_csv(df, path)
-    return df
-
-
-# =============================================================================
-# Step 2. Physics labels with strict nonzero-Chern verification
-# =============================================================================
-
-
-def _integer_if_close(value: float, tol: float) -> int | None:
-    if not np.isfinite(value):
-        return None
-    nearest = int(np.rint(value))
-    return nearest if abs(float(value) - nearest) <= tol else None
-
-
-def one_chern_attempt(
-    sample_id: str,
-    params: Dict[str, float],
-    nk: int,
-    shift: tuple[float, float],
-    stage: str,
-    config: Step03Config,
-) -> dict:
-    row: dict[str, Any] = {
-        "sample_id": sample_id,
-        "stage": stage,
-        "chern_nk": int(nk),
-        "shift_x": float(shift[0]),
-        "shift_y": float(shift[1]),
-        "attempt_ok": 0,
-        "attempt_reliable": 0,
-        "error": "",
-    }
-    try:
-        calc = core.calculate_spin_cherns(params, nk=int(nk), shift=shift)
-        row.update(calc)
-        cu = _integer_if_close(float(calc["chern_up"]), config.chern_integer_tol)
-        cd = _integer_if_close(float(calc["chern_down"]), config.chern_integer_tol)
-        ct = _integer_if_close(float(calc["chern_total"]), config.chern_integer_tol)
-        reliable = bool(
-            cu is not None and cd is not None and ct is not None
-            and float(calc["min_det_up"]) > config.min_link_tol
-            and float(calc["min_det_down"]) > config.min_link_tol
-            and float(calc["min_det_total"]) > config.min_link_tol
-            and float(calc["sum_rule_error"]) <= config.sum_rule_tol
-        )
-        row.update({
-            "chern_up_int": np.nan if cu is None else int(cu),
-            "chern_down_int": np.nan if cd is None else int(cd),
-            "chern_total_int": np.nan if ct is None else int(ct),
-            "attempt_ok": 1,
-            "attempt_reliable": int(reliable),
-        })
-    except Exception as exc:  # numerical failures are retained as data
-        row["error"] = repr(exc)
-    return row
-
-
-def _exact_consensus(attempts: Sequence[dict]) -> dict:
-    total = len(attempts)
-    reliable = [a for a in attempts if int(a.get("attempt_reliable", 0)) == 1]
-    keys: list[tuple[int, int, int]] = []
-    for a in reliable:
-        keys.append((
-            int(a["chern_up_int"]),
-            int(a["chern_down_int"]),
-            int(a["chern_total_int"]),
-        ))
-    unique = sorted(set(keys))
-    exact = bool(total > 0 and len(reliable) == total and len(unique) == 1)
-    if exact:
-        cu, cd, ct = unique[0]
-    else:
-        cu = cd = ct = None
-    return {
-        "attempt_count": int(total),
-        "reliable_count": int(len(reliable)),
-        "n_unique_reliable_sectors": int(len(unique)),
-        "exact_consensus": int(exact),
-        "consensus_chern_up": cu,
-        "consensus_chern_down": cd,
-        "consensus_chern_total": ct,
-    }
-
-
-def _classify_from_gap_and_chern(
-    gap: dict,
-    consensus: dict,
-    config: Step03Config,
-    verification_level: str,
-) -> dict:
-    row: dict[str, Any] = {}
-    row.update({
-        "verification_level": verification_level,
-        "chern_exact_consensus": int(consensus["exact_consensus"]),
-        "chern_attempt_count": int(consensus["attempt_count"]),
-        "chern_reliable_count": int(consensus["reliable_count"]),
-        "chern_unique_sector_count": int(consensus["n_unique_reliable_sectors"]),
-    })
-    if not consensus["exact_consensus"]:
-        row.update({
-            "phase_label": "boundary_or_chern_unreliable",
-            "chern_up_int": np.nan,
-            "chern_down_int": np.nan,
-            "chern_total_int": np.nan,
-            "is_strict_insulator": 0,
-            "is_spin_chern_topological": 0,
-            "is_spin_chern_TI_candidate": 0,
-        })
-        return row
-
-    cu = int(consensus["consensus_chern_up"])
-    cd = int(consensus["consensus_chern_down"])
-    ct = int(consensus["consensus_chern_total"])
-    topological = bool(cu == -cd and abs(cu) >= 1 and ct == 0)
-    direct_gapped = bool(float(gap["min_direct_gap"]) > config.gap_tol)
-    indirect_gapped = bool(float(gap["indirect_gap"]) > config.gap_tol)
-    balanced = bool(
-        int(gap["spin_occupancy_mismatch_count"]) == 0
-        and float(gap["min_balanced_sector_gap"]) > config.gap_tol
-    )
-
-    if not direct_gapped:
-        label = "noninsulating_or_gap_closing"
-    elif not balanced:
-        label = "spin_sector_filling_mismatch"
-    elif topological and indirect_gapped:
-        label = "spin_chern_TI_candidate"
-    elif topological:
-        label = "spin_chern_band_metal"
-    elif cu == 0 and cd == 0 and ct == 0 and indirect_gapped:
-        label = "trivial_insulator"
-    elif cu == 0 and cd == 0 and ct == 0:
-        label = "indirect_overlap"
-    else:
-        label = "other_gapped_chern_sector" if indirect_gapped else "other_overlapping_chern_sector"
-
-    row.update({
-        "phase_label": label,
-        "chern_up_int": cu,
-        "chern_down_int": cd,
-        "chern_total_int": ct,
-        "spin_chern_int": int((cu - cd) // 2) if (cu - cd) % 2 == 0 else 0.5 * (cu - cd),
-        "is_strict_insulator": int(label in {"spin_chern_TI_candidate", "trivial_insulator"}),
-        "is_spin_chern_topological": int(topological),
-        "is_spin_chern_TI_candidate": int(label == "spin_chern_TI_candidate"),
-    })
-    return row
-
-
-def evaluate_sample_physics(
-    row: pd.Series,
-    config: Step03Config,
-) -> tuple[dict, list[dict], list[dict]]:
-    sample_id = str(row["sample_id"])
-    reduced = {name: float(row[name]) for name in REDUCED7}
-    params = core.raw8_from_reduced7(reduced, e0=0.0)
-
-    result: dict[str, Any] = {
-        "sample_id": sample_id,
-        "sample_source": str(row["sample_source"]),
-        "is_control": int(row["is_control"]),
-        "is_ml_eligible": int(row["is_ml_eligible"]),
-        **reduced,
-        **params,
-        **core.derived_features(params),
-        "physics_error": "",
-    }
-    chern_rows: list[dict] = []
-    strict_gap_rows: list[dict] = []
-
-    try:
-        coarse_gap = core.scan_band_gaps(
-            params,
-            nk=int(config.gap_nk),
-            shift=(0.0, 0.0),
-            gap_tol=config.gap_tol,
-        )
-        result.update(coarse_gap)
-        result["coarse_min_direct_gap"] = float(coarse_gap["min_direct_gap"])
-        result["coarse_indirect_gap"] = float(coarse_gap["indirect_gap"])
-
-        if float(coarse_gap["min_direct_gap"]) <= config.direct_gap_skip_chern:
-            result.update({
-                "phase_label": "noninsulating_or_gap_closing",
-                "verification_level": "gap_only",
-                "chern_exact_consensus": 0,
-                "chern_attempt_count": 0,
-                "chern_reliable_count": 0,
-                "chern_unique_sector_count": 0,
-                "chern_up_int": np.nan,
-                "chern_down_int": np.nan,
-                "chern_total_int": np.nan,
-                "is_strict_insulator": 0,
-                "is_spin_chern_topological": 0,
-                "is_spin_chern_TI_candidate": 0,
-            })
-            return result, chern_rows, strict_gap_rows
-
-        if (
-            int(coarse_gap["spin_occupancy_mismatch_count"]) > 0
-            or float(coarse_gap["min_balanced_sector_gap"]) <= config.gap_tol
-        ):
-            result.update({
-                "phase_label": "spin_sector_filling_mismatch",
-                "verification_level": "gap_and_filling",
-                "chern_exact_consensus": 0,
-                "chern_attempt_count": 0,
-                "chern_reliable_count": 0,
-                "chern_unique_sector_count": 0,
-                "chern_up_int": np.nan,
-                "chern_down_int": np.nan,
-                "chern_total_int": np.nan,
-                "is_strict_insulator": 0,
-                "is_spin_chern_topological": 0,
-                "is_spin_chern_TI_candidate": 0,
-            })
-            return result, chern_rows, strict_gap_rows
-
-        initial_attempts: list[dict] = []
-        for nk in config.initial_chern_grids:
-            for shift in config.initial_chern_shifts:
-                attempt = one_chern_attempt(sample_id, params, int(nk), shift, "initial", config)
-                initial_attempts.append(attempt)
-                chern_rows.append(attempt)
-        initial_consensus = _exact_consensus(initial_attempts)
-
-        initial_nonzero = bool(
-            initial_consensus["exact_consensus"]
-            and int(initial_consensus["consensus_chern_up"]) != 0
-        )
-        needs_strict = bool(
-            int(row["is_control"]) == 1
-            or not initial_consensus["exact_consensus"]
-            or initial_nonzero
-        )
-
-        if not needs_strict:
-            result.update(_classify_from_gap_and_chern(
-                coarse_gap,
-                initial_consensus,
-                config,
-                verification_level="initial_all_grid_consensus",
-            ))
-            return result, chern_rows, strict_gap_rows
-
-        # Strict gap audit for all nonzero/ambiguous/control samples.
-        strict_gap_results: list[dict] = []
-        for nk in config.strict_gap_grids:
-            for shift in config.strict_gap_shifts:
-                g = core.scan_band_gaps(params, nk=int(nk), shift=shift, gap_tol=config.gap_tol)
-                g = {"sample_id": sample_id, "stage": "strict", **g}
-                strict_gap_results.append(g)
-                strict_gap_rows.append(g)
-
-        strict_gap = dict(coarse_gap)
-        strict_gap["min_direct_gap"] = float(min(g["min_direct_gap"] for g in strict_gap_results))
-        strict_gap["indirect_gap"] = float(min(g["indirect_gap"] for g in strict_gap_results))
-        strict_gap["min_balanced_sector_gap"] = float(min(g["min_balanced_sector_gap"] for g in strict_gap_results))
-        strict_gap["spin_occupancy_mismatch_count"] = int(max(g["spin_occupancy_mismatch_count"] for g in strict_gap_results))
-        strict_gap["min_spin_gap_up"] = float(min(g["min_spin_gap_up"] for g in strict_gap_results))
-        strict_gap["min_spin_gap_down"] = float(min(g["min_spin_gap_down"] for g in strict_gap_results))
-        result["min_direct_gap"] = strict_gap["min_direct_gap"]
-        result["indirect_gap"] = strict_gap["indirect_gap"]
-        result["min_balanced_sector_gap"] = strict_gap["min_balanced_sector_gap"]
-        result["spin_occupancy_mismatch_count"] = strict_gap["spin_occupancy_mismatch_count"]
-        result["strict_gap_verified"] = 1
-        result["strict_gap_check_count"] = len(strict_gap_results)
-
-        strict_attempts: list[dict] = []
-        for nk in config.strict_chern_grids:
-            for shift in config.strict_chern_shifts:
-                attempt = one_chern_attempt(sample_id, params, int(nk), shift, "strict", config)
-                strict_attempts.append(attempt)
-                chern_rows.append(attempt)
-        strict_consensus = _exact_consensus(strict_attempts)
-        result.update(_classify_from_gap_and_chern(
-            strict_gap,
-            strict_consensus,
-            config,
-            verification_level="strict_all_grid_consensus",
-        ))
-        result["strict_chern_verified"] = int(strict_consensus["exact_consensus"])
-        return result, chern_rows, strict_gap_rows
-
-    except Exception as exc:
-        result.update({
-            "phase_label": "true_numeric_error",
-            "physics_error": repr(exc),
-            "verification_level": "error",
-            "is_strict_insulator": 0,
-            "is_spin_chern_topological": 0,
-            "is_spin_chern_TI_candidate": 0,
-        })
-        return result, chern_rows, strict_gap_rows
-
-
-def run_physics_labels(
-    config: Step03Config,
-    outputs: Dict[str, Path],
-    parameters: pd.DataFrame,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    final_path = outputs["physics_final"]
-    checkpoint_path = outputs["physics_checkpoint"]
-    chern_path = outputs["chern_attempts"]
-    strict_gap_path = outputs["strict_gap_checks"]
-
-    if final_path.exists() and not config.force_recalculate_physics:
-        final = pd.read_csv(final_path, low_memory=False)
-        if set(final["sample_id"]) == set(parameters["sample_id"]):
-            attempts = pd.read_csv(chern_path, low_memory=False) if chern_path.exists() else pd.DataFrame()
-            strict_gaps = pd.read_csv(strict_gap_path, low_memory=False) if strict_gap_path.exists() else pd.DataFrame()
-            return final, attempts, strict_gaps
-
-    if checkpoint_path.exists() and not config.force_recalculate_physics:
-        done_df = pd.read_csv(checkpoint_path, low_memory=False)
-        done_ids = set(done_df["sample_id"].astype(str))
-        result_rows = done_df.to_dict("records")
-    else:
-        done_ids = set()
-        result_rows = []
-
-    if chern_path.exists() and not config.force_recalculate_physics:
-        chern_rows = pd.read_csv(chern_path, low_memory=False).to_dict("records")
-    else:
-        chern_rows = []
-    if strict_gap_path.exists() and not config.force_recalculate_physics:
-        strict_gap_rows = pd.read_csv(strict_gap_path, low_memory=False).to_dict("records")
-    else:
-        strict_gap_rows = []
-
-    total = len(parameters)
-    started = time.time()
-    processed_now = 0
-    for _, row in parameters.iterrows():
-        sample_id = str(row["sample_id"])
-        if sample_id in done_ids:
+def _select_member(zf: zipfile.ZipFile, token: str, suffix: str | None = None) -> str:
+    matches = []
+    for name in zf.namelist():
+        if token not in Path(name).name and token not in name:
             continue
-        result, attempts, gap_checks = evaluate_sample_physics(row, config)
-        result_rows.append(result)
-        chern_rows.extend(attempts)
-        strict_gap_rows.extend(gap_checks)
-        processed_now += 1
-
-        if processed_now % config.checkpoint_every == 0:
-            atomic_write_csv(pd.DataFrame(result_rows), checkpoint_path)
-            atomic_write_csv(pd.DataFrame(chern_rows), chern_path)
-            atomic_write_csv(pd.DataFrame(strict_gap_rows), strict_gap_path)
-            print(
-                f"Physics: {len(result_rows)}/{total} | "
-                f"elapsed {time.time() - started:.1f} s"
-            )
-
-    physics_df = pd.DataFrame(result_rows)
-    # Restore deterministic parameter order.
-    order = {sid: i for i, sid in enumerate(parameters["sample_id"].astype(str))}
-    physics_df["__order"] = physics_df["sample_id"].map(order)
-    physics_df = physics_df.sort_values("__order").drop(columns="__order").reset_index(drop=True)
-    atomic_write_csv(physics_df, final_path)
-    atomic_write_csv(physics_df, checkpoint_path)
-    atomic_write_csv(pd.DataFrame(chern_rows), chern_path)
-    atomic_write_csv(pd.DataFrame(strict_gap_rows), strict_gap_path)
-    return physics_df, pd.DataFrame(chern_rows), pd.DataFrame(strict_gap_rows)
-
-
-# =============================================================================
-# Step 3. Phase and Chern-sector summaries
-# =============================================================================
-
-
-def summarize_phases(
-    config: Step03Config,
-    outputs: Dict[str, Path],
-    physics: pd.DataFrame,
-) -> dict[str, pd.DataFrame]:
-    global_df = physics[physics["is_control"] == 0].copy()
-    phase_counts = (
-        global_df["phase_label"].value_counts(dropna=False)
-        .rename_axis("phase_label").reset_index(name="count")
-    )
-    phase_counts["fraction"] = phase_counts["count"] / max(len(global_df), 1)
-    atomic_write_csv(phase_counts, outputs["phase_counts"])
-
-    by_source = (
-        global_df.groupby(["sample_source", "phase_label"], dropna=False)
-        .size().reset_index(name="count")
-    )
-    by_source["source_total"] = by_source.groupby("sample_source")["count"].transform("sum")
-    by_source["fraction_within_source"] = by_source["count"] / by_source["source_total"]
-    atomic_write_csv(by_source, outputs["phase_counts_source"])
-
-    strict_ins = global_df[global_df["is_strict_insulator"] == 1].copy()
-    sector_counts = (
-        strict_ins["chern_up_int"].value_counts(dropna=False).sort_index()
-        .rename_axis("chern_up_int").reset_index(name="count")
-    )
-    if len(sector_counts):
-        sector_counts["fraction_of_strict_insulators"] = sector_counts["count"] / len(strict_ins)
-    atomic_write_csv(sector_counts, outputs["chern_sector_counts"])
-
-    topo = global_df[global_df["phase_label"] == "spin_chern_TI_candidate"].copy()
-    topo = topo.sort_values(["chern_up_int", "indirect_gap"], ascending=[True, False])
-    atomic_write_csv(topo, outputs["topological_candidates"])
-
-    if len(topo):
-        best = (
-            topo.sort_values("indirect_gap", ascending=False)
-            .groupby("chern_up_int", as_index=False).head(1)
-            .sort_values("chern_up_int")
-        )
-    else:
-        best = pd.DataFrame(columns=topo.columns)
-    atomic_write_csv(best, outputs["best_by_sector"])
-
-    controls = physics[physics["is_control"] == 1].copy()
-    if len(controls):
-        controls["expected_chern_up"] = controls["sample_id"].map(CONTROL_EXPECTED_CUP)
-        controls["control_chern_match"] = (
-            controls["chern_up_int"].fillna(9999).astype(float)
-            == controls["expected_chern_up"].astype(float)
-        ).astype(int)
-    atomic_write_csv(controls, outputs["control_audit"])
-
-    # Default-color plots only.
-    fig, ax = plt.subplots(figsize=(9, 5))
-    if len(phase_counts):
-        ax.bar(phase_counts["phase_label"].astype(str), phase_counts["count"])
-        ax.tick_params(axis="x", rotation=35)
-    ax.set_ylabel("Count")
-    ax.set_title("TTS Step 03 global Sobol phase counts")
-    fig.tight_layout()
-    fig.savefig(outputs["phase_counts_fig"], dpi=220, bbox_inches="tight")
-    plt.close(fig)
-
-    fig, ax = plt.subplots(figsize=(7, 4.5))
-    if len(sector_counts):
-        ax.bar(sector_counts["chern_up_int"].astype(str), sector_counts["count"])
-    ax.set_xlabel("C_up")
-    ax.set_ylabel("Strict-insulator count")
-    ax.set_title("Spin-Chern sectors among strict insulators")
-    fig.tight_layout()
-    fig.savefig(outputs["chern_sector_fig"], dpi=220, bbox_inches="tight")
-    plt.close(fig)
-
-    return {
-        "phase_counts": phase_counts,
-        "phase_counts_by_source": by_source,
-        "chern_sector_counts": sector_counts,
-        "topological_candidates": topo,
-        "best_by_sector": best,
-        "control_audit": controls,
-    }
-
-
-# =============================================================================
-# Step 4. Features: symmetry combinations + Step 02 v3 fingerprint
-# =============================================================================
-
-
-def symmetry_parameter_features(parameters: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    rows: list[dict] = []
-    meta: list[dict] = []
-    root2 = math.sqrt(2.0)
-    for _, row in parameters.iterrows():
-        p = {name: float(row[name]) for name in REDUCED7}
-        me, t1, t2, r1, r2, r3, r4 = [p[k] for k in REDUCED7]
-        values = {
-            "sample_id": str(row["sample_id"]),
-            **p,
-            "abs_m_e": abs(me),
-            "abs_t1": abs(t1),
-            "abs_t2": abs(t2),
-            "t_sum": t1 + t2,
-            "t_diff": t1 - t2,
-            "t_product": t1 * t2,
-            "t_norm": math.sqrt(t1*t1 + t2*t2),
-            "t_s": (t1 + t2) / root2,
-            "t_d": (t1 - t2) / root2,
-            "r13_sum": r1 + r3,
-            "r13_diff": r1 - r3,
-            "r24_sum": r2 + r4,
-            "r24_diff": r2 - r4,
-            "r12_sum": r1 + r2,
-            "r34_sum": r3 + r4,
-            "r_all_sum": r1 + r2 + r3 + r4,
-            "r_all_norm": math.sqrt(r1*r1 + r2*r2 + r3*r3 + r4*r4),
-            "r13_product": r1 * r3,
-            "r24_product": r2 * r4,
-            "r_cross_product": (r1 + r3) * (r2 + r4),
-            "r_anisotropy_norm": math.sqrt((r1-r3)**2 + (r2-r4)**2),
-            "r_pair_sum_mismatch": (r1 + r3) - (r2 + r4),
-            "r_pair_diff_mismatch": (r1 - r3) - (r2 - r4),
-            "m_e_t_sum": me * (t1 + t2),
-            "m_e_t_diff": me * (t1 - t2),
-            "m_e_r13_sum": me * (r1 + r3),
-            "m_e_r24_sum": me * (r2 + r4),
-            "t_product_r_cross": (t1*t2) * ((r1+r3)*(r2+r4)),
-        }
-        rows.append(values)
-
-    df = pd.DataFrame(rows)
-    for feature in df.columns:
-        if feature == "sample_id":
+        if suffix is not None and not name.lower().endswith(suffix.lower()):
             continue
-        family = "raw_parameters" if feature in REDUCED7 else "symmetry_parameter_combinations"
-        meta.append({
-            "feature": feature,
-            "feature_family": family,
-            "k_region": "parameter_space",
-            "spin": "none",
-            "channel": feature,
-        })
-    return df, pd.DataFrame(meta)
+        matches.append(name)
+    if not matches:
+        raise FileNotFoundError(f"No member containing {token!r}")
+    return sorted(matches, key=lambda x: (len(Path(x).parts), len(x)))[0]
 
 
-def run_fingerprint(
-    config: Step03Config,
-    outputs: Dict[str, Path],
-    parameters: pd.DataFrame,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    fp_path = outputs["fingerprint"]
-    meta_path = outputs["fingerprint_metadata"]
-    if fp_path.exists() and meta_path.exists() and not config.force_recalculate_fingerprint:
-        fp_df = pd.read_csv(fp_path, low_memory=False)
-        if set(fp_df["sample_id"]) == set(parameters["sample_id"]):
-            return fp_df, pd.read_csv(meta_path, low_memory=False)
-
-    if fp_path.exists() and not config.force_recalculate_fingerprint:
-        done = pd.read_csv(fp_path, low_memory=False)
-        done_ids = set(done["sample_id"].astype(str))
-        fp_rows = done.to_dict("records")
-    else:
-        done_ids = set()
-        fp_rows = []
-
-    meta_rows: list[dict] = []
-    total = len(parameters)
-    started = time.time()
-    processed = 0
-    for _, row in parameters.iterrows():
-        sample_id = str(row["sample_id"])
-        if sample_id in done_ids:
-            continue
-        reduced = {name: float(row[name]) for name in REDUCED7}
-        params = core.raw8_from_reduced7(reduced, e0=0.0)
-        feat, meta = fp_core.extract_fingerprint(sample_id, params, config.fingerprint_path_n)
-        fp_rows.append(feat)
-        meta_rows.extend(meta)
-        processed += 1
-        if processed % config.checkpoint_every == 0:
-            atomic_write_csv(pd.DataFrame(fp_rows), fp_path)
-            print(f"Fingerprint: {len(fp_rows)}/{total} | elapsed {time.time()-started:.1f} s")
-
-    fp_df = pd.DataFrame(fp_rows)
-    order = {sid: i for i, sid in enumerate(parameters["sample_id"].astype(str))}
-    fp_df["__order"] = fp_df["sample_id"].map(order)
-    fp_df = fp_df.sort_values("__order").drop(columns="__order").reset_index(drop=True)
-
-    # If resuming, regenerate metadata from one sample to guarantee a complete table.
-    if not meta_rows and len(parameters):
-        first = parameters.iloc[0]
-        reduced = {name: float(first[name]) for name in REDUCED7}
-        _, meta_rows = fp_core.extract_fingerprint(
-            str(first["sample_id"]),
-            core.raw8_from_reduced7(reduced, e0=0.0),
-            config.fingerprint_path_n,
-        )
-    meta_df = pd.DataFrame(meta_rows).drop_duplicates("feature", keep="first")
-    atomic_write_csv(fp_df, fp_path)
-    atomic_write_csv(meta_df, meta_path)
-    return fp_df, meta_df
+def read_csv_token(source: str | Path, token: str) -> pd.DataFrame:
+    source = Path(source).expanduser().resolve()
+    if source.is_file() and source.suffix.lower() == ".zip":
+        with zipfile.ZipFile(source) as zf:
+            member = _select_member(zf, token, ".csv")
+            with zf.open(member) as stream:
+                return pd.read_csv(stream, low_memory=False)
+    if source.is_dir():
+        matches = sorted(source.rglob(f"*{token}*"))
+        if not matches:
+            raise FileNotFoundError(token)
+        return pd.read_csv(matches[0], low_memory=False)
+    raise FileNotFoundError(source)
 
 
-def build_feature_table(
-    outputs: Dict[str, Path],
-    parameters: pd.DataFrame,
-    physics: pd.DataFrame,
-    fingerprint: pd.DataFrame,
-    fingerprint_meta: pd.DataFrame,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    analytic, analytic_meta = symmetry_parameter_features(parameters)
-    atomic_write_csv(analytic, outputs["analytic_features"])
-    feature_meta = pd.concat([analytic_meta, fingerprint_meta], ignore_index=True)
-    feature_meta = feature_meta.drop_duplicates("feature", keep="first")
-
-    labels = physics[[
-        "sample_id", "sample_source", "is_control", "is_ml_eligible",
-        "phase_label", "is_strict_insulator", "is_spin_chern_topological",
-        "is_spin_chern_TI_candidate", "chern_up_int", "chern_down_int",
-        "chern_total_int", "min_direct_gap", "indirect_gap",
-        "min_balanced_sector_gap", "spin_occupancy_mismatch_count",
-        "verification_level",
-    ]].copy()
-    combined = labels.merge(analytic, on="sample_id", how="inner").merge(
-        fingerprint, on="sample_id", how="inner"
-    )
-    atomic_write_csv(combined, outputs["combined_features"])
-    return combined, feature_meta
-
-
-# =============================================================================
-# Step 5-8. Hierarchical ML with cluster holdout and independent Sobol test
-# =============================================================================
-
-
-def _metric_binary(y_true: Sequence[int], y_pred: Sequence[int]) -> dict:
-    y_true = np.asarray(y_true, dtype=int)
-    y_pred = np.asarray(y_pred, dtype=int)
-    both = len(np.unique(y_true)) >= 2
-    return {
-        "n_test": int(len(y_true)),
-        "accuracy": float(accuracy_score(y_true, y_pred)) if len(y_true) else np.nan,
-        "balanced_accuracy": float(balanced_accuracy_score(y_true, y_pred)) if both else np.nan,
-        "precision": float(precision_score(y_true, y_pred, zero_division=0)) if len(y_true) else np.nan,
-        "recall": float(recall_score(y_true, y_pred, zero_division=0)) if len(y_true) else np.nan,
-        "f1": float(f1_score(y_true, y_pred, zero_division=0)) if len(y_true) else np.nan,
-        "n_positive_true": int(np.sum(y_true == 1)),
-        "n_positive_pred": int(np.sum(y_pred == 1)),
-    }
-
-
-def _metric_multiclass(y_true: Sequence[str], y_pred: Sequence[str]) -> dict:
-    y_true = np.asarray(y_true)
-    y_pred = np.asarray(y_pred)
-    return {
-        "n_test": int(len(y_true)),
-        "accuracy": float(accuracy_score(y_true, y_pred)) if len(y_true) else np.nan,
-        "balanced_accuracy": float(balanced_accuracy_score(y_true, y_pred)) if len(np.unique(y_true)) >= 2 else np.nan,
-        "f1_macro": float(f1_score(y_true, y_pred, average="macro", zero_division=0)) if len(y_true) else np.nan,
-        "n_classes_true": int(len(np.unique(y_true))),
-        "n_classes_pred": int(len(np.unique(y_pred))),
-    }
-
-
-def _make_model(model_name: str, config: Step03Config, multiclass: bool = False):
-    if model_name == "logistic":
-        return Pipeline([
-            ("scale", StandardScaler()),
-            ("model", LogisticRegression(
-                max_iter=5000,
-                class_weight="balanced",
-                solver="lbfgs",
-                random_state=42,
-            )),
-        ])
-    if model_name == "random_forest":
-        return RandomForestClassifier(
-            n_estimators=int(config.random_forest_estimators),
-            class_weight="balanced_subsample",
-            random_state=42,
-            n_jobs=int(config.ml_n_jobs),
-            min_samples_leaf=2,
-        )
-    raise ValueError(f"Unknown model: {model_name}")
-
-
-def _feature_sets(combined: pd.DataFrame, metadata: pd.DataFrame) -> dict[str, list[str]]:
-    numeric = set(combined.select_dtypes(include=[np.number]).columns)
-    raw7 = [f for f in REDUCED7 if f in numeric]
-    symmetry = metadata.loc[
-        metadata["feature_family"].isin(["raw_parameters", "symmetry_parameter_combinations"]),
-        "feature",
-    ].tolist()
-    projector = metadata.loc[metadata["feature_family"] == "path_projector", "feature"].tolist()
-    spectrum = metadata.loc[metadata["feature_family"].isin([
-        "fixed_k_spin_spectrum", "fixed_k_full_spectrum", "path_spectrum"
-    ]), "feature"].tolist()
-    fingerprint_all = metadata.loc[
-        ~metadata["feature_family"].isin(["raw_parameters", "symmetry_parameter_combinations"]),
-        "feature",
-    ].tolist()
-
-    sets = {
-        "raw7": raw7,
-        "symmetry_parameters": [f for f in symmetry if f in numeric],
-        "spectrum_fingerprint": [f for f in spectrum if f in numeric],
-        "projector_fingerprint": [f for f in projector if f in numeric],
-        "full_fingerprint": [f for f in fingerprint_all if f in numeric],
-        "combined_all": [f for f in dict.fromkeys(symmetry + fingerprint_all) if f in numeric],
-    }
-    return {name: cols for name, cols in sets.items() if len(cols) > 0}
-
-
-def _build_datasets(
-    config: Step03Config,
-    outputs: Dict[str, Path],
-    combined: pd.DataFrame,
-) -> dict[str, pd.DataFrame]:
-    train = combined[(combined["sample_source"] == "train_sobol") & (combined["is_ml_eligible"] == 1)].copy()
-    external = combined[(combined["sample_source"] == "external_sobol") & (combined["is_ml_eligible"] == 1)].copy()
-
-    train["levelA_target"] = train["is_strict_insulator"].astype(int)
-    external["levelA_target"] = external["is_strict_insulator"].astype(int)
-
-    train_B = train[train["phase_label"].isin(["trivial_insulator", "spin_chern_TI_candidate"])].copy()
-    external_B = external[external["phase_label"].isin(["trivial_insulator", "spin_chern_TI_candidate"])].copy()
-    train_B["levelB_binary_target"] = (train_B["phase_label"] == "spin_chern_TI_candidate").astype(int)
-    external_B["levelB_binary_target"] = (external_B["phase_label"] == "spin_chern_TI_candidate").astype(int)
-    train_B["levelB_multiclass_target"] = train_B["chern_up_int"].round().astype(int).map(lambda x: f"C_up_{x:+d}")
-    external_B["levelB_multiclass_target"] = external_B["chern_up_int"].round().astype(int).map(lambda x: f"C_up_{x:+d}")
-
-    atomic_write_csv(train, outputs["levelA_dataset"])
-    atomic_write_csv(train_B, outputs["levelB_binary_dataset"])
-    atomic_write_csv(train_B, outputs["levelB_multiclass_dataset"])
-    return {
-        "train_A": train,
-        "external_A": external,
-        "train_B": train_B,
-        "external_B": external_B,
-    }
-
-
-def _assign_parameter_clusters(
-    config: Step03Config,
-    outputs: Dict[str, Path],
-    datasets: dict[str, pd.DataFrame],
-) -> dict[str, pd.DataFrame]:
-    train_A = datasets["train_A"].copy()
-    n_clusters = min(config.n_parameter_clusters, max(2, len(train_A) // 20))
-    n_clusters = min(n_clusters, max(2, len(train_A) - 1))
-    km = KMeans(n_clusters=n_clusters, random_state=42, n_init=20)
-    labels = km.fit_predict(train_A[REDUCED7].astype(float))
-    train_A["parameter_cluster"] = labels
-
-    # Carry the same train-sample cluster labels to Level B.
-    mapping = train_A.set_index("sample_id")["parameter_cluster"]
-    train_B = datasets["train_B"].copy()
-    train_B["parameter_cluster"] = train_B["sample_id"].map(mapping).astype(int)
-
-    assignments = train_A[["sample_id", *REDUCED7, "parameter_cluster"]].copy()
-    atomic_write_csv(assignments, outputs["cluster_assignments"])
-    datasets = dict(datasets)
-    datasets["train_A"] = train_A
-    datasets["train_B"] = train_B
-    return datasets
-
-
-def _valid_binary_dataset(df: pd.DataFrame, target: str, min_count: int) -> bool:
-    counts = df[target].value_counts()
-    return len(counts) == 2 and int(counts.min()) >= min_count
-
-
-def _valid_multiclass_dataset(df: pd.DataFrame, target: str, min_count: int) -> bool:
-    counts = df[target].value_counts()
-    return len(counts) >= 2 and int(counts.min()) >= min_count
-
-
-def _random_cv(
-    df: pd.DataFrame,
-    target: str,
-    task: str,
-    feature_sets: dict[str, list[str]],
-    config: Step03Config,
+def safe_read_csv_path(
+    path: str | Path,
+    *,
+    columns: list[str] | tuple[str, ...] | None = None,
+    required: bool = False,
 ) -> pd.DataFrame:
-    rows: list[dict] = []
-    multiclass = task.endswith("multiclass")
-    valid = _valid_multiclass_dataset(df, target, config.min_class_count_for_training) if multiclass else _valid_binary_dataset(df, target, config.min_class_count_for_training)
-    if not valid:
-        return pd.DataFrame([{
-            "task": task,
-            "status": "skipped_insufficient_class_counts",
-            "class_counts": json.dumps(df[target].value_counts().to_dict(), ensure_ascii=False),
-        }])
+    """Read a CSV without failing on a valid zero-row/zero-byte checkpoint.
 
-    min_count = int(df[target].value_counts().min())
-    n_splits = min(config.cv_splits, min_count)
-    if n_splits < 2:
-        return pd.DataFrame([{"task": task, "status": "skipped_cv_splits_lt_2"}])
-    cv = RepeatedStratifiedKFold(
-        n_splits=n_splits,
-        n_repeats=config.cv_repeats,
-        random_state=42,
+    Some Step12M diagnostics, especially the refined transition-edge table, may
+    legitimately contain zero rows. Older code wrote such a DataFrame without
+    column names, which creates an empty CSV and makes pandas raise
+    ``EmptyDataError`` during the plotting-only reload. Returning an empty frame
+    with a stable schema keeps the physical result intact and lets plotting run.
+    """
+    path = Path(path).expanduser().resolve()
+    schema = list(columns) if columns is not None else None
+    if not path.is_file():
+        if required:
+            raise FileNotFoundError(path)
+        return pd.DataFrame(columns=schema)
+    try:
+        frame = pd.read_csv(path, low_memory=False)
+    except pd.errors.EmptyDataError:
+        return pd.DataFrame(columns=schema)
+    if schema is not None:
+        for column in schema:
+            if column not in frame.columns:
+                frame[column] = pd.Series(dtype="object")
+        frame = frame.reindex(columns=schema + [c for c in frame.columns if c not in schema])
+    return frame
+
+
+def read_json_token(source: str | Path, token: str) -> dict[str, Any]:
+    source = Path(source).expanduser().resolve()
+    if source.is_file() and source.suffix.lower() == ".zip":
+        with zipfile.ZipFile(source) as zf:
+            member = _select_member(zf, token, ".json")
+            with zf.open(member) as stream:
+                return json.load(stream)
+    if source.is_dir():
+        matches = sorted(source.rglob(f"*{token}*"))
+        if not matches:
+            raise FileNotFoundError(token)
+        return json.loads(matches[0].read_text(encoding="utf-8"))
+    raise FileNotFoundError(source)
+
+
+def atomic_json(payload: dict[str, Any], path: Path) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, default=_json_default),
+        encoding="utf-8",
     )
-    scoring = {
-        "accuracy": "accuracy",
-        "balanced_accuracy": "balanced_accuracy",
-        "f1": "f1_macro" if multiclass else "f1",
+    tmp.replace(path)
+
+
+def atomic_csv(frame: pd.DataFrame, path: Path) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    frame.to_csv(tmp, index=False, encoding="utf-8-sig")
+    tmp.replace(path)
+
+
+def _json_default(value: Any) -> Any:
+    if isinstance(value, (np.bool_,)):
+        return bool(value)
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    if isinstance(value, (np.floating,)):
+        return float(value)
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, Path):
+        return str(value)
+    raise TypeError(type(value).__name__)
+
+
+def safe_int(value: Any) -> int | None:
+    if value is None or pd.isna(value):
+        return None
+    return int(value)
+
+
+# =============================================================================
+# Input reconstruction
+# =============================================================================
+
+
+def load_background(step11_source: str | Path) -> dict[str, float]:
+    payload = read_json_token(step11_source, "step11M_00_fixed_background.json")
+    if "fixed_background_parameters" in payload:
+        payload = payload["fixed_background_parameters"]
+    background = {name: float(payload[name]) for name in FIXED5}
+    return background
+
+
+def load_target_edge(step11_source: str | Path, edge_id: str) -> pd.Series:
+    edges = read_csv_token(step11_source, "step11M_04_right_junction_boundary_edges.csv")
+    selected = edges[edges["edge_id"].astype(str).eq(edge_id)]
+    if selected.empty:
+        # Fallback to selected edge table.
+        selected_edges = read_csv_token(step11_source, "step11M_05_selected_junction_edges.csv")
+        selected = selected_edges[selected_edges["edge_id"].astype(str).eq(edge_id)]
+    if selected.empty:
+        raise KeyError(f"Target edge {edge_id!r} not found in Step11M output")
+    return selected.iloc[0].copy()
+
+
+def load_right_upper_seed(step11_source: str | Path, edge: pd.Series) -> pd.Series:
+    points = read_csv_token(step11_source, "step11M_07_completed_certified_boundary_points.csv")
+    selected = points[
+        points["branch_hint"].astype(str).eq("generic_right_upper")
+        & points["point_certificate_pass"].astype(int).eq(1)
+    ].copy()
+    if selected.empty:
+        raise RuntimeError("No certified generic_right_upper seed in Step11M output")
+    target = np.array([
+        0.5 * (float(edge["r3_0"]) + float(edge["r3_1"])),
+        0.5 * (float(edge["r4_0"]) + float(edge["r4_1"])),
+    ])
+    distance = np.hypot(
+        selected["r3"].to_numpy(float) - target[0],
+        selected["r4"].to_numpy(float) - target[1],
+    )
+    return selected.iloc[int(np.argmin(distance))].copy()
+
+
+def validate_fixed_background(
+    background: dict[str, float],
+    edge: pd.Series,
+    seed: pd.Series,
+    tolerance: float = 1.0e-10,
+) -> None:
+    for name in FIXED5:
+        expected = float(background[name])
+        if name in seed and abs(float(seed[name]) - expected) > tolerance:
+            raise ValueError(f"Seed background mismatch in {name}")
+    if int(edge["chern_0"]) != -2 or int(edge["chern_1"]) != 0:
+        raise ValueError(
+            f"Expected target edge -2 -> 0, got {edge['chern_0']} -> {edge['chern_1']}"
+        )
+
+
+# =============================================================================
+# Frozen physical core
+# =============================================================================
+
+
+def configure_physics(
+    tts_archive: str | Path,
+    config: Step12Config,
+):
+    core, step4, step5, source_dir = base.import_reference_modules(tts_archive)
+    linear_v2.patch_step5_linear_path(step5, core)
+    step3 = linear_v2.import_step3(source_dir)
+
+    continuation = step10.ContinuationConfig(
+        output_dir=config.output_dir / "_search_core",
+        strict_gap_grids=tuple(config.strict_gap_grids),
+        strict_chern_grids=tuple(config.strict_chern_grids),
+        strict_chern_shifts=tuple(config.strict_chern_shifts),
+        closure_gap_tol=float(config.closure_gap_tol),
+        quick=bool(config.quick),
+        random_seed=int(config.random_seed),
+    ).normalized()
+    strict_config = step10.strict_step3_config(
+        step3,
+        config.output_dir / "_strict_core",
+        continuation,
+    )
+    search_config = step10.step5_config(
+        step5,
+        config.output_dir / "_search_core",
+        continuation,
+    )
+    # Explicitly strengthen full-BZ search for the missed generic orbit.
+    if config.quick:
+        search_config.full_bz_de_popsize = 10
+        search_config.full_bz_de_maxiter = 160
+        search_config.sphere_k_radii = (0.03, 0.06)
+    else:
+        search_config.full_bz_de_popsize = 20
+        search_config.full_bz_de_maxiter = 520
+        search_config.local_starts_per_manifold = 14
+        search_config.powell_maxiter = 1400
+        search_config.sphere_k_radii = (0.02, 0.04, 0.08)
+    search_config.spin_gap_accept_tol = float(config.closure_gap_tol)
+    search_config.active_spin_gap_tol = max(2.0e-6, 20.0 * config.closure_gap_tol)
+    search_config.random_seed = int(config.random_seed)
+    step5._step10m_config = search_config
+    return core, step4, step5, step3, strict_config, search_config
+
+
+# =============================================================================
+# Targeted full-BZ closure search
+# =============================================================================
+
+
+def wrap_k(value: float) -> float:
+    return float((float(value) + math.pi) % (2.0 * math.pi) - math.pi)
+
+
+def d4_start_points(step4, kx: float, ky: float) -> list[tuple[float, float]]:
+    orbit = step4.d4_orbit(wrap_k(kx), wrap_k(ky))
+    starts: list[tuple[float, float]] = []
+    for x, y in orbit:
+        point = (wrap_k(x), wrap_k(y))
+        if all(math.hypot(wrap_k(point[0] - a), wrap_k(point[1] - b)) > 1.0e-6 for a, b in starts):
+            starts.append(point)
+    return starts
+
+
+def full_bz_gap_objective(step5, pair: pd.Series, x: np.ndarray) -> float:
+    lam = float(np.clip(x[0], 0.0, 1.0))
+    kx = wrap_k(float(x[1]))
+    ky = wrap_k(float(x[2]))
+    gap = step5.spin_middle_gap(kx, ky, pair, lam, "up")
+    return float(gap * gap)
+
+
+def _candidate_row(
+    *,
+    method: str,
+    result,
+    pair: pd.Series,
+    step5,
+    source_bracket: str,
+    run_index: int,
+) -> dict[str, Any]:
+    lam, kx, ky = [float(v) for v in result.x]
+    kx = wrap_k(kx)
+    ky = wrap_k(ky)
+    gap = float(step5.spin_middle_gap(kx, ky, pair, lam, "up"))
+    return {
+        "search_method": method,
+        "source_bracket": source_bracket,
+        "run_index": int(run_index),
+        "critical_lambda": lam,
+        "critical_kx": kx,
+        "critical_ky": ky,
+        "spin_up_gap": gap,
+        "optimizer_success": int(bool(getattr(result, "success", True))),
+        "optimizer_message": str(getattr(result, "message", "")),
+        "optimizer_nfev": int(getattr(result, "nfev", -1)),
     }
-    for feature_name, features in feature_sets.items():
-        X = df[features].astype(float)
-        y = df[target]
-        for model_name in ("logistic", "random_forest"):
-            model = _make_model(model_name, config, multiclass=multiclass)
-            scores = cross_validate(
-                model,
-                X,
-                y,
-                cv=cv,
-                scoring=scoring,
-                n_jobs=int(config.ml_n_jobs),
-                error_score=np.nan,
+
+
+def search_generic_four_valley(
+    *,
+    step4,
+    step5,
+    pair: pd.Series,
+    seed: pd.Series,
+    config: Step12Config,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    lo, hi = sorted(config.generic_lambda_bracket)
+    seed_kx = float(seed["critical_kx_representative"])
+    seed_ky = float(seed["critical_ky_representative"])
+    orbit_starts = d4_start_points(step4, seed_kx, seed_ky)
+
+    # The local optimizers are initialized at the Step10M continuation valley.
+    # A few nearby lambda starts prevent a flat local basin from hiding the zero.
+    lambda_starts = np.linspace(
+        max(lo, config.generic_predicted_lambda - 0.10),
+        min(hi, config.generic_predicted_lambda + 0.10),
+        max(3, min(7, config.generic_powell_restarts // 2)),
+    )
+    starts: list[np.ndarray] = []
+    for lam in lambda_starts:
+        for kx, ky in orbit_starts[:4]:
+            starts.append(np.array([lam, kx, ky], dtype=float))
+    starts = starts[: max(4, int(config.generic_powell_restarts))]
+
+    candidates: list[dict[str, Any]] = []
+    bounds = [(lo, hi), (-math.pi, math.pi), (-math.pi, math.pi)]
+    for index, start in enumerate(starts):
+        result = minimize(
+            lambda x: full_bz_gap_objective(step5, pair, x),
+            start,
+            method="Powell",
+            bounds=bounds,
+            options={
+                "xtol": 1.0e-12,
+                "ftol": 1.0e-22,
+                "maxiter": (700 if config.quick else 1800),
+            },
+        )
+        candidates.append(
+            _candidate_row(
+                method="generic_seeded_Powell",
+                result=result,
+                pair=pair,
+                step5=step5,
+                source_bracket="generic",
+                run_index=index,
             )
-            rows.append({
-                "task": task,
-                "status": "ok",
-                "feature_set": feature_name,
-                "model": model_name,
-                "n_samples": len(df),
-                "n_features": len(features),
-                "accuracy_mean": float(np.nanmean(scores["test_accuracy"])),
-                "accuracy_std": float(np.nanstd(scores["test_accuracy"])),
-                "balanced_accuracy_mean": float(np.nanmean(scores["test_balanced_accuracy"])),
-                "balanced_accuracy_std": float(np.nanstd(scores["test_balanced_accuracy"])),
-                "f1_mean": float(np.nanmean(scores["test_f1"])),
-                "f1_std": float(np.nanstd(scores["test_f1"])),
-            })
+        )
+
+    # Always perform several independent full-BZ DE searches.  Step11M only
+    # invoked full-BZ fallback when no diagonal zero existed, which is why the
+    # earlier generic closing could be missed after Sigma' had already closed.
+    de_repeats = 2 if config.quick else int(config.generic_de_repeats)
+    for index in range(de_repeats):
+        result = differential_evolution(
+            lambda x: full_bz_gap_objective(step5, pair, x),
+            bounds=bounds,
+            seed=int(config.random_seed + 1009 * (index + 1)),
+            popsize=(10 if config.quick else 22),
+            maxiter=(180 if config.quick else 600),
+            tol=1.0e-12,
+            polish=True,
+            workers=1,
+            updating="immediate",
+        )
+        candidates.append(
+            _candidate_row(
+                method="generic_full_BZ_DE",
+                result=result,
+                pair=pair,
+                step5=step5,
+                source_bracket="generic",
+                run_index=index,
+            )
+        )
+
+    accepted: list[dict[str, Any]] = []
+    for row in sorted(candidates, key=lambda r: float(r["spin_up_gap"])):
+        if float(row["spin_up_gap"]) > float(config.closure_gap_tol):
+            continue
+        closure = {**row, "search_manifold": row["search_method"]}
+        valleys = step5.enumerate_spin_valleys(closure, pair, step5._step10m_config)
+        active = base.unique_active_spin_up_valleys(valleys, step5)
+        row["n_active_spin_up_valleys"] = int(len(active))
+        row["active_k_regions"] = ";".join(sorted(set(active["critical_k_region"].astype(str))))
+        if len(active) != 4:
+            continue
+        if not active["critical_k_region"].astype(str).eq("generic").all():
+            continue
+        accepted.append(closure)
+
+    accepted = step09d.global_deduplicate_closures(
+        step5,
+        accepted,
+        float(config.closure_lambda_dedup_tol),
+    )
+    return candidates, accepted
+
+
+def search_sigma_prime_closure(
+    *,
+    step5,
+    pair: pd.Series,
+    config: Step12Config,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    lo, hi = sorted(config.sigma_prime_lambda_bracket)
+    bracket = pd.Series(
+        {
+            "transition_id": TARGET_EDGE_ID + "_sigma_prime",
+            "path_id": TARGET_EDGE_ID,
+            "lambda_left": lo,
+            "lambda_right": hi,
+            "chern_left": np.nan,
+            "chern_right": np.nan,
+        }
+    )
+    candidates, closures = step5.search_transition_closures(
+        bracket,
+        pair,
+        step5._step10m_config,
+        12000,
+    )
+    selected: list[dict[str, Any]] = []
+    for closure in closures:
+        valleys = step5.enumerate_spin_valleys(closure, pair, step5._step10m_config)
+        active = base.unique_active_spin_up_valleys(valleys, step5)
+        if len(active) != 2:
+            continue
+        regions = set(active["critical_k_region"].astype(str))
+        if not any("SigmaPrime" in region for region in regions):
+            continue
+        selected.append(dict(closure))
+    selected = step09d.global_deduplicate_closures(
+        step5,
+        selected,
+        float(config.closure_lambda_dedup_tol),
+    )
+    return candidates, selected
+
+
+def combine_closures(
+    step5,
+    generic: list[dict[str, Any]],
+    sigma_prime: list[dict[str, Any]],
+    config: Step12Config,
+) -> list[dict[str, Any]]:
+    closures = [dict(row) for row in generic + sigma_prime]
+    return step09d.global_deduplicate_closures(
+        step5,
+        closures,
+        float(config.closure_lambda_dedup_tol),
+    )
+
+
+# =============================================================================
+# Gap tracks for diagnostics
+# =============================================================================
+
+
+def minimize_k_in_box(
+    *,
+    step5,
+    pair: pd.Series,
+    lam: float,
+    center: tuple[float, float],
+    half_width: float,
+) -> dict[str, float]:
+    cx, cy = center
+    lower_x = max(-math.pi, cx - half_width)
+    upper_x = min(math.pi, cx + half_width)
+    lower_y = max(-math.pi, cy - half_width)
+    upper_y = min(math.pi, cy + half_width)
+
+    def objective(x: np.ndarray) -> float:
+        gap = step5.spin_middle_gap(float(x[0]), float(x[1]), pair, float(lam), "up")
+        return float(gap * gap)
+
+    result = minimize(
+        objective,
+        np.array([np.clip(cx, lower_x, upper_x), np.clip(cy, lower_y, upper_y)]),
+        method="Powell",
+        bounds=[(lower_x, upper_x), (lower_y, upper_y)],
+        options={"xtol": 1.0e-10, "ftol": 1.0e-18, "maxiter": 600},
+    )
+    kx, ky = [float(v) for v in result.x]
+    return {
+        "generic_gap": float(step5.spin_middle_gap(kx, ky, pair, float(lam), "up")),
+        "generic_kx": kx,
+        "generic_ky": ky,
+    }
+
+
+def sigma_prime_gap_at_lambda(
+    *,
+    step5,
+    pair: pd.Series,
+    lam: float,
+    kappa_points: int,
+) -> dict[str, float]:
+    kappas = np.linspace(-math.pi, math.pi, int(kappa_points), endpoint=False)
+    gaps = np.array(
+        [
+            step5.spin_middle_gap(kappa, -kappa, pair, float(lam), "up")
+            for kappa in kappas
+        ],
+        dtype=float,
+    )
+    index = int(np.argmin(gaps))
+    left = float(kappas[max(0, index - 1)])
+    right = float(kappas[min(len(kappas) - 1, index + 1)])
+    if right > left:
+        result = minimize_scalar(
+            lambda kap: step5.spin_middle_gap(float(kap), -float(kap), pair, float(lam), "up") ** 2,
+            bounds=(left, right),
+            method="bounded",
+            options={"xatol": 1.0e-12, "maxiter": 600},
+        )
+        kappa = float(result.x)
+    else:
+        kappa = float(kappas[index])
+    return {
+        "sigma_prime_gap": float(
+            step5.spin_middle_gap(kappa, -kappa, pair, float(lam), "up")
+        ),
+        "sigma_prime_kappa": kappa,
+    }
+
+
+def compute_gap_tracks(
+    *,
+    step5,
+    pair: pd.Series,
+    seed: pd.Series,
+    config: Step12Config,
+) -> pd.DataFrame:
+    lambdas = np.linspace(0.0, 1.0, int(config.gap_track_lambda_points))
+    generic_center = (
+        float(seed["critical_kx_representative"]),
+        float(seed["critical_ky_representative"]),
+    )
+    rows: list[dict[str, Any]] = []
+    for index, lam in enumerate(lambdas):
+        row: dict[str, Any] = {"lambda": float(lam), "lambda_index": int(index)}
+        if config.generic_lambda_bracket[0] - 0.05 <= lam <= config.generic_lambda_bracket[1] + 0.05:
+            result = minimize_k_in_box(
+                step5=step5,
+                pair=pair,
+                lam=float(lam),
+                center=generic_center,
+                half_width=float(config.generic_k_box_half_width),
+            )
+            row.update(result)
+            generic_center = (result["generic_kx"], result["generic_ky"])
+        else:
+            row.update({"generic_gap": np.nan, "generic_kx": np.nan, "generic_ky": np.nan})
+        row.update(
+            sigma_prime_gap_at_lambda(
+                step5=step5,
+                pair=pair,
+                lam=float(lam),
+                kappa_points=(121 if config.quick else int(config.sigma_prime_kappa_points)),
+            )
+        )
+        finite = [
+            value for value in [row["generic_gap"], row["sigma_prime_gap"]]
+            if np.isfinite(value)
+        ]
+        row["tracked_min_gap"] = min(finite) if finite else np.nan
+        rows.append(row)
     return pd.DataFrame(rows)
 
 
-def _cluster_holdout(
-    df: pd.DataFrame,
-    target: str,
-    task: str,
-    feature_sets: dict[str, list[str]],
-    config: Step03Config,
-) -> tuple[pd.DataFrame, dict[tuple, dict]]:
-    rows: list[dict] = []
-    fitted: dict[tuple, dict] = {}
-    multiclass = task.endswith("multiclass")
-    valid = _valid_multiclass_dataset(df, target, config.min_class_count_for_training) if multiclass else _valid_binary_dataset(df, target, config.min_class_count_for_training)
-    if not valid or "parameter_cluster" not in df.columns:
-        return pd.DataFrame([{
-            "task": task,
-            "status": "skipped_insufficient_class_counts_or_clusters",
-            "class_counts": json.dumps(df[target].value_counts().to_dict(), ensure_ascii=False),
-        }]), fitted
-
-    splitter = GroupShuffleSplit(
-        n_splits=config.group_holdout_splits,
-        test_size=config.group_holdout_fraction,
-        random_state=42,
-    )
-    groups = df["parameter_cluster"].to_numpy()
-    y_all = df[target]
-
-    for split_index, (train_idx, test_idx) in enumerate(splitter.split(df, y_all, groups)):
-        y_train = y_all.iloc[train_idx]
-        y_test = y_all.iloc[test_idx]
-        if multiclass:
-            # Every class in test must be known to the training set; otherwise the split is not scoreable.
-            if not set(y_test.unique()).issubset(set(y_train.unique())) or len(y_test.unique()) < 2:
-                continue
-        else:
-            if len(np.unique(y_train)) < 2 or len(np.unique(y_test)) < 2:
-                continue
-
-        for feature_name, features in feature_sets.items():
-            X_train = df.iloc[train_idx][features].astype(float)
-            X_test = df.iloc[test_idx][features].astype(float)
-            for model_name in ("logistic", "random_forest"):
-                model = _make_model(model_name, config, multiclass=multiclass)
-                model.fit(X_train, y_train)
-                pred = model.predict(X_test)
-                metrics = _metric_multiclass(y_test, pred) if multiclass else _metric_binary(y_test, pred)
-                record = {
-                    "task": task,
-                    "status": "ok",
-                    "split_index": int(split_index),
-                    "feature_set": feature_name,
-                    "model": model_name,
-                    "n_train": len(train_idx),
-                    "n_test": len(test_idx),
-                    "train_clusters": json.dumps(sorted(set(groups[train_idx].tolist()))),
-                    "test_clusters": json.dumps(sorted(set(groups[test_idx].tolist()))),
-                    **metrics,
-                }
-                rows.append(record)
-                key = (task, feature_name, model_name, split_index)
-                fitted[key] = {
-                    "model": model,
-                    "features": features,
-                    "train_idx": train_idx,
-                    "test_idx": test_idx,
-                    "y_test": y_test.copy(),
-                    "pred": pred,
-                }
-    if not rows:
-        return pd.DataFrame([{"task": task, "status": "no_valid_group_split"}]), fitted
-    return pd.DataFrame(rows), fitted
+# =============================================================================
+# Strict segment labels and closure certificates
+# =============================================================================
 
 
-def _select_best_from_cluster(cluster_metrics: pd.DataFrame, task: str) -> dict | None:
-    part = cluster_metrics[(cluster_metrics.get("task") == task) & (cluster_metrics.get("status") == "ok")].copy()
-    if not len(part):
-        return None
-    score_col = "balanced_accuracy"
-    f1_col = "f1_macro" if "f1_macro" in part.columns and part["f1_macro"].notna().any() else "f1"
-    grouped = (
-        part.groupby(["feature_set", "model"], as_index=False)
-        .agg(
-            balanced_accuracy_mean=(score_col, "mean"),
-            balanced_accuracy_std=(score_col, "std"),
-            f1_mean=(f1_col, "mean"),
-            valid_splits=("split_index", "nunique"),
+def strict_segment_probes(
+    *,
+    step3,
+    strict_config,
+    pair: pd.Series,
+    closures: list[dict[str, Any]],
+    path_id: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    groups = step09d.closure_groups(closures)
+    centres = [
+        float(np.mean([float(row["critical_lambda"]) for row in group]))
+        for group in groups
+    ]
+    boundaries = [0.0, *centres, 1.0]
+    results: list[dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
+    for index, (left, right) in enumerate(zip(boundaries[:-1], boundaries[1:])):
+        probe = step09d.find_reliable_segment_probe(
+            step3,
+            strict_config,
+            pair,
+            path_id,
+            float(left),
+            float(right),
+            (0.5, 0.35, 0.65, 0.2, 0.8),
+            index,
         )
-        .sort_values(["balanced_accuracy_mean", "f1_mean", "valid_splits"], ascending=False)
+        results.append(probe)
+        summary = probe["summary"]
+        rows.append(
+            {
+                "path_id": path_id,
+                "segment_index": index,
+                "lambda_left_bound": float(left),
+                "lambda_right_bound": float(right),
+                "probe_lambda": summary.get("lambda"),
+                "strict_chern_up": step09d.reliable_chern(summary),
+                "strict_phase_label": summary.get("phase_label"),
+                "min_direct_gap": summary.get("min_direct_gap"),
+                "indirect_gap": summary.get("indirect_gap"),
+                "strict_gap_verified": summary.get("strict_gap_verified"),
+                "strict_chern_verified": summary.get("strict_chern_verified"),
+            }
+        )
+    return results, rows
+
+
+def certify_target_edge(
+    *,
+    edge: pd.Series,
+    pair: pd.Series,
+    closures: list[dict[str, Any]],
+    step5,
+    search_config,
+    segment_results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    groups = step09d.closure_groups(closures)
+    closure_rows: list[dict[str, Any]] = []
+    valley_rows: list[dict[str, Any]] = []
+    kp_rows: list[dict[str, Any]] = []
+    derivative_rows: list[dict[str, Any]] = []
+    gradient_rows: list[dict[str, Any]] = []
+    berry_attempt_rows: list[dict[str, Any]] = []
+    berry_rows: list[dict[str, Any]] = []
+    group_rows: list[dict[str, Any]] = []
+
+    for group_index, group in enumerate(groups):
+        group_id = f"{TARGET_EDGE_ID}_step12_group{group_index:02d}"
+        centre = float(np.mean([float(row["critical_lambda"]) for row in group]))
+        group_charge = 0
+        all_consensus = True
+        all_rank3 = True
+        valley_count = 0
+        region_set: set[str] = set()
+        for closure_index, closure in enumerate(group):
+            closure_id = f"{group_id}_closure{closure_index:02d}"
+            reduced = linear_v2.linear_reduced_on_path(pair, float(closure["critical_lambda"]))
+            closure_rows.append(
+                {
+                    "edge_id": TARGET_EDGE_ID,
+                    "closure_group_id": group_id,
+                    "closure_id": closure_id,
+                    **closure,
+                    **reduced,
+                }
+            )
+            analysis = step09d.analyse_closure(
+                step5,
+                pair,
+                search_config,
+                TARGET_EDGE_ID,
+                group_id,
+                closure_id,
+                closure,
+            )
+            valleys = analysis["valleys"].copy()
+            if len(valleys):
+                valley_rows.extend(valleys.to_dict("records"))
+                region_set.update(valleys["critical_k_region"].astype(str))
+            kp_rows.extend(analysis["kp_rows"])
+            derivative_rows.extend(analysis["derivative_rows"])
+            gradient_rows.extend(analysis["gradient_rows"])
+            berry_attempt_rows.extend(analysis["berry_attempt_rows"])
+            berry_rows.extend(analysis["berry_summary_rows"])
+            group_charge += int(analysis["charge_sum"])
+            all_consensus = all_consensus and bool(analysis["all_consensus"])
+            all_rank3 = all_rank3 and bool(analysis["all_rank3"])
+            valley_count += int(analysis["n_active_valleys"])
+
+        left_chern = step09d.reliable_chern(segment_results[group_index]["summary"])
+        right_chern = step09d.reliable_chern(segment_results[group_index + 1]["summary"])
+        delta = None if left_chern is None or right_chern is None else int(right_chern - left_chern)
+        signed_match = (
+            delta is not None
+            and all_consensus
+            and int(group_charge) == int(delta)
+        )
+        if valley_count == 4 and all("generic" in region for region in region_set):
+            mechanism = "generic_four_valley"
+        elif valley_count == 2 and any("SigmaPrime" in region for region in region_set):
+            mechanism = "SigmaPrime_two_valley"
+        else:
+            mechanism = "other_or_mixed"
+        group_rows.append(
+            {
+                "edge_id": TARGET_EDGE_ID,
+                "closure_group_id": group_id,
+                "mean_critical_lambda": centre,
+                "mechanism": mechanism,
+                "n_closure_orbits": len(group),
+                "n_active_spin_up_valleys": valley_count,
+                "left_chern_up": left_chern,
+                "right_chern_up": right_chern,
+                "observed_delta_chern_up": delta,
+                "berry_charge_sum_up": int(group_charge),
+                "all_berry_charges_consensus": int(all_consensus),
+                "all_kp_jacobians_rank3": int(all_rank3),
+                "signed_charge_matches": int(signed_match),
+                "closure_group_certificate_pass": int(signed_match and all_rank3),
+            }
+        )
+
+    endpoint_delta = int(edge["chern_1"] - edge["chern_0"])
+    total_charge = int(sum(row["berry_charge_sum_up"] for row in group_rows))
+    all_groups_pass = bool(
+        len(group_rows)
+        and all(int(row["closure_group_certificate_pass"]) == 1 for row in group_rows)
     )
-    if not len(grouped):
-        return None
-    return grouped.iloc[0].to_dict()
-
-
-def _external_evaluate(
-    train_df: pd.DataFrame,
-    external_df: pd.DataFrame,
-    target: str,
-    task: str,
-    best_spec: dict | None,
-    feature_sets: dict[str, list[str]],
-    config: Step03Config,
-) -> tuple[dict, Any | None, pd.DataFrame]:
-    if best_spec is None:
-        return ({"task": task, "status": "skipped_no_best_cluster_model"}, None, pd.DataFrame())
-    feature_name = str(best_spec["feature_set"])
-    model_name = str(best_spec["model"])
-    features = feature_sets[feature_name]
-    multiclass = task.endswith("multiclass")
-
-    if len(external_df) == 0:
-        return ({"task": task, "status": "skipped_no_external_samples"}, None, pd.DataFrame())
-    if multiclass:
-        if not set(external_df[target].unique()).issubset(set(train_df[target].unique())):
-            unknown = sorted(set(external_df[target].unique()) - set(train_df[target].unique()))
-            return ({
-                "task": task,
-                "status": "skipped_external_contains_unseen_classes",
-                "unseen_classes": json.dumps(unknown),
-            }, None, pd.DataFrame())
-    else:
-        if len(train_df[target].unique()) < 2:
-            return ({"task": task, "status": "skipped_train_has_one_class"}, None, pd.DataFrame())
-
-    model = _make_model(model_name, config, multiclass=multiclass)
-    model.fit(train_df[features].astype(float), train_df[target])
-    pred = model.predict(external_df[features].astype(float))
-    metrics = _metric_multiclass(external_df[target], pred) if multiclass else _metric_binary(external_df[target], pred)
-    record = {
-        "task": task,
-        "status": "ok",
-        "feature_set": feature_name,
-        "model": model_name,
-        "n_train": len(train_df),
-        **metrics,
+    sequence = [step09d.reliable_chern(item["summary"]) for item in segment_results]
+    expected_sequence = sequence == [-2, 2, 0]
+    edge_certificate = {
+        "code_version": CODE_VERSION,
+        "edge_id": TARGET_EDGE_ID,
+        "grid_chern_0": int(edge["chern_0"]),
+        "grid_chern_1": int(edge["chern_1"]),
+        "grid_endpoint_delta_chern_up": endpoint_delta,
+        "strict_segment_chern_sequence": sequence,
+        "target_sequence_minus2_to_plus2_to_zero": int(expected_sequence),
+        "n_closure_groups": len(groups),
+        "n_closure_orbits": len(closures),
+        "n_active_spin_up_valleys_total": int(
+            sum(row["n_active_spin_up_valleys"] for row in group_rows)
+        ),
+        "berry_charge_sum_over_all_groups": total_charge,
+        "signed_total_charge_matches_grid_delta": int(total_charge == endpoint_delta),
+        "all_closure_groups_certified": int(all_groups_pass),
+        "edge_multiclosure_certificate_pass": int(
+            expected_sequence and all_groups_pass and total_charge == endpoint_delta
+        ),
+        "interpretation": (
+            "Pass requires two separately certified closure groups with strict "
+            "segment sequence -2 -> +2 -> 0, signed Berry charges +4 and -2, "
+            "and total charge +2 equal to the endpoint Chern change."
+        ),
     }
-    pred_df = external_df[[
-        "sample_id", "sample_source", "phase_label", "chern_up_int",
-        "min_direct_gap", "indirect_gap", *REDUCED7,
-    ]].copy()
-    pred_df["task"] = task
-    pred_df["target_true"] = external_df[target].astype(str).to_numpy()
-    pred_df["target_pred"] = np.asarray(pred).astype(str)
-    if hasattr(model, "predict_proba"):
-        probabilities = model.predict_proba(external_df[features].astype(float))
-        classes = [str(c) for c in model.classes_]
-        for i, cls in enumerate(classes):
-            pred_df[f"prob_{cls}"] = probabilities[:, i]
-    return record, model, pred_df
+    return {
+        "closure_rows": closure_rows,
+        "valley_rows": valley_rows,
+        "kp_rows": kp_rows,
+        "derivative_rows": derivative_rows,
+        "gradient_rows": gradient_rows,
+        "berry_attempt_rows": berry_attempt_rows,
+        "berry_rows": berry_rows,
+        "group_rows": group_rows,
+        "edge_certificate": edge_certificate,
+    }
 
 
-def _plot_confusion_from_predictions(pred_df: pd.DataFrame, task: str, path: Path) -> None:
-    subset = pred_df[pred_df["task"] == task]
-    if not len(subset):
-        return
-    fig, ax = plt.subplots(figsize=(5.5, 5.0))
-    ConfusionMatrixDisplay.from_predictions(
-        subset["target_true"], subset["target_pred"], ax=ax, xticks_rotation=35
+# =============================================================================
+# Refined junction strict map
+# =============================================================================
+
+
+def refined_checkpoint(config: Step12Config, ix: int, iy: int) -> Path:
+    return config.output_dir / "refined_junction_points" / f"refined_{ix:02d}_{iy:02d}.json"
+
+
+def phase_code_from_summary(summary: dict[str, Any]) -> int:
+    label = str(summary.get("phase_label", ""))
+    cup = summary.get("chern_up_int")
+    strict_gap = int(summary.get("strict_gap_verified", 0) or 0)
+    strict_chern = int(summary.get("strict_chern_verified", 0) or 0)
+    if strict_gap == 1 and strict_chern == 1 and cup is not None and not pd.isna(cup):
+        value = int(cup)
+        if label in {"spin_chern_TI_candidate", "trivial_insulator"} and value in PHASE_ORDER:
+            return value
+    return 99
+
+
+def run_refined_junction_grid(
+    *,
+    background: dict[str, float],
+    step3,
+    strict_config,
+    config: Step12Config,
+) -> pd.DataFrame:
+    r3_values = np.linspace(*config.refined_r3_range, int(config.refined_grid_n))
+    r4_values = np.linspace(*config.refined_r4_range, int(config.refined_grid_n))
+    rows: list[dict[str, Any]] = []
+    for iy, r4 in enumerate(r4_values):
+        for ix, r3 in enumerate(r3_values):
+            path = refined_checkpoint(config, ix, iy)
+            if path.is_file() and not config.force_recalculate:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            else:
+                reduced = {**background, "r3": float(r3), "r4": float(r4)}
+                result = step10.evaluate_strict(
+                    step3,
+                    strict_config,
+                    reduced,
+                    f"step12M_refined_{ix:02d}_{iy:02d}",
+                )
+                payload = result
+                atomic_json(payload, path)
+            summary = dict(payload["summary"])
+            summary.update(
+                {
+                    "refined_ix": int(ix),
+                    "refined_iy": int(iy),
+                    "paper_phase_code": phase_code_from_summary(summary),
+                }
+            )
+            rows.append(summary)
+            print(
+                f"refined junction {iy * len(r3_values) + ix + 1:3d}/"
+                f"{len(r3_values) * len(r4_values)} | r3={r3:.6f} r4={r4:.6f} "
+                f"C={summary['paper_phase_code']}"
+            )
+    frame = pd.DataFrame(rows)
+    atomic_csv(frame, config.output_dir / "step12M_10_refined_junction_strict_grid.csv")
+    return frame
+
+
+def combine_junction_grids(
+    step11_grid: pd.DataFrame,
+    refined: pd.DataFrame,
+) -> pd.DataFrame:
+    old = step11_grid.copy()
+    old["grid_source"] = "step11M_7x7"
+    old["grid_resolution_priority"] = 0
+    new = refined.copy()
+    new["grid_source"] = "step12M_13x13"
+    new["grid_resolution_priority"] = 1
+    combined = pd.concat([old, new], ignore_index=True, sort=False)
+    combined["r3_round"] = combined["r3"].astype(float).round(10)
+    combined["r4_round"] = combined["r4"].astype(float).round(10)
+    combined = (
+        combined.sort_values("grid_resolution_priority")
+        .drop_duplicates(["r3_round", "r4_round"], keep="last")
+        .drop(columns=["r3_round", "r4_round"])
+        .sort_values(["r4", "r3"])
+        .reset_index(drop=True)
     )
-    ax.set_title(task)
+    return combined
+
+
+REFINED_TRANSITION_EDGE_COLUMNS = [
+    "ix0", "iy0", "ix1", "iy1",
+    "r3_0", "r4_0", "chern_0",
+    "r3_1", "r4_1", "chern_1",
+    "mid_r3", "mid_r4", "delta_chern_up", "orientation",
+]
+
+
+def refined_transition_edges(refined: pd.DataFrame) -> pd.DataFrame:
+    by_key = {
+        (int(row.refined_ix), int(row.refined_iy)): row
+        for row in refined.itertuples()
+    }
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[tuple[int, int], tuple[int, int]]] = set()
+    for key, row in by_key.items():
+        if int(row.paper_phase_code) not in {-2, 0, 2}:
+            continue
+        ix, iy = key
+        for other_key in [(ix + 1, iy), (ix, iy + 1)]:
+            if other_key not in by_key:
+                continue
+            other = by_key[other_key]
+            if int(other.paper_phase_code) not in {-2, 0, 2}:
+                continue
+            if int(row.paper_phase_code) == int(other.paper_phase_code):
+                continue
+            edge_key = tuple(sorted((key, other_key)))
+            if edge_key in seen:
+                continue
+            seen.add(edge_key)
+            rows.append(
+                {
+                    "ix0": ix,
+                    "iy0": iy,
+                    "ix1": other_key[0],
+                    "iy1": other_key[1],
+                    "r3_0": float(row.r3),
+                    "r4_0": float(row.r4),
+                    "chern_0": int(row.paper_phase_code),
+                    "r3_1": float(other.r3),
+                    "r4_1": float(other.r4),
+                    "chern_1": int(other.paper_phase_code),
+                    "mid_r3": 0.5 * (float(row.r3) + float(other.r3)),
+                    "mid_r4": 0.5 * (float(row.r4) + float(other.r4)),
+                    "delta_chern_up": int(other.paper_phase_code - row.paper_phase_code),
+                    "orientation": "vertical_boundary" if ix != other_key[0] else "horizontal_boundary",
+                }
+            )
+    return pd.DataFrame(rows, columns=REFINED_TRANSITION_EDGE_COLUMNS)
+
+
+# =============================================================================
+# Publication plotting
+# =============================================================================
+
+
+def publication_rc() -> None:
+    plt.rcParams.update(
+        {
+            "font.family": "DejaVu Sans",
+            "font.size": 8.5,
+            "axes.linewidth": 0.8,
+            "xtick.direction": "in",
+            "ytick.direction": "in",
+            "xtick.top": True,
+            "ytick.right": True,
+            "savefig.facecolor": "white",
+            "figure.facecolor": "white",
+            "axes.facecolor": "white",
+        }
+    )
+
+
+def phase_cmap() -> tuple[ListedColormap, BoundaryNorm]:
+    cmap = ListedColormap([PHASE_COLORS[value] for value in PHASE_ORDER])
+    norm = BoundaryNorm([-2.5, -1.5, -0.5, 0.5, 1.5, 2.5], cmap.N)
+    return cmap, norm
+
+
+def formal_phase_grid(formal_scan_source: str | Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    frame = base.load_lower_grid(formal_scan_source)
+    frame["paper_phase_code"] = frame.apply(base.phase_code, axis=1)
+    x = np.sort(frame["scan_x"].unique().astype(float))
+    y = np.sort(frame["scan_y"].unique().astype(float))
+    matrix = np.full((len(y), len(x)), np.nan)
+    x_index = {round(value, 12): i for i, value in enumerate(x)}
+    y_index = {round(value, 12): i for i, value in enumerate(y)}
+    for row in frame.itertuples():
+        value = int(row.paper_phase_code)
+        if value not in PHASE_ORDER:
+            continue
+        matrix[y_index[round(float(row.scan_y), 12)], x_index[round(float(row.scan_x), 12)]] = value
+    return x, y, matrix
+
+
+def plot_main_phase_map(
+    *,
+    formal_scan_source: str | Path,
+    completed_points: pd.DataFrame,
+    fits: pd.DataFrame,
+    combined_grid: pd.DataFrame,
+    config: Step12Config,
+) -> None:
+    publication_rc()
+    cmap, norm = phase_cmap()
+    x, y, matrix = formal_phase_grid(formal_scan_source)
+    fig, ax = plt.subplots(figsize=(16.0 / 2.54, 10.5 / 2.54))
+    ax.imshow(
+        matrix,
+        origin="lower",
+        extent=[x.min(), x.max(), y.min(), y.max()],
+        aspect="auto",
+        cmap=cmap,
+        norm=norm,
+        interpolation="nearest",
+        alpha=0.92,
+    )
+
+    markers = {"generic_left_lower": "s", "generic_right_upper": "^"}
+    for branch, group in completed_points.groupby("branch_hint"):
+        ax.scatter(
+            group["r3"],
+            group["r4"],
+            s=27,
+            marker=markers.get(str(branch), "o"),
+            facecolors="white",
+            edgecolors="black",
+            linewidths=0.8,
+            zorder=6,
+        )
+
+    for row in fits.itertuples():
+        branch = str(row.branch_hint)
+        degree = int(row.selected_degree)
+        coefficients = [float(getattr(row, f"coefficient_{i}")) for i in range(degree + 1)]
+        if branch == "generic_left_lower":
+            xx = np.linspace(float(row.x_min), float(row.x_max), 300)
+            yy = np.polyval(coefficients, xx)
+            ax.plot(xx, yy, color="black", linewidth=1.1, zorder=5)
+        else:
+            yy = np.linspace(float(row.x_min), float(row.x_max), 300)
+            xx = np.polyval(coefficients, yy)
+            ax.plot(xx, yy, color="black", linewidth=1.1, zorder=5)
+
+    reliable = combined_grid[combined_grid["paper_phase_code"].isin([-2, 0, 2])]
+    unreliable = combined_grid[~combined_grid["paper_phase_code"].isin([-2, 0, 2])]
+    for phase in [-2, 0, 2]:
+        group = reliable[reliable["paper_phase_code"].astype(int).eq(phase)]
+        if len(group):
+            ax.scatter(
+                group["r3"], group["r4"],
+                s=18, marker="s",
+                c=PHASE_COLORS[phase], edgecolors="black", linewidths=0.25,
+                zorder=7,
+            )
+    if len(unreliable):
+        ax.scatter(
+            unreliable["r3"], unreliable["r4"],
+            s=17, marker="x", color="#555555", linewidths=0.65, zorder=8,
+        )
+
+    plot_xmin = min(float(x.min()), float(combined_grid["r3"].min()))
+    plot_xmax = max(float(x.max()), float(combined_grid["r3"].max()))
+    plot_ymin = min(float(y.min()), float(combined_grid["r4"].min()))
+    plot_ymax = max(float(y.max()), float(combined_grid["r4"].max())) + 0.004
+
+    r3_lo, r3_hi = config.refined_r3_range
+    r4_lo, r4_hi = config.refined_r4_range
+    ax.add_patch(
+        Rectangle(
+            (r3_lo, r4_lo), r3_hi - r3_lo, r4_hi - r4_lo,
+            fill=False, edgecolor="black", linewidth=0.9, linestyle="--", zorder=9,
+        )
+    )
+    ax.annotate(
+        "right junction\n(refined in Step12M)",
+        xy=(0.5 * (r3_lo + r3_hi), 0.5 * (r4_lo + r4_hi)),
+        xytext=(r3_lo - 0.020, r4_hi + 0.006),
+        arrowprops={"arrowstyle": "-", "linewidth": 0.7},
+        fontsize=7.3, ha="right", va="top",
+    )
+
+    handles: list[Any] = [
+        Patch(facecolor=PHASE_COLORS[value], edgecolor="black", linewidth=0.3, label=rf"$C_\uparrow={value}$")
+        for value in PHASE_ORDER
+    ]
+    handles.extend(
+        [
+            Line2D([0], [0], marker="s", color="none", markerfacecolor="white", markeredgecolor="black", label="certified left branch"),
+            Line2D([0], [0], marker="^", color="none", markerfacecolor="white", markeredgecolor="black", label="certified right branch"),
+            Line2D([0], [0], marker="x", color="#555555", linestyle="none", label="boundary / unreliable"),
+        ]
+    )
+    ax.legend(
+        handles=handles, frameon=True, facecolor="white", edgecolor="none",
+        framealpha=0.86, ncol=2, fontsize=6.8, loc="upper left",
+        borderpad=0.35, handletextpad=0.45, columnspacing=0.8,
+    )
+    ax.set_xlabel(r"$r_3$")
+    ax.set_ylabel(r"$r_4$")
+    ax.set_title("TTS fixed-background topological phase map")
+    ax.set_xlim(plot_xmin, plot_xmax)
+    ax.set_ylim(plot_ymin, plot_ymax)
     fig.tight_layout()
-    fig.savefig(path, dpi=220, bbox_inches="tight")
+    out = config.output_dir / "figures" / "step12M_final_fixed_slice_phase_map"
+    fig.savefig(out.with_suffix(".png"), dpi=900, bbox_inches="tight")
+    fig.savefig(out.with_suffix(".pdf"), bbox_inches="tight")
+    fig.savefig(out.with_suffix(".svg"), bbox_inches="tight")
     plt.close(fig)
 
 
-def grouped_permutation_importance(
-    model,
-    X: pd.DataFrame,
-    y: pd.Series,
-    groups: dict[str, list[str]],
-    config: Step03Config,
-) -> pd.DataFrame:
-    if len(X) == 0 or len(np.unique(y)) < 2:
-        return pd.DataFrame()
-    rng = np.random.default_rng(42)
-    baseline = balanced_accuracy_score(y, model.predict(X))
-    rows = []
-    for group_name, group_features in groups.items():
-        active = [f for f in group_features if f in X.columns]
-        if not active:
-            continue
-        drops = []
-        for _ in range(config.permutation_repeats):
-            perm = rng.permutation(len(X))
-            xp = X.copy()
-            xp.loc[:, active] = X.iloc[perm][active].to_numpy()
-            drops.append(baseline - balanced_accuracy_score(y, model.predict(xp)))
-        rows.append({
-            "group": group_name,
-            "n_features": len(active),
-            "importance_mean": float(np.mean(drops)),
-            "importance_std": float(np.std(drops)),
-            "baseline_balanced_accuracy": float(baseline),
-        })
-    return pd.DataFrame(rows).sort_values("importance_mean", ascending=False)
+def _grid_spacing(frame: pd.DataFrame) -> tuple[float, float]:
+    x = np.sort(frame["r3"].unique().astype(float))
+    y = np.sort(frame["r4"].unique().astype(float))
+    dx = float(np.median(np.diff(x))) if len(x) > 1 else 0.001
+    dy = float(np.median(np.diff(y))) if len(y) > 1 else 0.001
+    return dx, dy
 
 
-def run_machine_learning(
-    config: Step03Config,
-    outputs: Dict[str, Path],
-    combined: pd.DataFrame,
-    metadata: pd.DataFrame,
-) -> dict[str, Any]:
-    datasets = _build_datasets(config, outputs, combined)
-    datasets = _assign_parameter_clusters(config, outputs, datasets)
-    feature_sets = _feature_sets(combined, metadata)
-
-    tasks = [
-        ("LevelA_insulator_gate", datasets["train_A"], datasets["external_A"], "levelA_target"),
-        ("LevelB_binary_topology", datasets["train_B"], datasets["external_B"], "levelB_binary_target"),
-        ("LevelB_multiclass_chern", datasets["train_B"], datasets["external_B"], "levelB_multiclass_target"),
-    ]
-
-    random_rows = []
-    cluster_rows = []
-    all_fitted: dict[tuple, dict] = {}
-    best_registry_rows = []
-    external_rows = []
-    external_prediction_frames = []
-    fitted_external_models: dict[str, Any] = {}
-
-    for task, train_df, external_df, target in tasks:
-        random_df = _random_cv(train_df, target, task, feature_sets, config)
-        random_rows.append(random_df)
-        cluster_df, fitted = _cluster_holdout(train_df, target, task, feature_sets, config)
-        cluster_rows.append(cluster_df)
-        all_fitted.update(fitted)
-        best = _select_best_from_cluster(cluster_df, task)
-        if best is not None:
-            best_registry_rows.append({"task": task, **best})
-        ext_record, ext_model, ext_predictions = _external_evaluate(
-            train_df, external_df, target, task, best, feature_sets, config
+def plot_junction_zoom(
+    *,
+    refined: pd.DataFrame,
+    transition_edges: pd.DataFrame,
+    closure_rows: pd.DataFrame,
+    edge: pd.Series,
+    right_fit: pd.Series | None,
+    config: Step12Config,
+) -> None:
+    publication_rc()
+    fig, ax = plt.subplots(figsize=(12.5 / 2.54, 10.0 / 2.54))
+    reliable = refined[refined["paper_phase_code"].isin([-2, 0, 2])]
+    unreliable = refined[~refined["paper_phase_code"].isin([-2, 0, 2])]
+    dx, dy = _grid_spacing(refined)
+    marker_size = 135
+    for phase in [-2, 0, 2]:
+        group = reliable[reliable["paper_phase_code"].astype(int).eq(phase)]
+        ax.scatter(
+            group["r3"], group["r4"],
+            s=marker_size, marker="s", c=PHASE_COLORS[phase],
+            edgecolors="white", linewidths=0.45, zorder=2,
+            label=rf"$C_\uparrow={phase}$",
         )
-        external_rows.append(ext_record)
-        if ext_model is not None:
-            fitted_external_models[task] = ext_model
-        if len(ext_predictions):
-            external_prediction_frames.append(ext_predictions)
-
-    random_metrics = pd.concat(random_rows, ignore_index=True, sort=False)
-    cluster_metrics = pd.concat(cluster_rows, ignore_index=True, sort=False)
-    external_metrics = pd.DataFrame(external_rows)
-    best_registry = pd.DataFrame(best_registry_rows)
-    external_predictions = (
-        pd.concat(external_prediction_frames, ignore_index=True, sort=False)
-        if external_prediction_frames else pd.DataFrame()
-    )
-
-    atomic_write_csv(random_metrics, outputs["random_cv_metrics"])
-    atomic_write_csv(cluster_metrics, outputs["cluster_holdout_metrics"])
-    atomic_write_csv(external_metrics, outputs["external_metrics"])
-    atomic_write_csv(best_registry, outputs["best_model_registry"])
-    atomic_write_csv(external_predictions, outputs["external_predictions"])
-
-    # Save one representative best cluster split per task.
-    cluster_pred_frames = []
-    report_parts = []
-    for _, best in best_registry.iterrows():
-        task = str(best["task"])
-        matches = cluster_metrics[
-            (cluster_metrics["task"] == task)
-            & (cluster_metrics["feature_set"] == best["feature_set"])
-            & (cluster_metrics["model"] == best["model"])
-            & (cluster_metrics["status"] == "ok")
-        ].sort_values("balanced_accuracy", ascending=False)
-        if not len(matches):
-            continue
-        split_index = int(matches.iloc[0]["split_index"])
-        key = (task, str(best["feature_set"]), str(best["model"]), split_index)
-        fit = all_fitted.get(key)
-        if fit is None:
-            continue
-        source_df = datasets["train_A"] if task == "LevelA_insulator_gate" else datasets["train_B"]
-        test_rows = source_df.iloc[fit["test_idx"]].copy()
-        out = test_rows[["sample_id", "phase_label", "chern_up_int", "parameter_cluster", *REDUCED7]].copy()
-        out["task"] = task
-        out["target_true"] = fit["y_test"].astype(str).to_numpy()
-        out["target_pred"] = np.asarray(fit["pred"]).astype(str)
-        cluster_pred_frames.append(out)
-        report_parts.append(
-            f"===== {task} / best cluster split =====\n"
-            + classification_report(out["target_true"], out["target_pred"], zero_division=0)
+    if len(unreliable):
+        ax.scatter(
+            unreliable["r3"], unreliable["r4"],
+            s=60, marker="x", color="#4F4F4F", linewidths=0.9,
+            zorder=5, label="boundary / unreliable",
         )
 
-    cluster_predictions = (
-        pd.concat(cluster_pred_frames, ignore_index=True, sort=False)
-        if cluster_pred_frames else pd.DataFrame()
-    )
-    atomic_write_csv(cluster_predictions, outputs["cluster_predictions"])
-
-    for task in ("LevelA_insulator_gate", "LevelB_binary_topology", "LevelB_multiclass_chern"):
-        sub = external_predictions[external_predictions["task"] == task] if len(external_predictions) else pd.DataFrame()
-        if len(sub):
-            report_parts.append(
-                f"===== {task} / independent Sobol external =====\n"
-                + classification_report(sub["target_true"], sub["target_pred"], zero_division=0)
+    # Pixel-edge boundary segments inferred only from reliable neighbouring points.
+    for row in transition_edges.itertuples():
+        if str(row.orientation) == "vertical_boundary":
+            ax.plot(
+                [row.mid_r3, row.mid_r3],
+                [row.mid_r4 - 0.48 * dy, row.mid_r4 + 0.48 * dy],
+                color="black", linewidth=1.0, zorder=4,
             )
-    atomic_write_text("\n\n".join(report_parts), outputs["classification_reports"])
+        else:
+            ax.plot(
+                [row.mid_r3 - 0.48 * dx, row.mid_r3 + 0.48 * dx],
+                [row.mid_r4, row.mid_r4],
+                color="black", linewidth=1.0, zorder=4,
+            )
 
-    if len(external_predictions):
-        _plot_confusion_from_predictions(external_predictions, "LevelA_insulator_gate", outputs["levelA_confusion"])
-        _plot_confusion_from_predictions(external_predictions, "LevelB_binary_topology", outputs["levelB_confusion"])
-        _plot_confusion_from_predictions(external_predictions, "LevelB_multiclass_chern", outputs["levelB_multi_confusion"])
-
-    # Save external-fitted models.
-    if "LevelA_insulator_gate" in fitted_external_models:
-        dump(fitted_external_models["LevelA_insulator_gate"], outputs["levelA_model"])
-    if "LevelB_binary_topology" in fitted_external_models:
-        dump(fitted_external_models["LevelB_binary_topology"], outputs["levelB_model"])
-    if "LevelB_multiclass_chern" in fitted_external_models:
-        dump(fitted_external_models["LevelB_multiclass_chern"], outputs["levelB_multi_model"])
-
-    # Level B binary importance, evaluated on the independent external Sobol subset.
-    importance_group = pd.DataFrame()
-    importance_individual = pd.DataFrame()
-    best_binary = best_registry[best_registry["task"] == "LevelB_binary_topology"] if len(best_registry) else pd.DataFrame()
-    model_binary = fitted_external_models.get("LevelB_binary_topology")
-    ext_B = datasets["external_B"]
-    if len(best_binary) and model_binary is not None and len(ext_B) and len(ext_B["levelB_binary_target"].unique()) >= 2:
-        feature_name = str(best_binary.iloc[0]["feature_set"])
-        features = feature_sets[feature_name]
-        X_ext = ext_B[features].astype(float)
-        y_ext = ext_B["levelB_binary_target"].astype(int)
-        family_groups = {
-            str(family): metadata.loc[metadata["feature_family"] == family, "feature"].tolist()
-            for family in metadata["feature_family"].dropna().unique()
-        }
-        importance_group = grouped_permutation_importance(
-            model_binary, X_ext, y_ext, family_groups, config
-        )
-        atomic_write_csv(importance_group, outputs["group_importance"])
-
-        perm = permutation_importance(
-            model_binary,
-            X_ext,
-            y_ext,
-            scoring="balanced_accuracy",
-            n_repeats=config.permutation_repeats,
-            random_state=42,
-            n_jobs=config.ml_n_jobs,
-        )
-        importance_individual = pd.DataFrame({
-            "feature": features,
-            "importance_mean": perm.importances_mean,
-            "importance_std": perm.importances_std,
-        }).sort_values("importance_mean", ascending=False)
-        atomic_write_csv(importance_individual, outputs["individual_importance"])
-
-        fig, ax = plt.subplots(figsize=(8, 5))
-        plot_df = importance_group.sort_values("importance_mean")
-        ax.barh(plot_df["group"], plot_df["importance_mean"], xerr=plot_df["importance_std"])
-        ax.set_xlabel("Grouped permutation importance")
-        ax.set_title("Level B binary importance on independent Sobol set")
-        fig.tight_layout()
-        fig.savefig(outputs["importance_fig"], dpi=220, bbox_inches="tight")
-        plt.close(fig)
-    else:
-        atomic_write_csv(importance_group, outputs["group_importance"])
-        atomic_write_csv(importance_individual, outputs["individual_importance"])
-
-    # Misclassified external Hamiltonians.
-    if len(external_predictions):
-        misclassified = external_predictions[
-            external_predictions["target_true"] != external_predictions["target_pred"]
-        ].copy()
-    else:
-        misclassified = pd.DataFrame()
-    atomic_write_csv(misclassified, outputs["misclassified"])
-
-    return {
-        "datasets": datasets,
-        "feature_sets": feature_sets,
-        "random_metrics": random_metrics,
-        "cluster_metrics": cluster_metrics,
-        "external_metrics": external_metrics,
-        "best_registry": best_registry,
-        "external_predictions": external_predictions,
-        "cluster_predictions": cluster_predictions,
-        "group_importance": importance_group,
-        "individual_importance": importance_individual,
-        "misclassified": misclassified,
-    }
-
-
-# =============================================================================
-# Step 10. Orchestration
-# =============================================================================
-
-
-def run_step03(config: Step03Config | None = None) -> Dict[str, Any]:
-    config = (config or Step03Config()).normalized()
-    outputs = build_output_registry(config)
-    write_run_metadata(config, outputs)
-
-    print("[1/7] Generate global and independent Sobol parameters")
-    parameters = generate_parameters(config, outputs)
-    print(f"      total rows = {len(parameters)}")
-
-    print("[2/7] Full-BZ physics labels and strict Chern verification")
-    physics, chern_attempts, strict_gap_checks = run_physics_labels(config, outputs, parameters)
-    print(physics["phase_label"].value_counts(dropna=False).to_string())
-
-    print("[3/7] Phase and exact Chern-sector summaries")
-    phase_summary = summarize_phases(config, outputs, physics)
-
-    print("[4/7] Hamiltonian fingerprint")
-    fingerprint, fp_metadata = run_fingerprint(config, outputs, parameters)
-
-    print("[5/7] Symmetry parameter combinations and combined feature table")
-    combined, metadata = build_feature_table(
-        outputs, parameters, physics, fingerprint, fp_metadata
+    # Target path.
+    ax.plot(
+        [float(edge["r3_0"]), float(edge["r3_1"])],
+        [float(edge["r4_0"]), float(edge["r4_1"])],
+        color="black", linewidth=1.1, linestyle="--", zorder=6,
+        label="target edge path",
+    )
+    ax.scatter(
+        [float(edge["r3_0"]), float(edge["r3_1"])],
+        [float(edge["r4_0"]), float(edge["r4_1"])],
+        s=36, facecolors="white", edgecolors="black", zorder=7,
     )
 
-    print("[6/7] Hierarchical ML: random CV, cluster holdout, independent Sobol")
-    ml = run_machine_learning(config, outputs, combined, metadata)
+    if len(closure_rows):
+        for index, row in closure_rows.sort_values("critical_lambda").reset_index(drop=True).iterrows():
+            lam = float(row["critical_lambda"])
+            r3 = (1.0 - lam) * float(edge["r3_0"]) + lam * float(edge["r3_1"])
+            r4 = (1.0 - lam) * float(edge["r4_0"]) + lam * float(edge["r4_1"])
+            if "full_BZ" in str(row.get("search_manifold", "")) or "generic" in str(row.get("search_manifold", "")):
+                marker, text = "*", "four-valley"
+                size = 120
+            else:
+                marker, text = "D", r"two-valley $\Sigma'$"
+                size = 48
+            ax.scatter([r3], [r4], marker=marker, s=size, c="black", zorder=9)
+            ax.annotate(
+                text,
+                xy=(r3, r4), xytext=(5, 6 if index == 0 else -13),
+                textcoords="offset points", fontsize=7.2,
+                ha="left", va="bottom" if index == 0 else "top",
+            )
 
-    print("[7/7] Save run summary")
-    global_physics = physics[physics["is_control"] == 0]
-    controls = phase_summary["control_audit"]
-    summary = {
-        "code_version": CODE_VERSION,
-        "run_tag": _run_tag(config),
-        "n_train_sobol": config.n_train,
-        "n_external_sobol": config.n_external,
-        "n_control": int((physics["is_control"] == 1).sum()),
-        "global_phase_counts": {
-            str(k): int(v) for k, v in global_physics["phase_label"].value_counts().items()
-        },
-        "strict_insulator_chern_sector_counts": {
-            str(k): int(v)
-            for k, v in global_physics.loc[
-                global_physics["is_strict_insulator"] == 1, "chern_up_int"
-            ].value_counts().sort_index().items()
-        },
-        "n_strict_TI_candidates": int((global_physics["phase_label"] == "spin_chern_TI_candidate").sum()),
-        "n_high_spin_chern_TI_candidates": int((
-            (global_physics["phase_label"] == "spin_chern_TI_candidate")
-            & (global_physics["chern_up_int"].abs() >= 2)
-        ).sum()),
-        "control_all_chern_match": int(
-            len(controls) > 0 and controls.get("control_chern_match", pd.Series(dtype=int)).eq(1).all()
-        ),
-        "best_model_registry": ml["best_registry"].to_dict("records"),
-        "external_metrics": ml["external_metrics"].to_dict("records"),
-        "output_dir": str(config.output_dir),
+    # Certified right-upper fit is solid only in its original validated domain;
+    # the extension toward the newly certified generic closure is dashed.
+    if right_fit is not None:
+        degree = int(right_fit["selected_degree"])
+        coeff = [float(right_fit[f"coefficient_{i}"]) for i in range(degree + 1)]
+        y_valid = np.linspace(float(right_fit["x_min"]), float(right_fit["x_max"]), 120)
+        x_valid = np.polyval(coeff, y_valid)
+        ax.plot(x_valid, y_valid, color="black", linewidth=1.0, zorder=6)
+        y_ext = np.linspace(float(right_fit["x_max"]), config.refined_r4_range[1], 100)
+        x_ext = np.polyval(coeff, y_ext)
+        ax.plot(x_ext, y_ext, color="black", linewidth=0.8, linestyle=":", zorder=6)
+
+    ax.set_xlim(config.refined_r3_range[0] - 0.0004, config.refined_r3_range[1] + 0.0004)
+    ax.set_ylim(config.refined_r4_range[0] - 0.0003, config.refined_r4_range[1] + 0.0003)
+    ax.set_xlabel(r"$r_3$")
+    ax.set_ylabel(r"$r_4$")
+    ax.set_title("Right-upper junction: strict Chern map")
+    ax.legend(frameon=False, fontsize=7.0, loc="upper left")
+    fig.tight_layout()
+    out = config.output_dir / "figures" / "step12M_right_junction_zoom"
+    fig.savefig(out.with_suffix(".png"), dpi=900, bbox_inches="tight")
+    fig.savefig(out.with_suffix(".pdf"), bbox_inches="tight")
+    fig.savefig(out.with_suffix(".svg"), bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_target_path_atlas(
+    *,
+    gap_tracks: pd.DataFrame,
+    closure_rows: pd.DataFrame,
+    segment_rows: pd.DataFrame,
+    config: Step12Config,
+) -> None:
+    publication_rc()
+    fig, ax = plt.subplots(figsize=(14.0 / 2.54, 8.5 / 2.54))
+    if "generic_gap" in gap_tracks:
+        ax.semilogy(
+            gap_tracks["lambda"], np.maximum(gap_tracks["generic_gap"], 1.0e-16),
+            linewidth=1.1, label="generic full-BZ valley track",
+        )
+    ax.semilogy(
+        gap_tracks["lambda"], np.maximum(gap_tracks["sigma_prime_gap"], 1.0e-16),
+        linewidth=1.0, label=r"$\Sigma'$ valley track",
+    )
+    for index, row in closure_rows.sort_values("critical_lambda").reset_index(drop=True).iterrows():
+        lam = float(row["critical_lambda"])
+        ax.axvline(lam, color="black", linewidth=0.8, linestyle="--")
+        ax.text(
+            lam, 2.0e-15 if index == 0 else 7.0e-15,
+            "4 valleys" if index == 0 else "2 valleys",
+            rotation=90, fontsize=7.0, ha="right", va="bottom",
+        )
+    ax.set_xlabel(r"path coordinate $\lambda$")
+    ax.set_ylabel(r"spin-up internal gap")
+    ax.set_ylim(5.0e-16, max(0.05, float(np.nanmax(gap_tracks[["generic_gap", "sigma_prime_gap"]].to_numpy())) * 1.3))
+    ax.legend(frameon=False, fontsize=7.2, loc="upper right")
+
+    ax2 = ax.twinx()
+    for row in segment_rows.itertuples():
+        if pd.isna(row.strict_chern_up):
+            continue
+        ax2.hlines(
+            int(row.strict_chern_up),
+            float(row.lambda_left_bound),
+            float(row.lambda_right_bound),
+            color="#333333", linewidth=2.0, alpha=0.75,
+        )
+        ax2.scatter([float(row.probe_lambda)], [int(row.strict_chern_up)], marker="s", s=18, color="#333333")
+    ax2.set_ylabel(r"strict $C_\uparrow$")
+    ax2.set_yticks([-2, 0, 2])
+    ax2.set_ylim(-2.7, 2.7)
+    fig.tight_layout()
+    out = config.output_dir / "figures" / "step12M_target_edge_multiclosure_atlas"
+    fig.savefig(out.with_suffix(".png"), dpi=900, bbox_inches="tight")
+    fig.savefig(out.with_suffix(".pdf"), bbox_inches="tight")
+    fig.savefig(out.with_suffix(".svg"), bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_mass_sign_mapping(
+    *,
+    step11_source: str | Path,
+    config: Step12Config,
+) -> None:
+    predictions = read_csv_token(step11_source, "step11M_11_spatial_holdout_predictions.csv")
+    definitions = read_csv_token(step11_source, "step11M_10_local_signed_mass_definitions.csv")
+    publication_rc()
+    fig, ax = plt.subplots(figsize=(12.5 / 2.54, 7.5 / 2.54))
+    markers = {"generic_left_lower": "s", "generic_right_upper": "^"}
+    for branch, group in predictions.groupby("branch_hint"):
+        for phase in [-2, 2]:
+            subset = group[group["paper_phase_code"].astype(int).eq(phase)]
+            if len(subset):
+                ax.scatter(
+                    subset["signed_mass"],
+                    np.full(len(subset), phase),
+                    s=26,
+                    marker=markers.get(str(branch), "o"),
+                    c=PHASE_COLORS[phase],
+                    edgecolors="black", linewidths=0.35,
+                    alpha=0.85,
+                    label=f"{branch.replace('generic_', '')}: C={phase}",
+                )
+    ax.axvline(0.0, color="black", linestyle="--", linewidth=0.8)
+    ax.set_xlabel("local signed mass coordinate")
+    ax.set_ylabel(r"$C_\uparrow$")
+    ax.set_yticks([-2, 2])
+    ax.set_ylim(-2.8, 2.8)
+    ax.set_title("Local mass sign and topological sector")
+    # Explicit sign mapping inferred from the validated Step11M predictions.
+    text_lines = []
+    for branch, group in predictions.groupby("branch_hint"):
+        mapping = (
+            group.groupby("mass_sign")["paper_phase_code"]
+            .agg(lambda values: int(pd.Series(values).mode().iloc[0]))
+            .to_dict()
+        )
+        if -1 in mapping and 1 in mapping:
+            short = str(branch).replace("generic_", "").replace("_", "-")
+            text_lines.append(
+                f"{short}:  M<0 → C={mapping[-1]},   M>0 → C={mapping[1]}"
+            )
+    if text_lines:
+        ax.text(
+            0.02, 0.98, "\n".join(text_lines), transform=ax.transAxes,
+            ha="left", va="top", fontsize=7.1,
+            bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.85},
+        )
+    legend_handles = [
+        Line2D([0], [0], marker="s", color="none", markerfacecolor="white", markeredgecolor="black", label="left-lower branch"),
+        Line2D([0], [0], marker="^", color="none", markerfacecolor="white", markeredgecolor="black", label="right-upper branch"),
+        Patch(facecolor=PHASE_COLORS[-2], edgecolor="black", linewidth=0.35, label=r"$C_\uparrow=-2$"),
+        Patch(facecolor=PHASE_COLORS[2], edgecolor="black", linewidth=0.35, label=r"$C_\uparrow=+2$"),
+    ]
+    ax.legend(
+        handles=legend_handles, frameon=False, fontsize=6.8,
+        loc="center left", bbox_to_anchor=(1.01, 0.5), borderaxespad=0.0,
+    )
+    fig.tight_layout()
+    out = config.output_dir / "figures" / "step12M_local_mass_sign_mapping"
+    fig.savefig(out.with_suffix(".png"), dpi=900, bbox_inches="tight")
+    fig.savefig(out.with_suffix(".pdf"), bbox_inches="tight")
+    fig.savefig(out.with_suffix(".svg"), bbox_inches="tight")
+    plt.close(fig)
+
+
+# =============================================================================
+# Aggregation and orchestration
+# =============================================================================
+
+
+def save_analysis_tables(
+    *,
+    config: Step12Config,
+    edge: pd.Series,
+    generic_candidates: list[dict[str, Any]],
+    sigma_candidates: list[dict[str, Any]],
+    closures: list[dict[str, Any]],
+    gap_tracks: pd.DataFrame,
+    segment_rows: list[dict[str, Any]],
+    analysis: dict[str, Any],
+) -> None:
+    atomic_csv(pd.DataFrame([edge.to_dict()]), config.output_dir / "step12M_01_target_edge_definition.csv")
+    candidates = pd.DataFrame(
+        [
+            {"candidate_family": "generic", **row}
+            for row in generic_candidates
+        ]
+        + [
+            {"candidate_family": "SigmaPrime", **row}
+            for row in sigma_candidates
+        ]
+    )
+    atomic_csv(candidates, config.output_dir / "step12M_02_full_bz_search_candidates.csv")
+    atomic_csv(pd.DataFrame(closures), config.output_dir / "step12M_03_accepted_closure_orbits.csv")
+    atomic_csv(gap_tracks, config.output_dir / "step12M_04_target_edge_gap_tracks.csv")
+    atomic_csv(pd.DataFrame(segment_rows), config.output_dir / "step12M_05_strict_segment_chern_labels.csv")
+    mapping = {
+        "closure_rows": "step12M_06_critical_closure_parameters.csv",
+        "valley_rows": "step12M_07_critical_valley_orbits.csv",
+        "kp_rows": "step12M_08_local_kp_summaries.csv",
+        "derivative_rows": "step12M_09_local_kp_derivatives.csv",
+        "gradient_rows": "step12M_10_local_mass_gradients.csv",
+        "berry_attempt_rows": "step12M_11_berry_sphere_attempts.csv",
+        "berry_rows": "step12M_12_berry_charge_consensus.csv",
+        "group_rows": "step12M_13_closure_group_certificates.csv",
     }
-    atomic_write_text(json.dumps(summary, indent=2, ensure_ascii=False), outputs["summary"])
-    write_run_metadata(config, outputs)
-    print(json.dumps(summary, indent=2, ensure_ascii=False))
+    for key, filename in mapping.items():
+        atomic_csv(pd.DataFrame(analysis[key]), config.output_dir / filename)
+    atomic_json(analysis["edge_certificate"], config.output_dir / "step12M_14_target_edge_multiclosure_certificate.json")
 
+
+def build_final_certificate(
+    *,
+    config: Step12Config,
+    background: dict[str, float],
+    edge_certificate: dict[str, Any],
+    refined: pd.DataFrame,
+    transition_edges: pd.DataFrame,
+) -> dict[str, Any]:
+    reliable = refined[refined["paper_phase_code"].isin([-2, 0, 2])]
+    counts = reliable["paper_phase_code"].astype(int).value_counts().sort_index().to_dict()
     return {
-        "config": config,
-        "outputs": outputs,
-        "parameters": parameters,
-        "physics": physics,
-        "chern_attempts": chern_attempts,
-        "strict_gap_checks": strict_gap_checks,
-        "phase_summary": phase_summary,
-        "fingerprint": fingerprint,
-        "combined_features": combined,
-        "metadata": metadata,
-        "ml": ml,
-        "summary": summary,
+        "code_version": CODE_VERSION,
+        "research_design": "targeted_fixed_slice_right_junction_repair",
+        "fixed_background_parameters": background,
+        "free_plane_parameters": ["r3", "r4"],
+        "target_edge_id": config.target_edge_id,
+        "target_edge_certificate": edge_certificate,
+        "refined_junction_grid": {
+            "r3_range": list(config.refined_r3_range),
+            "r4_range": list(config.refined_r4_range),
+            "grid_n": int(config.refined_grid_n),
+            "n_total_points": int(len(refined)),
+            "n_reliable_points": int(len(reliable)),
+            "phase_counts": {str(k): int(v) for k, v in counts.items()},
+            "n_reliable_transition_edges": int(len(transition_edges)),
+        },
+        "all_background_parameters_remain_fixed": True,
+        "step12M_research_complete": bool(
+            int(edge_certificate.get("edge_multiclosure_certificate_pass", 0)) == 1
+        ),
+        "valid_claim_if_pass": (
+            "Along the formerly unresolved r3=0.060 junction edge, the strict "
+            "Chern sequence is -2 -> +2 -> 0.  A generic four-valley closure "
+            "carries +4 and a later Sigma' two-valley closure carries -2, so "
+            "the total signed charge +2 equals the endpoint Chern change."
+        ),
+        "not_claimed": (
+            "The result is local to the fixed-background r3-r4 plane and does "
+            "not define a universal seven-dimensional mass formula."
+        ),
     }
+
+
+def make_plots_from_outputs(
+    *,
+    formal_scan_source: str | Path,
+    step11_source: str | Path,
+    config: Step12Config,
+) -> None:
+    completed = read_csv_token(step11_source, "step11M_07_completed_certified_boundary_points.csv")
+    fits = read_csv_token(step11_source, "step11M_08_fixed_slice_boundary_curve_fits.csv")
+    step11_grid = read_csv_token(step11_source, "step11M_03_right_junction_strict_grid.csv")
+    refined_path = config.output_dir / "step12M_15_refined_junction_strict_grid.csv"
+    if not refined_path.is_file():
+        refined_path = config.output_dir / "step12M_10_refined_junction_strict_grid.csv"
+    refined = safe_read_csv_path(refined_path, required=True)
+    combined_path = config.output_dir / "step12M_16_combined_junction_grid.csv"
+    combined = safe_read_csv_path(combined_path) if combined_path.is_file() else combine_junction_grids(step11_grid, refined)
+    transitions_path = config.output_dir / "step12M_17_refined_transition_edges.csv"
+    if transitions_path.is_file():
+        transitions = safe_read_csv_path(
+            transitions_path, columns=REFINED_TRANSITION_EDGE_COLUMNS
+        )
+    else:
+        transitions = refined_transition_edges(refined)
+    closure_path = config.output_dir / "step12M_06_critical_closure_parameters.csv"
+    closure_rows = safe_read_csv_path(closure_path) if closure_path.is_file() else pd.DataFrame()
+    edge = load_target_edge(step11_source, config.target_edge_id)
+    right = fits[fits["branch_hint"].astype(str).eq("generic_right_upper")]
+    right_fit = right.iloc[0] if len(right) else None
+
+    plot_main_phase_map(
+        formal_scan_source=formal_scan_source,
+        completed_points=completed,
+        fits=fits,
+        combined_grid=combined,
+        config=config,
+    )
+    plot_junction_zoom(
+        refined=refined,
+        transition_edges=transitions,
+        closure_rows=closure_rows,
+        edge=edge,
+        right_fit=right_fit,
+        config=config,
+    )
+    gap_path = config.output_dir / "step12M_04_target_edge_gap_tracks.csv"
+    segment_path = config.output_dir / "step12M_05_strict_segment_chern_labels.csv"
+    if gap_path.is_file() and segment_path.is_file() and len(closure_rows):
+        plot_target_path_atlas(
+            gap_tracks=safe_read_csv_path(gap_path, required=True),
+            closure_rows=closure_rows,
+            segment_rows=safe_read_csv_path(segment_path, required=True),
+            config=config,
+        )
+    plot_mass_sign_mapping(step11_source=step11_source, config=config)
+
+
+def run_step12m(
+    *,
+    tts_archive: str | Path,
+    formal_scan_source: str | Path,
+    step11_source: str | Path,
+    output_dir: str | Path,
+    config: Step12Config | None = None,
+    run_physics: bool = True,
+    run_refined_grid_flag: bool = True,
+    run_plots: bool = True,
+) -> dict[str, Any]:
+    if config is None:
+        config = Step12Config(output_dir=Path(output_dir))
+    config.output_dir = Path(output_dir)
+    config = config.normalized()
+    atomic_json(asdict(config), config.output_dir / "step12M_00_run_configuration.json")
+
+    background = load_background(step11_source)
+    edge = load_target_edge(step11_source, config.target_edge_id)
+    seed = load_right_upper_seed(step11_source, edge)
+    validate_fixed_background(background, edge, seed)
+    atomic_json(
+        {
+            "code_version": CODE_VERSION,
+            "fixed_background_parameters": background,
+            "target_edge": edge.to_dict(),
+            "nearest_certified_generic_seed": seed.to_dict(),
+        },
+        config.output_dir / "step12M_00_input_audit.json",
+    )
+
+    if not run_physics:
+        if run_plots:
+            make_plots_from_outputs(
+                formal_scan_source=formal_scan_source,
+                step11_source=step11_source,
+                config=config,
+            )
+        return {"status": "plot_only", "output_dir": str(config.output_dir)}
+
+    core, step4, step5, step3, strict_config, search_config = configure_physics(
+        tts_archive,
+        config,
+    )
+    pair = step11.build_pair_from_edge(edge, background)
+
+    print("[1/5] Full-BZ generic four-valley search")
+    generic_candidates, generic_closures = search_generic_four_valley(
+        step4=step4,
+        step5=step5,
+        pair=pair,
+        seed=seed,
+        config=config,
+    )
+    print(f"      accepted generic closures = {len(generic_closures)}")
+
+    print("[2/5] SigmaPrime two-valley search")
+    sigma_candidates, sigma_closures = search_sigma_prime_closure(
+        step5=step5,
+        pair=pair,
+        config=config,
+    )
+    print(f"      accepted SigmaPrime closures = {len(sigma_closures)}")
+
+    closures = combine_closures(step5, generic_closures, sigma_closures, config)
+    if len(closures) < 2:
+        # Preserve all diagnostics before failing clearly.
+        atomic_csv(pd.DataFrame(generic_candidates), config.output_dir / "step12M_02a_generic_search_candidates.csv")
+        atomic_csv(pd.DataFrame(sigma_candidates), config.output_dir / "step12M_02b_sigma_search_candidates.csv")
+        atomic_csv(pd.DataFrame(closures), config.output_dir / "step12M_03_accepted_closure_orbits.csv")
+        raise RuntimeError(
+            "Step12M did not find two distinct closure groups. Inspect step12M_02a/02b candidates; "
+            "do not reinterpret the Step11M charge sign manually."
+        )
+
+    print("[3/5] Gap tracks, strict segment Chern labels, k.p and Berry charges")
+    gap_tracks = compute_gap_tracks(step5=step5, pair=pair, seed=seed, config=config)
+    segment_results, segment_rows = strict_segment_probes(
+        step3=step3,
+        strict_config=strict_config,
+        pair=pair,
+        closures=closures,
+        path_id=config.target_edge_id,
+    )
+    analysis = certify_target_edge(
+        edge=edge,
+        pair=pair,
+        closures=closures,
+        step5=step5,
+        search_config=search_config,
+        segment_results=segment_results,
+    )
+    save_analysis_tables(
+        config=config,
+        edge=edge,
+        generic_candidates=generic_candidates,
+        sigma_candidates=sigma_candidates,
+        closures=closures,
+        gap_tracks=gap_tracks,
+        segment_rows=segment_rows,
+        analysis=analysis,
+    )
+
+    print("[4/5] Refined 13x13 strict junction map")
+    if run_refined_grid_flag:
+        refined = run_refined_junction_grid(
+            background=background,
+            step3=step3,
+            strict_config=strict_config,
+            config=config,
+        )
+    else:
+        refined = read_csv_token(step11_source, "step11M_03_right_junction_strict_grid.csv")
+        # Normalize names so plotting works, but this is not considered a Step12 refined map.
+        refined = refined.rename(columns={"junction_ix": "refined_ix", "junction_iy": "refined_iy"})
+    atomic_csv(refined, config.output_dir / "step12M_15_refined_junction_strict_grid.csv")
+    step11_grid = read_csv_token(step11_source, "step11M_03_right_junction_strict_grid.csv")
+    combined = combine_junction_grids(step11_grid, refined)
+    transitions = refined_transition_edges(refined)
+    atomic_csv(combined, config.output_dir / "step12M_16_combined_junction_grid.csv")
+    atomic_csv(transitions, config.output_dir / "step12M_17_refined_transition_edges.csv")
+
+    certificate = build_final_certificate(
+        config=config,
+        background=background,
+        edge_certificate=analysis["edge_certificate"],
+        refined=refined,
+        transition_edges=transitions,
+    )
+    atomic_json(certificate, config.output_dir / "step12M_18_final_mechanism_certificate.json")
+
+    print("[5/5] Publication figures")
+    if run_plots:
+        make_plots_from_outputs(
+            formal_scan_source=formal_scan_source,
+            step11_source=step11_source,
+            config=config,
+        )
+
+    print(json.dumps(certificate, ensure_ascii=False, indent=2, default=_json_default))
+    return certificate
 
 
 # =============================================================================
@@ -1712,77 +1698,39 @@ def run_step03(config: Step03Config | None = None) -> Dict[str, Any]:
 # =============================================================================
 
 
-def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output-dir", type=Path, default=Step03Config.output_dir)
-    parser.add_argument("--train-power", type=int, default=Step03Config.train_sobol_power)
-    parser.add_argument("--external-power", type=int, default=Step03Config.external_sobol_power)
-    parser.add_argument("--train-seed", type=int, default=Step03Config.train_seed)
-    parser.add_argument("--external-seed", type=int, default=Step03Config.external_seed)
-    parser.add_argument("--gap-nk", type=int, default=Step03Config.gap_nk)
-    parser.add_argument("--path-n", type=int, default=Step03Config.fingerprint_path_n)
-    parser.add_argument("--ml-n-jobs", type=int, default=1)
-    parser.add_argument("--checkpoint-every", type=int, default=Step03Config.checkpoint_every)
-    parser.add_argument("--no-normalize", action="store_true")
-    parser.add_argument("--no-controls", action="store_true")
-    parser.add_argument("--force-physics", action="store_true")
-    parser.add_argument("--force-fingerprint", action="store_true")
-    parser.add_argument("--smoke-test", action="store_true")
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Repair the unresolved TTS Step11M right-junction edge and redraw the fixed-slice phase map."
+    )
+    parser.add_argument("--tts-archive", required=True, type=Path)
+    parser.add_argument("--formal-scan", required=True, type=Path)
+    parser.add_argument("--step11-source", required=True, type=Path)
+    parser.add_argument("--output-dir", default=Path("outputs_tts_step12M_junction_multiclosure_repair"), type=Path)
+    parser.add_argument("--quick", action="store_true", help="Reduced numerical settings for code testing only.")
+    parser.add_argument("--force", action="store_true", help="Recalculate existing refined-grid checkpoints.")
+    parser.add_argument("--skip-refined-grid", action="store_true", help="Run only the target edge certificate and plots.")
+    parser.add_argument("--skip-plots", action="store_true")
+    parser.add_argument("--plot-only", action="store_true", help="Regenerate figures from existing Step12M CSV files.")
     return parser
 
 
-def config_from_args(args: argparse.Namespace) -> Step03Config:
-    if args.smoke_test:
-        return Step03Config(
-            output_dir=args.output_dir,
-            train_sobol_power=3,       # 8
-            external_sobol_power=2,    # 4
-            train_seed=args.train_seed,
-            external_seed=args.external_seed,
-            normalize_sobol_vectors=not args.no_normalize,
-            include_control_points=not args.no_controls,
-            gap_nk=17,
-            initial_chern_grids=(11, 13),
-            initial_chern_shifts=((0.0, 0.0), (0.5, 0.5)),
-            strict_gap_grids=(17, 21),
-            strict_gap_shifts=((0.0, 0.0), (0.5, 0.5)),
-            strict_chern_grids=(13, 15),
-            strict_chern_shifts=((0.0, 0.0), (0.5, 0.5)),
-            fingerprint_path_n=7,
-            n_parameter_clusters=3,
-            group_holdout_splits=4,
-            cv_splits=2,
-            cv_repeats=1,
-            random_forest_estimators=40,
-            permutation_repeats=3,
-            min_class_count_for_training=2,
-            checkpoint_every=2,
-            ml_n_jobs=1,
-            force_recalculate_physics=args.force_physics,
-            force_recalculate_fingerprint=args.force_fingerprint,
-        )
-    return Step03Config(
-        output_dir=args.output_dir,
-        train_sobol_power=args.train_power,
-        external_sobol_power=args.external_power,
-        train_seed=args.train_seed,
-        external_seed=args.external_seed,
-        normalize_sobol_vectors=not args.no_normalize,
-        include_control_points=not args.no_controls,
-        gap_nk=args.gap_nk,
-        fingerprint_path_n=args.path_n,
-        ml_n_jobs=args.ml_n_jobs,
-        checkpoint_every=args.checkpoint_every,
-        force_recalculate_physics=args.force_physics,
-        force_recalculate_fingerprint=args.force_fingerprint,
-    )
-
-
 def main() -> int:
-    parser = build_arg_parser()
-    args = parser.parse_args()
-    config = config_from_args(args)
-    run_step03(config)
+    args = build_parser().parse_args()
+    config = Step12Config(
+        output_dir=args.output_dir,
+        quick=bool(args.quick),
+        force_recalculate=bool(args.force),
+    )
+    run_step12m(
+        tts_archive=args.tts_archive,
+        formal_scan_source=args.formal_scan,
+        step11_source=args.step11_source,
+        output_dir=args.output_dir,
+        config=config,
+        run_physics=not bool(args.plot_only),
+        run_refined_grid_flag=not bool(args.skip_refined_grid),
+        run_plots=not bool(args.skip_plots),
+    )
     return 0
 
 

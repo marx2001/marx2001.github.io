@@ -15,7 +15,7 @@ featured: true
 
 ## <center>代码的基本用法</center>  
 
-(1)第一步，把 Wannier 轨道“编号”跟“物理含义”一一对应起来，也就是建立一张 WF index →（原子、轨道类型、位置） 的映射表。没有这张表，你从 wannier90_hr.dat 抽出来的矩阵元只是数字，没法说清它对应 Tc–Se、Se–Ir 还是 Tc–Tc 的哪条路径。
+(1)第一步，将 Wannier 轨道“编号”与“物理含义”一一对应，也就是建立一张 WF index →（原子、轨道类型、位置） 的映射表。缺少这张表时，从 wannier90_hr.dat 抽出来的矩阵元只是数字，无法明确其对应 Tc–Se、Se–Ir 还是 Tc–Tc 的哪条路径。
 
 准备文件
 
@@ -27,7 +27,7 @@ wannier90.wout
 
 即，第一步要确认wannier90拟合的正确性，并输出上述文件。
 
-(2) Step2 的本质是：把 wannier90_hr.dat 里的 Hmn(R)变成“带几何距离的 hopping 列表”，再按你关心的子空间对（Tc–Tc、Tc–Se、Se–Ir…）和壳层做统计。
+(2) Step 2 的核心是：将 wannier90_hr.dat 里的 Hmn(R)变成“带几何距离的 hopping 列表”，再按目标子空间对（Tc–Tc、Tc–Se、Se–Ir…）和壳层做统计。
 
 workflow:
 
@@ -418,7 +418,7 @@ python 1step.py --win wannier90.win --centres wannier90_centres.xyz --hr wannier
 ```
 可以调整命令来规定输出文件名
 
-(3)读取你已经生成的 2step.csv（跨原子 edges），自动筛选 Tc–Se 与 Se–Ir 的近邻 hopping，构
+(3) 读取已经生成的 2step.csv（跨原子 edges），自动筛选 Tc–Se 与 Se–Ir 的近邻 hopping，构
 造 Tc → Se → Ir → Se → Tc 的候选“超超交换路径”，并按路径权重排序输出一个csv文件。
 
 对于三跳跃体系，类似超交换，可用下方脚本：
@@ -699,7 +699,7 @@ if __name__ == "__main__":
 
 ```
 
-运行方法（针对你当前文件名：2step.csv）：
+运行方法（针对当前文件名：2step.csv）：
 
 ```shell
 python step4_build_paths.py --edges 2step.csv --out top_paths.csv ^
@@ -1018,7 +1018,7 @@ python 2step.py --edges 2step.csv --out Ir_0.1_delta_floor.csv --mediators Ir --
 
 
 
-(4)根据你想要探究的目的，超超交换路径是通过提供铁电性的迁移原子 Ge 还是非磁性原子 Ir 来主导，
+(4) 根据研究目标，需要判断超超交换路径主要由提供铁电性的迁移原子 Ge 还是非磁性原子 Ir 主导，
 我们可以修改脚本，让它在输出路径时能够分别计算 Ge 和 Ir 路径的贡献，并将这些路径的 权重贡献 
 和参与原子频率明确标识出来。
 
@@ -1282,7 +1282,7 @@ def main():
 
     df = pd.read_csv(args.csv)
 
-    # 兼容列名：你文件里通常是 net_dRx/net_dRy/net_dRz 与 score_num_over_denom
+    # 兼容列名：文件中通常为 net_dRx/net_dRy/net_dRz 与 score_num_over_denom
     for c in ["net_dRx", "net_dRy", "net_dRz", "score_num_over_denom", "mediator"]:
         if c not in df.columns:
             raise RuntimeError(f"missing column: {c}, have: {list(df.columns)}")

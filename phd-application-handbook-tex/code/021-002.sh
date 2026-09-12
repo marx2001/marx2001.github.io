@@ -1,4 +1,3 @@
-
 conda activate wannier-env
 
 pip install pywannier90 -i https://pypi.tuna.tsinghua.edu.cn/simple

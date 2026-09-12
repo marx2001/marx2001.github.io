@@ -1,26 +1,87 @@
+import pyprocar as ppc
+import matplotlib.pyplot as plt
+import os
+from matplotlib.lines import Line2D
 
-import numpy as np
+# 设置全局字体为Times New Roman
+plt.rcParams.update({
+    'font.family': 'Times New Roman',
+    'mathtext.fontset': 'stix',
+    'font.size': 12,
+    'axes.titlesize': 14,      # 标题字体大小
+    'axes.labelsize': 12,      # 坐标轴标签字体大小
+    'xtick.labelsize': 10,     # x轴刻度字体大小
+    'ytick.labelsize': 10,     # y轴刻度字体大小
+    'legend.fontsize': 10,     # 图例字体大小
+})
 
-# 系数矩阵 A
-A = np.array([
-    [18, 18, 18, 1],
-    [-6, -6, 18, 1],
-    [-6, 2, 2, 1],
-    [-2, -6, 2, 1]
-])
+# 保存图片文件，相对路径
+save_dir = r"./" 
 
-# 从用户输入右端向量 b
-print("请输入右端常数向量 b 的4个数（以空格分隔，例如：1 2 3 4）:")
-b = np.array(list(map(float, input().split())))
+# 定义绘图颜色
+spin_up_color = '#D62728'    # 深红色
+spin_down_color = '#1F77B4'  # 蓝色
 
-# 检查维度是否正确
-if len(b) != 4:
-    raise ValueError("必须输入4个数！")
+# 定义文件名
+filename = "band.png"
+filepath = os.path.join(save_dir, filename)  # 组合路径和文件名
 
-# 求解线性方程组 Ax = b
-x = np.linalg.solve(A, b)
+# 图例控制：创建自定义句柄
+custom_up = Line2D([0], [0], color=spin_up_color, lw=1.5, label='Spin up')
+custom_down = Line2D([0], [0], color=spin_down_color, lw=1.5, label='Spin down')
 
-# 输出结果
-print("\n方程组的解为：")
-for i, val in enumerate(x, start=1):
-    print(f"x{i} = {val:.6f}")
+fig, ax = plt.subplots(figsize=(6,6))
+
+# 绘制 spin up
+ppc.bandsplot(
+    code='vasp',
+    dirname='.',
+    mode='plain',
+    spins=[0],
+    color=spin_up_color,
+    elimit=[-2,2],
+    fermi=-1.420514,
+    ax=ax,
+    show=False
+)
+# 在绘制后设置线宽
+for line in ax.lines:
+    if line.get_color() == spin_up_color:  # 识别 spin up 的线
+        line.set_linewidth(1.5)
+        
+# 绘制 spin down
+ppc.bandsplot(
+    code='vasp',
+    dirname='.',
+    mode='plain',
+    spins=[1],
+    color=spin_down_color,
+    elimit=[-2,2],
+    fermi=-1.420514,
+    ax=ax,
+    show=False
+)
+
+
+# 在绘制后设置线宽
+for line in ax.lines:
+    if line.get_color() == spin_down_color: 
+        line.set_linewidth(1.5)
+        
+# 确保所有线都是实线
+for line in ax.lines:
+    line.set_linestyle('-') 
+        
+plt.title("00 Band Structure")
+plt.xlabel("K-path")
+plt.ylabel("Energy (eV)")
+plt.axhline(0, color='gray', linestyle='--', linewidth=0.8)
+plt.legend(handles=[custom_up, custom_down], loc="best")
+# 保存为透明背景的图片
+plt.savefig(filepath, 
+        dpi=300, 
+        bbox_inches='tight', 
+        transparent=True,  # 关键参数：设置透明背景
+        pad_inches=0.1,
+        )
+plt.show()

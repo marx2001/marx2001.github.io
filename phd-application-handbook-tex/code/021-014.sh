@@ -1,4 +1,3 @@
-
 四、轨道编号在 pyw90 中的固定对应（兼容 VASP 6.4.3）
 编号	轨道类型	对应 VASP 通道	pyw90/ pymatgen 轨道名
 0	s	s	s

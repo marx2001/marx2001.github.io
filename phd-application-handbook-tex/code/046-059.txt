@@ -1,13 +1,1 @@
-新增 md 到 pdf_order.txt
-        ↓
-python build.py --only 关键词
-        ↓
-检查单篇预览效果
-        ↓
-必要时修改 pdf_tex_edits/*.tex
-        ↓
-再次 python build.py --only 关键词
-        ↓
-满意后 python build.py
-        ↓
-检查完整 PDF
+gamma = 120°

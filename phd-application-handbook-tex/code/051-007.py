@@ -1,674 +1,579 @@
 from __future__ import annotations
 
-import io
+import hashlib
+import importlib.util
 import json
 import math
-import zipfile
-from dataclasses import dataclass, asdict
+import re
+import sys
 from pathlib import Path
-from typing import Optional
+from typing import Any
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from matplotlib.colors import ListedColormap
-from matplotlib.lines import Line2D
-from matplotlib.patches import Patch
+from lxml import etree
 
-CODE_VERSION = "TTS_STEP16M_MASS_COORDINATE_PHASE_MAPS_V1_20260726"
 
-# -----------------------------------------------------------------------------
-# Plot style
-# -----------------------------------------------------------------------------
-plt.rcParams["font.family"] = "Times New Roman"
-plt.rcParams["font.weight"] = "bold"
-plt.rcParams["axes.labelweight"] = "bold"
-plt.rcParams["axes.titleweight"] = "bold"
-plt.rcParams["figure.titleweight"] = "bold"
-plt.rcParams["axes.unicode_minus"] = False
-plt.rcParams["mathtext.fontset"] = "custom"
-plt.rcParams["mathtext.rm"] = "Times New Roman:bold"
-plt.rcParams["mathtext.it"] = "Times New Roman:italic:bold"
-plt.rcParams["mathtext.bf"] = "Times New Roman:bold"
-plt.rcParams["mathtext.sf"] = "Times New Roman:bold"
-plt.rcParams["mathtext.tt"] = "Times New Roman:bold"
-plt.rcParams["mathtext.fallback"] = None
-plt.rcParams["svg.fonttype"] = "none"
-plt.rcParams["pdf.fonttype"] = 42
-plt.rcParams["ps.fonttype"] = 42
+ROOT = Path(r"D:\1_ML\tts")
+SOURCE_SVG = Path(r"D:\1_ML\picture\Fig4.svg")
+OUTPUT = ROOT / "outputs_tts_step31_fig4_path_berry_curvature"
+OUTPUT_SVG = OUTPUT / "Fig4_with_path_Berry_curvature.svg"
+DATA_DIR = OUTPUT / "path_berry_curvature_data"
 
-PHASE_COLORS = {
-    -2: "#4F81BD",
-     0: "#D9D9D9",
-     2: "#CF5A47",
+CORE_PATH = ROOT / "TTS_step18_three_system_wanniertools_style_edge_ahc_examples.py"
+STEP19_PATH = ROOT / "TTS_step19_maintext_four_topological_edge_hall.py"
+STEP22_PATH = ROOT / "TTS_step22_user_selection_dual_color_render.py"
+
+SVG_NS = "http://www.w3.org/2000/svg"
+INKSCAPE_NS = "http://www.inkscape.org/namespaces/inkscape"
+NS = {"svg": SVG_NS}
+GREEN = "#009E55"
+
+# The four bulk-band axes in the supplied Fig4.svg.  The identifiers are
+# Matplotlib clip paths already present in that exact source file.
+CASE_CLIPS = {
+    "a_lieb_Cs_plus1": "pfa3bb03856",
+    "b_fes_Cs_plus1": "pd58dd54c92",
+    "c_tts_Cs_plus1": "pa7505dfcc6",
+    "d_tts_Cs_plus2": "p91e0cc4bd4",
+}
+PATH_POINTS_PER_SEGMENT = {
+    "lieb": 120,
+    "fes": 2400,
+    "tts": 120,
 }
 
 
-@dataclass
-class Step16Config:
-    output_dir: Path = Path("outputs_tts_step16M_mass_coordinate_phase_maps")
-
-    # Local windows are used only to select the already-certified data.
-    left_r3_min: float = -0.665
-    left_r3_max: float = -0.525
-    left_r4_min: float = -0.180
-    left_r4_max: float = -0.135
-
-    right_r3_min: float = 0.054
-    right_r3_max: float = 0.066
-    right_r4_min: float = 0.128
-    right_r4_max: float = 0.134
-
-    # Certified left local-mass formula:
-    # M_L = r4 + a_L r3^2 + b_L r3 + c_L
-    left_a: float = 0.4489248315
-    left_b: float = 0.7973688821
-    left_c: float = 0.4712000815
-
-    # Certified right four-valley mass:
-    # M_4v = r3 - alpha_4v r4
-    alpha_4v: float = 0.4597785904
-
-    # Certified closure anchors. If Step12M is provided, these are replaced by
-    # the values read from step12M_06_critical_closure_parameters.csv.
-    closure_A_r3: float = 0.0600000000
-    closure_A_r4: float = 0.1304975940
-    closure_B_r3: float = 0.0600000000
-    closure_B_r4: float = 0.1316899010
-
-    # Plot limits in normalized mass coordinates. None means determine from data.
-    left_mass_padding: float = 1.15
-    right_mass_padding: float = 1.15
-    figure_size_single: tuple[float, float] = (7.6, 7.6)
-    figure_size_combined: tuple[float, float] = (14.6, 6.8)
-    point_size: float = 58.0
+def load_module(name: str, path: Path) -> Any:
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
-# -----------------------------------------------------------------------------
-# ZIP-stream readers: no extraction, avoids Windows WinError 206.
-# -----------------------------------------------------------------------------
-def _find_member_by_basename(zf: zipfile.ZipFile, filename: str) -> str:
-    matches = [name for name in zf.namelist() if Path(name).name == filename]
-    if not matches:
-        raise FileNotFoundError(f"{filename} was not found inside the ZIP archive")
-    matches.sort(key=lambda x: (len(Path(x).parts), len(x), x))
-    return matches[0]
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
-def read_csv_any(source: str | Path, filename: str) -> pd.DataFrame:
-    source = Path(source)
-    if source.is_dir():
-        matches = list(source.rglob(filename))
-        if not matches:
-            raise FileNotFoundError(f"{filename} was not found under {source}")
-        matches.sort(key=lambda p: (len(p.parts), str(p)))
-        return pd.read_csv(matches[0], low_memory=False)
-    if source.is_file() and source.suffix.lower() == ".csv":
-        return pd.read_csv(source, low_memory=False)
-    if source.is_file() and source.suffix.lower() == ".zip":
-        with zipfile.ZipFile(source) as zf:
-            member = _find_member_by_basename(zf, filename)
-            return pd.read_csv(io.BytesIO(zf.read(member)), low_memory=False)
-    raise FileNotFoundError(f"Unsupported or missing source: {source}")
+def parse_transform(value: str | None) -> np.ndarray:
+    """Parse the simple affine transforms used by the supplied SVG."""
+    result = np.eye(3, dtype=float)
+    if not value:
+        return result
+    pattern = re.compile(r"([A-Za-z]+)\s*\(([^)]*)\)")
+    for name, payload in pattern.findall(value):
+        numbers = [
+            float(token)
+            for token in re.split(r"[\s,]+", payload.strip())
+            if token
+        ]
+        transform = np.eye(3, dtype=float)
+        if name == "matrix" and len(numbers) == 6:
+            a, b, c, d, e, f = numbers
+            transform = np.asarray(
+                [[a, c, e], [b, d, f], [0.0, 0.0, 1.0]],
+                dtype=float,
+            )
+        elif name == "translate" and len(numbers) in (1, 2):
+            transform[0, 2] = numbers[0]
+            transform[1, 2] = numbers[1] if len(numbers) == 2 else 0.0
+        elif name == "scale" and len(numbers) in (1, 2):
+            transform[0, 0] = numbers[0]
+            transform[1, 1] = numbers[1] if len(numbers) == 2 else numbers[0]
+        else:
+            raise ValueError(f"Unsupported SVG transform: {name}({payload})")
+        result = result @ transform
+    return result
 
 
-def optional_csv(source: str | Path | None, filename: str) -> Optional[pd.DataFrame]:
-    if source is None:
-        return None
-    path = Path(source)
-    if not path.exists():
-        return None
-    try:
-        return read_csv_any(path, filename)
-    except FileNotFoundError:
-        return None
+def transform_to_root(node: etree._Element) -> np.ndarray:
+    chain: list[etree._Element] = []
+    current: etree._Element | None = node
+    while current is not None:
+        chain.append(current)
+        current = current.getparent()
+    result = np.eye(3, dtype=float)
+    for element in reversed(chain):
+        result = result @ parse_transform(element.get("transform"))
+    return result
 
 
-# -----------------------------------------------------------------------------
-# Basic helpers
-# -----------------------------------------------------------------------------
-def in_window(df: pd.DataFrame, x0: float, x1: float, y0: float, y1: float) -> pd.Series:
-    return (
-        df["r3"].between(x0, x1, inclusive="both")
-        & df["r4"].between(y0, y1, inclusive="both")
+def find_panel_bounds(
+    root: etree._Element,
+    clip_id: str,
+) -> tuple[float, float, float, float]:
+    clips = root.xpath(
+        ".//svg:clipPath[@id=$clip_id]",
+        namespaces=NS,
+        clip_id=clip_id,
     )
+    if len(clips) != 1:
+        raise RuntimeError(f"Expected one clipPath {clip_id}, found {len(clips)}")
+    rectangles = clips[0].xpath("./svg:rect", namespaces=NS)
+    if len(rectangles) != 1:
+        raise RuntimeError(f"Clip {clip_id} is not a single rectangle")
+    rect = rectangles[0]
 
-
-def robust_scale(values: np.ndarray, quantile: float = 0.95) -> float:
-    values = np.asarray(values, dtype=float)
-    scale = float(np.quantile(np.abs(values[np.isfinite(values)]), quantile))
-    if not np.isfinite(scale) or scale <= 1e-14:
-        scale = float(np.std(values))
-    if not np.isfinite(scale) or scale <= 1e-14:
-        scale = 1.0
-    return scale
-
-
-def style_axis(ax, title: str):
-    ax.set_box_aspect(1)
-    ax.tick_params(direction="in", length=7, width=1.7, top=True, right=True, labelsize=15)
-    for spine in ax.spines.values():
-        spine.set_linewidth(1.7)
-    ax.set_title(title, fontsize=21, fontweight="bold", pad=12)
-
-
-def phase_handles(include_zero: bool = True):
-    handles = [
-        Patch(facecolor=PHASE_COLORS[-2], edgecolor="black", linewidth=0.8,
-              label=r"$\mathbf{\mathit{C}}_{\uparrow}=-2$"),
-        Patch(facecolor=PHASE_COLORS[2], edgecolor="black", linewidth=0.8,
-              label=r"$\mathbf{\mathit{C}}_{\uparrow}=2$"),
+    candidates = root.xpath(
+        ".//svg:path[contains(@clip-path, $clip_id)]",
+        namespaces=NS,
+        clip_id=clip_id,
+    )
+    candidates = [
+        node
+        for node in candidates
+        if (
+            ("#a92425" in node.get("style", "").lower())
+            or ("#3f63ad" in node.get("style", "").lower())
+        )
+        and len(node.get("d", "")) > 100
     ]
-    if include_zero:
-        handles.insert(1, Patch(facecolor=PHASE_COLORS[0], edgecolor="black", linewidth=0.8,
-                                label=r"$\mathbf{\mathit{C}}_{\uparrow}=0$"))
-    return handles
+    if not candidates:
+        raise RuntimeError(f"No transformed band path found for {clip_id}")
+    # Some panels contain an old, displaced duplicate path that shares the
+    # same clipPath.  The visible publication band is the densely encoded
+    # path (largest d attribute); using the first XML match displaced the FES
+    # overlay by one imported-group translation.
+    visible_band = max(candidates, key=lambda node: len(node.get("d", "")))
+    matrix = transform_to_root(visible_band)
 
-
-# -----------------------------------------------------------------------------
-# Left mass coordinates
-# -----------------------------------------------------------------------------
-def left_boundary_r4(r3: np.ndarray, cfg: Step16Config) -> np.ndarray:
-    return -(cfg.left_a * r3**2 + cfg.left_b * r3 + cfg.left_c)
-
-
-def left_boundary_slope(r3: np.ndarray, cfg: Step16Config) -> np.ndarray:
-    return -(2.0 * cfg.left_a * r3 + cfg.left_b)
-
-
-def left_arc_coordinate(r3_values: np.ndarray, cfg: Step16Config) -> np.ndarray:
-    """Signed arc length along the fitted left boundary, referenced to its center."""
-    r3_values = np.asarray(r3_values, dtype=float)
-    lo = min(float(np.min(r3_values)), cfg.left_r3_min)
-    hi = max(float(np.max(r3_values)), cfg.left_r3_max)
-    grid = np.linspace(lo, hi, 10001)
-    slope = left_boundary_slope(grid, cfg)
-    integrand = np.sqrt(1.0 + slope**2)
-    dg = np.diff(grid)
-    cumulative = np.concatenate([[0.0], np.cumsum(0.5 * (integrand[1:] + integrand[:-1]) * dg)])
-    ref_r3 = 0.5 * (cfg.left_r3_min + cfg.left_r3_max)
-    ref_s = float(np.interp(ref_r3, grid, cumulative))
-    return np.interp(r3_values, grid, cumulative) - ref_s
-
-
-def transform_left(df: pd.DataFrame, cfg: Step16Config) -> tuple[pd.DataFrame, dict]:
-    left = df[
-        in_window(df, cfg.left_r3_min, cfg.left_r3_max, cfg.left_r4_min, cfg.left_r4_max)
-        & df["strict_phase_code"].isin([-2, 0, 2])
-    ].copy()
-    if left.empty:
-        raise RuntimeError("No certified points were found in the left local window")
-
-    slope = left_boundary_slope(left["r3"].to_numpy(), cfg)
-    raw_mass = (
-        left["r4"].to_numpy()
-        + cfg.left_a * left["r3"].to_numpy() ** 2
-        + cfg.left_b * left["r3"].to_numpy()
-        + cfg.left_c
+    x = float(rect.get("x"))
+    y = float(rect.get("y"))
+    width = float(rect.get("width"))
+    height = float(rect.get("height"))
+    corners = np.asarray(
+        [
+            [x, y, 1.0],
+            [x + width, y, 1.0],
+            [x, y + height, 1.0],
+            [x + width, y + height, 1.0],
+        ],
+        dtype=float,
     )
-    # Geometric signed normal distance to M_L=0.
-    normal_mass = raw_mass / np.sqrt(1.0 + slope**2)
-    tangent = left_arc_coordinate(left["r3"].to_numpy(), cfg)
-
-    mass_scale = robust_scale(normal_mass)
-    tangent_scale = robust_scale(tangent)
-    left["M_L_raw"] = raw_mass
-    left["M_L_normal"] = normal_mass
-    left["S_L_arc"] = tangent
-    left["M_L_tilde"] = normal_mass / mass_scale
-    left["S_L_tilde"] = tangent / tangent_scale
-
-    nonzero = left[left["strict_phase_code"].isin([-2, 2])]
-    sign_pred = np.where(nonzero["M_L_normal"].to_numpy() > 0, 2, -2)
-    sign_accuracy = float(np.mean(sign_pred == nonzero["strict_phase_code"].to_numpy()))
-
-    meta = {
-        "formula": (
-            f"M_L = r4 + ({cfg.left_a:.10g}) r3^2 + "
-            f"({cfg.left_b:.10g}) r3 + ({cfg.left_c:.10g})"
-        ),
-        "normal_mass_definition": "M_L_normal = M_L / sqrt(1 + (dr4_boundary/dr3)^2)",
-        "tangent_coordinate_definition": "S_L is signed arc length along M_L=0",
-        "mass_scale": mass_scale,
-        "tangent_scale": tangent_scale,
-        "nonzero_phase_sign_accuracy": sign_accuracy,
-        "n_points": int(len(left)),
-        "n_minus2": int((left["strict_phase_code"] == -2).sum()),
-        "n_zero": int((left["strict_phase_code"] == 0).sum()),
-        "n_plus2": int((left["strict_phase_code"] == 2).sum()),
-    }
-    return left, meta
+    mapped = (matrix @ corners.T).T
+    x0 = float(np.min(mapped[:, 0]))
+    x1 = float(np.max(mapped[:, 0]))
+    y0 = float(np.min(mapped[:, 1]))
+    y1 = float(np.max(mapped[:, 1]))
+    return x0, y0, x1, y1
 
 
-# -----------------------------------------------------------------------------
-# Right double-mass coordinates
-# -----------------------------------------------------------------------------
-def detect_plus2_zero_transition_midpoints(right: pd.DataFrame) -> pd.DataFrame:
-    rows = []
-    for r3, group in right.groupby("r3"):
-        group = group.sort_values("r4")
-        arr = group[["r4", "strict_phase_code"]].to_numpy()
-        candidates = []
-        for (y1, c1), (y2, c2) in zip(arr[:-1], arr[1:]):
-            if {int(c1), int(c2)} == {0, 2}:
-                candidates.append(0.5 * (float(y1) + float(y2)))
-        if candidates:
-            # The right-junction data contain one relevant +2/0 transition per r3.
-            rows.append({"r3": float(r3), "r4_mid": float(np.median(candidates))})
-    return pd.DataFrame(rows)
+def nice_limit(maximum: float) -> float:
+    """Symmetric panel limit with a small amount of headroom."""
+    target = max(float(maximum) * 1.06, 1.0e-12)
+    exponent = math.floor(math.log10(target))
+    scale = 10.0**exponent
+    fraction = target / scale
+    for candidate in (1.0, 1.2, 1.5, 2.0, 2.5, 3.0, 3.2, 4.0, 5.0, 6.0, 8.0, 10.0):
+        if fraction <= candidate + 1.0e-12:
+            return float(candidate * scale)
+    return float(10.0 * scale)
 
 
-def fit_anchored_sigma_boundary(
-    transition_points: pd.DataFrame,
-    anchor_r3: float,
-    anchor_r4: float,
-) -> dict:
-    """Fit an anchored local boundary r4 = anchor_r4 + beta (r3-anchor_r3).
-
-    A linear anchored fit is deliberately used because it is the simplest local
-    mass formula and, for the current certified junction data, classifies all
-    strict -2/0/+2 points consistently when paired with M_4v.
-    """
-    if len(transition_points) < 2:
-        raise RuntimeError("Too few +2/0 transition midpoints to fit M_Sigma")
-    x = transition_points["r3"].to_numpy(dtype=float) - anchor_r3
-    y = transition_points["r4_mid"].to_numpy(dtype=float) - anchor_r4
-    denom = float(np.dot(x, x))
-    if denom <= 1e-20:
-        raise RuntimeError("Degenerate transition-point geometry")
-    beta = float(np.dot(x, y) / denom)
-    predicted = anchor_r4 + beta * (transition_points["r3"].to_numpy() - anchor_r3)
-    residual = transition_points["r4_mid"].to_numpy() - predicted
-    return {
-        "beta": beta,
-        "rmse": float(np.sqrt(np.mean(residual**2))),
-        "max_abs_residual": float(np.max(np.abs(residual))),
-        "n_boundary_midpoints": int(len(transition_points)),
-    }
+def format_tick(value: float) -> str:
+    absolute = abs(float(value))
+    if absolute >= 100.0:
+        return f"{absolute:.0f}"
+    if absolute >= 10.0:
+        return f"{absolute:.0f}"
+    if absolute >= 1.0:
+        return f"{absolute:.1f}".rstrip("0").rstrip(".")
+    if absolute >= 0.1:
+        return f"{absolute:.2f}".rstrip("0").rstrip(".")
+    return f"{absolute:.2g}"
 
 
-def transform_right(df: pd.DataFrame, cfg: Step16Config) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
-    right = df[
-        in_window(df, cfg.right_r3_min, cfg.right_r3_max, cfg.right_r4_min, cfg.right_r4_max)
-        & df["strict_phase_code"].isin([-2, 0, 2])
-    ].copy()
-    if right.empty:
-        raise RuntimeError("No certified points were found in the right junction window")
+def calculate_path_curvature(
+    core: Any,
+    step19: Any,
+    step22: Any,
+) -> tuple[dict[str, pd.DataFrame], list[dict[str, Any]]]:
+    specs, modules = core.build_model_specs()
+    curves: dict[str, pd.DataFrame] = {}
+    audit: list[dict[str, Any]] = []
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-    transitions = detect_plus2_zero_transition_midpoints(right)
-    sigma_fit = fit_anchored_sigma_boundary(
-        transitions,
-        cfg.closure_B_r3,
-        cfg.closure_B_r4,
+    for case_id, item in step22.SELECTIONS.items():
+        selected = step22.make_selected(core, modules, item)
+        spec = specs[selected.system]
+        hoppings = core.extract_hoppings(spec, selected.params, nfft=8)
+        klist, distance, ticks, labels = step19.display_bulk_path(
+            spec.key,
+            points_per_segment=PATH_POINTS_PER_SEGMENT[spec.key],
+        )
+        up_indices = np.asarray(spec.spin_up_indices, dtype=int)
+        down_indices = np.asarray(spec.spin_down_indices, dtype=int)
+        rows: list[dict[str, float | int | str]] = []
+
+        for index, ((kx, ky), coordinate) in enumerate(zip(klist, distance)):
+            hamiltonian, velocity_x, velocity_y = core.bloch_from_hoppings(
+                float(kx),
+                float(ky),
+                hoppings,
+            )
+            _, omega_up_bands = core.band_berry_curvature(
+                hamiltonian[np.ix_(up_indices, up_indices)],
+                velocity_x[np.ix_(up_indices, up_indices)],
+                velocity_y[np.ix_(up_indices, up_indices)],
+            )
+            _, omega_down_bands = core.band_berry_curvature(
+                hamiltonian[np.ix_(down_indices, down_indices)],
+                velocity_x[np.ix_(down_indices, down_indices)],
+                velocity_y[np.ix_(down_indices, down_indices)],
+            )
+            omega_up = float(np.sum(omega_up_bands[: spec.n_occ_spin]))
+            omega_down = float(np.sum(omega_down_bands[: spec.n_occ_spin]))
+            rows.append(
+                {
+                    "k_index": int(index),
+                    "path_coordinate": float(coordinate),
+                    "kx": float(kx),
+                    "ky": float(ky),
+                    "omega_z_up": omega_up,
+                    "omega_z_down": omega_down,
+                    "omega_z_total": omega_up + omega_down,
+                }
+            )
+
+        frame = pd.DataFrame(rows)
+        curves[case_id] = frame
+        frame.to_csv(
+            DATA_DIR / f"{case_id}_path_berry_curvature.csv",
+            index=False,
+        )
+        maximum = float(np.max(np.abs(frame["omega_z_total"].to_numpy())))
+        limit = nice_limit(maximum)
+        audit.append(
+            {
+                "case_id": case_id,
+                "system": selected.system,
+                "source_id": selected.source_id,
+                "expected_chern_up": selected.expected_chern_up,
+                "expected_chern_down": selected.expected_chern_down,
+                "path_labels": " | ".join(
+                    label.replace("$", "")
+                    .replace("\\Gamma", "Γ")
+                    .replace("M^\\prime", "M′")
+                    for label in labels
+                ),
+                "path_ticks": json.dumps([float(value) for value in ticks]),
+                "omega_z_total_min": float(frame["omega_z_total"].min()),
+                "omega_z_total_max": float(frame["omega_z_total"].max()),
+                "right_axis_limit": limit,
+                "path_points_per_segment": PATH_POINTS_PER_SEGMENT[spec.key],
+            }
+        )
+    return curves, audit
+
+
+def svg_path(
+    frame: pd.DataFrame,
+    bounds: tuple[float, float, float, float],
+    limit: float,
+) -> str:
+    x0, y0, x1, y1 = bounds
+    coordinate = frame["path_coordinate"].to_numpy(dtype=float)
+    omega = frame["omega_z_total"].to_numpy(dtype=float)
+    x = x0 + (coordinate - coordinate[0]) / (
+        coordinate[-1] - coordinate[0]
+    ) * (x1 - x0)
+    y = y0 + (limit - omega) / (2.0 * limit) * (y1 - y0)
+    commands = [f"M {x[0]:.6f},{y[0]:.6f}"]
+    commands.extend(
+        f"L {x_value:.6f},{y_value:.6f}"
+        for x_value, y_value in zip(x[1:], y[1:])
     )
-    beta = sigma_fit["beta"]
+    return " ".join(commands)
 
-    r3 = right["r3"].to_numpy(dtype=float)
-    r4 = right["r4"].to_numpy(dtype=float)
 
-    # Signed normal distance to the certified four-valley boundary.
-    m4_raw = r3 - cfg.alpha_4v * r4
-    m4_normal = m4_raw / math.sqrt(1.0 + cfg.alpha_4v**2)
-
-    # Signed normal distance to the locally fitted Sigma' two-valley boundary.
-    sigma_boundary = cfg.closure_B_r4 + beta * (r3 - cfg.closure_B_r3)
-    ms_raw = r4 - sigma_boundary
-    ms_normal = ms_raw / math.sqrt(1.0 + beta**2)
-
-    m4_scale = robust_scale(m4_normal)
-    ms_scale = robust_scale(ms_normal)
-
-    right["M_4v_raw"] = m4_raw
-    right["M_4v_normal"] = m4_normal
-    right["M_Sigma_raw"] = ms_raw
-    right["M_Sigma_normal"] = ms_normal
-    right["M_4v_tilde"] = m4_normal / m4_scale
-    right["M_Sigma_tilde"] = ms_normal / ms_scale
-
-    # Mechanism-sector rule inferred from the ordered -2 -> +2 -> 0 path:
-    #   M_Sigma > 0                 -> C_up = 0
-    #   M_Sigma < 0 and M_4v > 0   -> C_up = -2
-    #   M_Sigma < 0 and M_4v < 0   -> C_up = +2
-    predicted = np.where(
-        right["M_Sigma_normal"].to_numpy() > 0,
-        0,
-        np.where(right["M_4v_normal"].to_numpy() > 0, -2, 2),
-    )
-    right["mass_sector_prediction"] = predicted
-    right["mass_sector_match"] = predicted == right["strict_phase_code"].to_numpy()
-
-    labels = [-2, 0, 2]
-    recall = {}
-    for label in labels:
-        mask = right["strict_phase_code"].to_numpy() == label
-        recall[str(label)] = float(np.mean(predicted[mask] == label)) if np.any(mask) else None
-    balanced_accuracy = float(np.mean([v for v in recall.values() if v is not None]))
-    accuracy = float(np.mean(right["mass_sector_match"]))
-
-    meta = {
-        "M_4v_formula": (
-            f"M_4v = r3 - ({cfg.alpha_4v:.10g}) r4"
-        ),
-        "M_Sigma_formula": (
-            f"M_Sigma = r4 - [{cfg.closure_B_r4:.10g} + "
-            f"({beta:.10g})(r3 - {cfg.closure_B_r3:.10g})]"
-        ),
-        "M_4v_normal_definition": "M_4v / sqrt(1 + alpha_4v^2)",
-        "M_Sigma_normal_definition": "M_Sigma / sqrt(1 + beta^2)",
-        "sigma_boundary_fit": sigma_fit,
-        "M_4v_scale": m4_scale,
-        "M_Sigma_scale": ms_scale,
-        "sector_accuracy": accuracy,
-        "sector_balanced_accuracy": balanced_accuracy,
-        "per_class_recall": recall,
-        "n_points": int(len(right)),
-        "n_minus2": int((right["strict_phase_code"] == -2).sum()),
-        "n_zero": int((right["strict_phase_code"] == 0).sum()),
-        "n_plus2": int((right["strict_phase_code"] == 2).sum()),
-        "interpretation": {
-            "M_Sigma_positive": "C_up = 0",
-            "M_Sigma_negative_and_M_4v_positive": "C_up = -2",
-            "M_Sigma_negative_and_M_4v_negative": "C_up = +2",
+def add_text(
+    parent: etree._Element,
+    *,
+    x: float,
+    y: float,
+    text: str,
+    anchor: str = "start",
+    size: float = 3.0,
+    element_id: str,
+) -> etree._Element:
+    node = etree.SubElement(
+        parent,
+        f"{{{SVG_NS}}}text",
+        {
+            "id": element_id,
+            "x": f"{x:.6f}",
+            "y": f"{y:.6f}",
+            "text-anchor": anchor,
+            "style": (
+                f"font-family:'Times New Roman';font-size:{size:.3f}px;"
+                f"font-weight:bold;font-style:normal;fill:{GREEN};"
+                "stroke:none"
+            ),
         },
-    }
-    return right, transitions, meta
+    )
+    node.text = text
+    return node
 
 
-# -----------------------------------------------------------------------------
-# Plotting
-# -----------------------------------------------------------------------------
-def scatter_phases(ax, data: pd.DataFrame, xcol: str, ycol: str, size: float):
-    for phase in [-2, 0, 2]:
-        sub = data[data["strict_phase_code"] == phase]
-        if sub.empty:
-            continue
-        ax.scatter(
-            sub[xcol], sub[ycol],
-            s=size,
-            facecolors="white",
-            edgecolors=PHASE_COLORS[phase],
-            linewidths=1.5,
-            zorder=5,
+def add_omega_label(
+    parent: etree._Element,
+    *,
+    x: float,
+    y: float,
+    element_id: str,
+) -> None:
+    text = etree.SubElement(
+        parent,
+        f"{{{SVG_NS}}}text",
+        {
+            "id": element_id,
+            "x": f"{x:.6f}",
+            "y": f"{y:.6f}",
+            "style": (
+                "font-family:'Times New Roman';font-size:3.45px;"
+                f"font-weight:bold;fill:{GREEN};stroke:none"
+            ),
+        },
+    )
+    omega = etree.SubElement(
+        text,
+        f"{{{SVG_NS}}}tspan",
+        {"style": "font-style:italic"},
+    )
+    omega.text = "Ω"
+    subscript = etree.SubElement(
+        text,
+        f"{{{SVG_NS}}}tspan",
+        {
+            "style": "font-style:italic;font-size:70%",
+            "baseline-shift": "sub",
+        },
+    )
+    subscript.text = "z"
+
+
+def add_svg_overlays(
+    curves: dict[str, pd.DataFrame],
+    audit: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    parser = etree.XMLParser(huge_tree=True, remove_blank_text=False)
+    tree = etree.parse(str(SOURCE_SVG), parser)
+    root = tree.getroot()
+    if root.xpath(".//*[@id='berry-curvature-overlays']"):
+        raise RuntimeError("Source SVG already contains a Berry-curvature overlay")
+
+    defs_nodes = root.xpath("./svg:defs", namespaces=NS)
+    if defs_nodes:
+        defs = defs_nodes[0]
+    else:
+        defs = etree.Element(f"{{{SVG_NS}}}defs")
+        root.insert(0, defs)
+
+    group = etree.SubElement(
+        root,
+        f"{{{SVG_NS}}}g",
+        {
+            "id": "berry-curvature-overlays",
+            f"{{{INKSCAPE_NS}}}groupmode": "layer",
+            f"{{{INKSCAPE_NS}}}label": "Path Berry curvature Omega_z",
+        },
+    )
+    audit_by_case = {str(record["case_id"]): record for record in audit}
+    overlay_records: list[dict[str, Any]] = []
+
+    for case_id, clip_id in CASE_CLIPS.items():
+        bounds = find_panel_bounds(root, clip_id)
+        x0, y0, x1, y1 = bounds
+        limit = float(audit_by_case[case_id]["right_axis_limit"])
+        overlay_clip_id = f"berry-clip-{case_id}"
+        clip = etree.SubElement(
+            defs,
+            f"{{{SVG_NS}}}clipPath",
+            {
+                "id": overlay_clip_id,
+                "clipPathUnits": "userSpaceOnUse",
+            },
+        )
+        etree.SubElement(
+            clip,
+            f"{{{SVG_NS}}}rect",
+            {
+                "x": f"{x0:.6f}",
+                "y": f"{y0:.6f}",
+                "width": f"{x1 - x0:.6f}",
+                "height": f"{y1 - y0:.6f}",
+            },
         )
 
+        panel_group = etree.SubElement(
+            group,
+            f"{{{SVG_NS}}}g",
+            {
+                "id": f"berry-overlay-{case_id}",
+                f"{{{INKSCAPE_NS}}}label": f"{case_id}: total Omega_z",
+            },
+        )
+        curve_width = 0.50 if case_id == "b_fes_Cs_plus1" else 0.58
+        etree.SubElement(
+            panel_group,
+            f"{{{SVG_NS}}}path",
+            {
+                "id": f"berry-curve-{case_id}",
+                "d": svg_path(curves[case_id], bounds, limit),
+                "clip-path": f"url(#{overlay_clip_id})",
+                "style": (
+                    f"fill:none;stroke:{GREEN};stroke-width:{curve_width:.2f};"
+                    "stroke-linecap:round;stroke-linejoin:round;"
+                    "stroke-opacity:1"
+                ),
+            },
+        )
 
-def plot_left(left: pd.DataFrame, meta: dict, cfg: Step16Config, output_dir: Path):
-    x = left["M_L_tilde"].to_numpy()
-    y = left["S_L_tilde"].to_numpy()
-    xlim = (-cfg.left_mass_padding * max(abs(x.min()), abs(x.max())),
-             cfg.left_mass_padding * max(abs(x.min()), abs(x.max())))
-    ylim = (-cfg.left_mass_padding * max(abs(y.min()), abs(y.max())),
-             cfg.left_mass_padding * max(abs(y.min()), abs(y.max())))
+        # The right axis is deliberately minimal, matching the cited paper:
+        # a green spine, endpoint ticks/numbers, and Omega_z at the top.
+        etree.SubElement(
+            panel_group,
+            f"{{{SVG_NS}}}path",
+            {
+                "id": f"berry-right-spine-{case_id}",
+                "d": f"M {x1:.6f},{y0:.6f} L {x1:.6f},{y1:.6f}",
+                "style": f"fill:none;stroke:{GREEN};stroke-width:0.55",
+            },
+        )
+        tick_length = 1.25
+        if case_id == "b_fes_Cs_plus1":
+            # Keep the numbers clear of the final Γ label.  The curve still
+            # uses the full ±25 range; only the labelled ticks are at ±20.
+            tick_value = 0.8 * limit
+            tick_top_y = y0 + (limit - tick_value) / (2.0 * limit) * (y1 - y0)
+            tick_bottom_y = (
+                y0 + (limit + tick_value) / (2.0 * limit) * (y1 - y0)
+            )
+        else:
+            tick_value = limit
+            tick_top_y = y0
+            tick_bottom_y = y1
+        for suffix, y in (("top", tick_top_y), ("bottom", tick_bottom_y)):
+            etree.SubElement(
+                panel_group,
+                f"{{{SVG_NS}}}path",
+                {
+                    "id": f"berry-right-tick-{suffix}-{case_id}",
+                    "d": f"M {x1:.6f},{y:.6f} L {x1 + tick_length:.6f},{y:.6f}",
+                    "style": f"fill:none;stroke:{GREEN};stroke-width:0.48",
+                },
+            )
 
-    fig, ax = plt.subplots(figsize=cfg.figure_size_single)
-    ax.axvspan(xlim[0], 0.0, facecolor=PHASE_COLORS[-2], alpha=0.25, zorder=0)
-    ax.axvspan(0.0, xlim[1], facecolor=PHASE_COLORS[2], alpha=0.25, zorder=0)
-    ax.axvline(0.0, color="black", linewidth=1.9, zorder=3)
-    scatter_phases(ax, left, "M_L_tilde", "S_L_tilde", cfg.point_size)
+        tick_text = format_tick(tick_value)
+        if case_id == "b_fes_Cs_plus1":
+            label_top_y = tick_top_y + 0.9
+            label_bottom_y = tick_bottom_y + 0.9
+            label_size = 2.55
+        else:
+            label_top_y = y0 + 3.0
+            label_bottom_y = y1 - 0.8
+            label_size = 2.75
+        add_text(
+            panel_group,
+            x=x1 + 1.55,
+            y=label_top_y,
+            text=tick_text,
+            size=label_size,
+            element_id=f"berry-right-label-top-{case_id}",
+        )
+        add_text(
+            panel_group,
+            x=x1 + 1.55,
+            y=label_bottom_y,
+            text=f"−{tick_text}",
+            size=label_size,
+            element_id=f"berry-right-label-bottom-{case_id}",
+        )
+        add_omega_label(
+            panel_group,
+            x=x1 + 1.35,
+            y=y0 - 1.4,
+            element_id=f"berry-right-title-{case_id}",
+        )
+        overlay_records.append(
+            {
+                "case_id": case_id,
+                "source_clip_id": clip_id,
+                "overlay_clip_id": overlay_clip_id,
+                "panel_x0": x0,
+                "panel_y0": y0,
+                "panel_x1": x1,
+                "panel_y1": y1,
+                "right_axis_limit": limit,
+                "right_axis_labelled_tick": tick_value,
+                "curve_id": f"berry-curve-{case_id}",
+            }
+        )
 
-    ax.set_xlim(*xlim)
-    ax.set_ylim(*ylim)
-    ax.set_xlabel(r"$\widetilde{\mathbf{\mathit{M}}}_{\mathrm{L}}$", fontsize=24, fontweight="bold")
-    ax.set_ylabel(r"$\widetilde{\mathbf{\mathit{S}}}_{\mathrm{L}}$", fontsize=24, fontweight="bold")
-    style_axis(ax, "Left four-valley boundary in local mass coordinates")
-
-    handles = phase_handles(include_zero=True) + [
-        Line2D([0], [0], color="black", linewidth=1.9,
-               label=r"$\mathbf{\mathit{M}}_{\mathrm{L}}=0$"),
-    ]
-    leg = ax.legend(handles=handles, loc="upper left", fontsize=13, frameon=True, ncol=2)
-    leg.get_frame().set_linewidth(1.1)
-    leg.get_frame().set_edgecolor("black")
-
-    ax.text(
-        0.03, 0.025,
-        f"sign-rule accuracy = {meta['nonzero_phase_sign_accuracy']:.3f}",
-        transform=ax.transAxes,
-        fontsize=12,
-        fontweight="bold",
-        bbox=dict(facecolor="white", edgecolor="black", alpha=0.85, boxstyle="round,pad=0.3"),
+    tree.write(
+        str(OUTPUT_SVG),
+        encoding="utf-8",
+        xml_declaration=True,
+        pretty_print=False,
     )
-    plt.tight_layout()
-    for ext in ["png", "pdf", "svg"]:
-        fig.savefig(output_dir / f"step16M_left_mass_coordinate_phase_map.{ext}",
-                    dpi=600 if ext == "png" else None, bbox_inches="tight")
-    plt.close(fig)
+    return overlay_records
 
 
-def plot_right(right: pd.DataFrame, meta: dict, cfg: Step16Config, output_dir: Path):
-    x = right["M_4v_tilde"].to_numpy()
-    y = right["M_Sigma_tilde"].to_numpy()
-    xmax = cfg.right_mass_padding * max(abs(x.min()), abs(x.max()))
-    ymax = cfg.right_mass_padding * max(abs(y.min()), abs(y.max()))
-    xlim = (-xmax, xmax)
-    ylim = (-ymax, ymax)
+def main() -> None:
+    OUTPUT.mkdir(parents=True, exist_ok=True)
+    source_hash_before = sha256(SOURCE_SVG)
+    core = load_module("step31_core", CORE_PATH)
+    step19 = load_module("step31_plot", STEP19_PATH)
+    step22 = load_module("step31_selection", STEP22_PATH)
 
-    fig, ax = plt.subplots(figsize=cfg.figure_size_single)
-    # Clean mechanism sectors in the double-mass plane.
-    ax.axhspan(0.0, ylim[1], facecolor=PHASE_COLORS[0], alpha=0.45, zorder=0)
-    ax.fill_between([xlim[0], 0.0], ylim[0], 0.0, color=PHASE_COLORS[2], alpha=0.35, zorder=0)
-    ax.fill_between([0.0, xlim[1]], ylim[0], 0.0, color=PHASE_COLORS[-2], alpha=0.35, zorder=0)
-    ax.axvline(0.0, color="black", linewidth=1.8, zorder=3)
-    ax.axhline(0.0, color="black", linewidth=1.8, zorder=3)
+    curves, audit = calculate_path_curvature(core, step19, step22)
+    overlay_records = add_svg_overlays(curves, audit)
+    source_hash_after = sha256(SOURCE_SVG)
+    if source_hash_before != source_hash_after:
+        raise RuntimeError("The source Fig4.svg was unexpectedly modified")
 
-    scatter_phases(ax, right, "M_4v_tilde", "M_Sigma_tilde", cfg.point_size)
-    mismatch = right[~right["mass_sector_match"]]
-    if not mismatch.empty:
-        ax.scatter(mismatch["M_4v_tilde"], mismatch["M_Sigma_tilde"], marker="x",
-                   s=90, color="black", linewidths=1.8, zorder=8)
-
-    ax.set_xlim(*xlim)
-    ax.set_ylim(*ylim)
-    ax.set_xlabel(r"$\widetilde{\mathbf{\mathit{M}}}_{4\mathrm{v}}$", fontsize=24, fontweight="bold")
-    ax.set_ylabel(r"$\widetilde{\mathbf{\mathit{M}}}_{\Sigma'}$", fontsize=24, fontweight="bold")
-    style_axis(ax, "Right junction in double-mass coordinates")
-
-    handles = phase_handles(include_zero=True) + [
-        Line2D([0], [0], color="black", linewidth=1.8,
-               label=r"$\mathbf{\mathit{M}}_{4\mathrm{v}}=0$ or $\mathbf{\mathit{M}}_{\Sigma'}=0$"),
-    ]
-    if not mismatch.empty:
-        handles.append(Line2D([0], [0], marker="x", linestyle="None", color="black",
-                              markersize=9, label="mass-rule mismatch"))
-    leg = ax.legend(handles=handles, loc="upper right", fontsize=12.5, frameon=True, ncol=2)
-    leg.get_frame().set_linewidth(1.1)
-    leg.get_frame().set_edgecolor("black")
-
-    ax.text(
-        0.03, 0.025,
-        f"sector accuracy = {meta['sector_accuracy']:.3f}\n"
-        f"balanced accuracy = {meta['sector_balanced_accuracy']:.3f}",
-        transform=ax.transAxes,
-        fontsize=12,
-        fontweight="bold",
-        bbox=dict(facecolor="white", edgecolor="black", alpha=0.85, boxstyle="round,pad=0.3"),
+    pd.DataFrame(audit).to_csv(
+        OUTPUT / "step31_01_path_berry_curvature_audit.csv",
+        index=False,
     )
-    plt.tight_layout()
-    for ext in ["png", "pdf", "svg"]:
-        fig.savefig(output_dir / f"step16M_right_double_mass_phase_map.{ext}",
-                    dpi=600 if ext == "png" else None, bbox_inches="tight")
-    plt.close(fig)
-
-
-def plot_combined(left: pd.DataFrame, left_meta: dict, right: pd.DataFrame, right_meta: dict,
-                  cfg: Step16Config, output_dir: Path):
-    fig, axes = plt.subplots(1, 2, figsize=cfg.figure_size_combined)
-
-    # Left panel
-    ax = axes[0]
-    x = left["M_L_tilde"].to_numpy(); y = left["S_L_tilde"].to_numpy()
-    xmax = cfg.left_mass_padding * max(abs(x.min()), abs(x.max()))
-    ymax = cfg.left_mass_padding * max(abs(y.min()), abs(y.max()))
-    ax.axvspan(-xmax, 0.0, facecolor=PHASE_COLORS[-2], alpha=0.25)
-    ax.axvspan(0.0, xmax, facecolor=PHASE_COLORS[2], alpha=0.25)
-    ax.axvline(0.0, color="black", linewidth=1.8)
-    scatter_phases(ax, left, "M_L_tilde", "S_L_tilde", cfg.point_size * 0.85)
-    ax.set_xlim(-xmax, xmax); ax.set_ylim(-ymax, ymax)
-    ax.set_xlabel(r"$\widetilde{\mathbf{\mathit{M}}}_{\mathrm{L}}$", fontsize=22, fontweight="bold")
-    ax.set_ylabel(r"$\widetilde{\mathbf{\mathit{S}}}_{\mathrm{L}}$", fontsize=22, fontweight="bold")
-    style_axis(ax, "(a) Left local mass plane")
-
-    # Right panel
-    ax = axes[1]
-    x = right["M_4v_tilde"].to_numpy(); y = right["M_Sigma_tilde"].to_numpy()
-    xmax = cfg.right_mass_padding * max(abs(x.min()), abs(x.max()))
-    ymax = cfg.right_mass_padding * max(abs(y.min()), abs(y.max()))
-    ax.axhspan(0.0, ymax, facecolor=PHASE_COLORS[0], alpha=0.45)
-    ax.fill_between([-xmax, 0.0], -ymax, 0.0, color=PHASE_COLORS[2], alpha=0.35)
-    ax.fill_between([0.0, xmax], -ymax, 0.0, color=PHASE_COLORS[-2], alpha=0.35)
-    ax.axvline(0.0, color="black", linewidth=1.8)
-    ax.axhline(0.0, color="black", linewidth=1.8)
-    scatter_phases(ax, right, "M_4v_tilde", "M_Sigma_tilde", cfg.point_size * 0.85)
-    mismatch = right[~right["mass_sector_match"]]
-    if not mismatch.empty:
-        ax.scatter(mismatch["M_4v_tilde"], mismatch["M_Sigma_tilde"], marker="x",
-                   s=80, color="black", linewidths=1.7, zorder=8)
-    ax.set_xlim(-xmax, xmax); ax.set_ylim(-ymax, ymax)
-    ax.set_xlabel(r"$\widetilde{\mathbf{\mathit{M}}}_{4\mathrm{v}}$", fontsize=22, fontweight="bold")
-    ax.set_ylabel(r"$\widetilde{\mathbf{\mathit{M}}}_{\Sigma'}$", fontsize=22, fontweight="bold")
-    style_axis(ax, "(b) Right double-mass plane")
-
-    handles = phase_handles(include_zero=True)
-    fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, 1.03),
-               ncol=3, fontsize=14, frameon=True)
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
-    for ext in ["png", "pdf", "svg"]:
-        fig.savefig(output_dir / f"step16M_combined_mass_coordinate_phase_maps.{ext}",
-                    dpi=600 if ext == "png" else None, bbox_inches="tight")
-    plt.close(fig)
-
-
-# -----------------------------------------------------------------------------
-# Main
-# -----------------------------------------------------------------------------
-def run_step16M(
-    phase_source: str | Path = "outputs_tts_step15C_repair_and_redraw_phase_maps.zip",
-    step11_source: str | Path | None = "outputs_tts_step11M_lieb_aligned_fixed_slice.zip",
-    step12_source: str | Path | None = "outputs_tts_step12M_junction_multiclosure_repair.zip",
-    output_dir: str | Path = "outputs_tts_step16M_mass_coordinate_phase_maps",
-    config: Step16Config | None = None,
-):
-    if config is None:
-        config = Step16Config(output_dir=Path(output_dir))
-    config.output_dir = Path(output_dir)
-    config.output_dir.mkdir(parents=True, exist_ok=True)
-
-    phase = read_csv_any(phase_source, "step15C_00_final_phase_points_repaired.csv")
-
-    # Use exact closure coordinates from Step12M when available.
-    closure = optional_csv(step12_source, "step12M_06_critical_closure_parameters.csv")
-    if closure is not None and len(closure) >= 2:
-        closure = closure.sort_values("critical_lambda").reset_index(drop=True)
-        config.closure_A_r3 = float(closure.loc[0, "r3"])
-        config.closure_A_r4 = float(closure.loc[0, "r4"])
-        config.closure_B_r3 = float(closure.loc[1, "r3"])
-        config.closure_B_r4 = float(closure.loc[1, "r4"])
-
-    left, left_meta = transform_left(phase, config)
-    right, transition_points, right_meta = transform_right(phase, config)
-
-    # Optional certified points from Step11M are transformed and stored for audit.
-    step11 = optional_csv(step11_source, "step11M_07_completed_certified_boundary_points.csv")
-    if step11 is not None:
-        left_cert = step11[step11["branch_hint"].eq("generic_left_lower")].copy()
-        if not left_cert.empty:
-            slope = left_boundary_slope(left_cert["r3"].to_numpy(), config)
-            mass = (
-                left_cert["r4"].to_numpy()
-                + config.left_a * left_cert["r3"].to_numpy() ** 2
-                + config.left_b * left_cert["r3"].to_numpy()
-                + config.left_c
-            ) / np.sqrt(1.0 + slope**2)
-            tangent = left_arc_coordinate(left_cert["r3"].to_numpy(), config)
-            left_cert["M_L_normal"] = mass
-            left_cert["S_L_arc"] = tangent
-            left_cert.to_csv(config.output_dir / "step16M_03_left_certified_boundary_points_mass_coordinates.csv", index=False)
-
-    transformed = pd.concat([
-        left.assign(mass_map_region="left_local"),
-        right.assign(mass_map_region="right_junction"),
-    ], ignore_index=True, sort=False)
-    transformed.to_csv(config.output_dir / "step16M_00_transformed_mass_coordinate_points.csv", index=False)
-    transition_points.to_csv(config.output_dir / "step16M_01_sigma_transition_midpoints.csv", index=False)
-
-    plot_left(left, left_meta, config, config.output_dir)
-    plot_right(right, right_meta, config, config.output_dir)
-    plot_combined(left, left_meta, right, right_meta, config, config.output_dir)
-
-    report = {
-        "code_version": CODE_VERSION,
-        "configuration": asdict(config),
-        "left_mass_coordinates": left_meta,
-        "right_double_mass_coordinates": right_meta,
-        "evidence_scope": {
-            "left": "Local formula valid only near the certified left four-valley branch.",
-            "right": (
-                "M_4v is the certified local four-valley mass. M_Sigma is an exploratory "
-                "local mass coordinate fitted from the certified +2/0 boundary and anchored "
-                "at the Sigma' two-valley closure. It is not yet a globally derived k.p mass."
-            ),
-            "global_warning": (
-                "These local mass coordinates must not be used as a global reparameterization "
-                "of the entire fixed-background r3-r4 phase map."
-            ),
-        },
-        "generated_figures": [
-            "step16M_left_mass_coordinate_phase_map.pdf",
-            "step16M_right_double_mass_phase_map.pdf",
-            "step16M_combined_mass_coordinate_phase_maps.pdf",
-        ],
+    pd.DataFrame(overlay_records).to_csv(
+        OUTPUT / "step31_02_svg_overlay_manifest.csv",
+        index=False,
+    )
+    manifest = {
+        "source_svg": str(SOURCE_SVG),
+        "source_sha256_before": source_hash_before,
+        "source_sha256_after": source_hash_after,
+        "source_preserved": source_hash_before == source_hash_after,
+        "output_svg": str(OUTPUT_SVG),
+        "quantity_plotted": "Omega_z_total(k) = Omega_z_up(k) + Omega_z_down(k)",
+        "right_axis": "Berry curvature along the same high-symmetry path",
+        "not_plotted": (
+            "Anomalous Hall conductivity sigma_xy is a Brillouin-zone "
+            "integral and is not a function of this one-dimensional k path."
+        ),
+        "curve_color": GREEN,
+        "svg_editability": (
+            "Each curve, right spine, tick, and label is an independent "
+            "vector object in the 'Path Berry curvature Omega_z' layer."
+        ),
+        "cases": overlay_records,
     }
-    with open(config.output_dir / "step16M_02_mass_coordinate_report.json", "w", encoding="utf-8") as f:
-        json.dump(report, f, ensure_ascii=False, indent=2, default=str)
-
-    md = rf"""# TTS Step16M mass-coordinate phase maps
-
-## Left local coordinates
-
-\[
-M_{{\mathrm L}}=r_4+{config.left_a:.10g}r_3^2+{config.left_b:.10g}r_3+{config.left_c:.10g}.
-\]
-
-The plotted horizontal coordinate is the normalized signed normal distance
-\(\widetilde M_{{\mathrm L}}\); the vertical coordinate
-\(\widetilde S_{{\mathrm L}}\) is normalized arc length along \(M_{{\mathrm L}}=0\).
-The sign rule reproduces the certified \(C_\uparrow=\pm2\) labels with accuracy
-**{left_meta['nonzero_phase_sign_accuracy']:.6f}**.
-
-## Right double-mass coordinates
-
-\[
-M_{{4v}}=r_3-{config.alpha_4v:.10g}r_4,
-\]
-
-\[
-M_{{\Sigma'}}=r_4-\left[{config.closure_B_r4:.10g}
-+{right_meta['sigma_boundary_fit']['beta']:.10g}(r_3-{config.closure_B_r3:.10g})\right].
-\]
-
-The mechanism-sector rule gives accuracy **{right_meta['sector_accuracy']:.6f}**
-and balanced accuracy **{right_meta['sector_balanced_accuracy']:.6f}**.
-
-## Scope
-
-The left and right coordinates are **local mechanism coordinates**, not a global
-coordinate transformation. In particular, \(M_{{\Sigma'}}\) is fitted from the
-certified local \(+2/0\) boundary and anchored to the certified two-valley closure.
-It should be described as an exploratory effective mass coordinate until an
-independent low-energy \(k\cdot p\) derivation is completed.
-"""
-    (config.output_dir / "step16M_02_mass_coordinate_report.md").write_text(md, encoding="utf-8")
-
-    print(json.dumps({
-        "code_version": CODE_VERSION,
-        "output_dir": str(config.output_dir),
-        "left_sign_accuracy": left_meta["nonzero_phase_sign_accuracy"],
-        "right_sector_accuracy": right_meta["sector_accuracy"],
-        "right_sector_balanced_accuracy": right_meta["sector_balanced_accuracy"],
-        "M_Sigma_beta": right_meta["sigma_boundary_fit"]["beta"],
-    }, ensure_ascii=False, indent=2))
-    return report
+    (OUTPUT / "step31_03_manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    print(f"Source preserved: {source_hash_before == source_hash_after}")
+    print(f"Output SVG: {OUTPUT_SVG}")
+    print(f"Data: {DATA_DIR}")
 
 
 if __name__ == "__main__":
-    run_step16M()
+    main()

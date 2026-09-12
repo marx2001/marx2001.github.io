@@ -1,4 +1,3 @@
-
 # define lattice vectors
 lat = [[1.0, 0.0], [0.5, np.sqrt(3.0) / 2.0]]
 # define coordinates of orbitals

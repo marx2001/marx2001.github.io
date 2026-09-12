@@ -1,4 +1,3 @@
-
 #General
 PREC = ACCURATE
 ISTART= 0

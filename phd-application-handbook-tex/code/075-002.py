@@ -1,4 +1,3 @@
-
 """Module for twisting 2D materials"""
 # Author: Yang Li
 # Email: yangli18@mails.tsinghua.edu.cn

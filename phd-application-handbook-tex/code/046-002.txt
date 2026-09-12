@@ -1,1 +1,11 @@
-output/Ruixiao_Ma_Research_Portfolio.pdf
+Material: Cs3V9Te13
+Crystal system: Hexagonal
+Space group: P -6 2 m
+Space group number: 189
+
+a = 10.1327 Å
+b = 10.1327 Å
+c = 8.2181 Å
+alpha = 90°
+beta  = 90°
+gamma = 120°

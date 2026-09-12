@@ -1,298 +1,375 @@
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+
 """
-1step.py  (VB + CB grouping + level diagram)
+1step.py (Index-based robust version)  [SOC-ready + output re/im]
 
-功能：
-- 读取 UP/DW 两个 PDOS 文件（能量网格必须一致）
-- 对 d 轨道 (dxy, dyz, dz2, dxz, dx2y2) 在两个能窗内分别：
-  1) 计算余弦相似度矩阵 sim_matrix
-  2) 连通分量分组 auto_groups（阈值 thr）
-  3) 计算每轨道 band center E_center（谱权重质心）与 N_window
-  4) 画能级示意图（按 E_center 排序，标注简并组）
-
-输出（prefix = --out_prefix）：
-- <prefix>_VB_sim_matrix.csv
-- <prefix>_VB_orb_centers.csv
-- <prefix>_VB_auto_groups.csv
-- <prefix>_VB_levels.png
-- <prefix>_CB_sim_matrix.csv
-- <prefix>_CB_orb_centers.csv
-- <prefix>_CB_auto_groups.csv
-- <prefix>_CB_levels.png
-
-说明：
-- Ef 位置由 --Ef 指定（默认 0.0），脚本不从 OUTCAR/DOSCAR 读取。
-- 这里的“能级/分组”是基于指定能窗内 PDOS 形状相似性 + band center（质心），用于机制图示意，不等同严格晶场本征值。
+输出 edges CSV 现在包含：
+  absH_eV, reH_eV, imH_eV, phase_rad, phase_deg
+便于后续做：
+  - 轨道杂化 (absH / absH^2)
+  - 2×2 SOC spinor block Frobenius norm / singular values (更接近文献“hopping幅度”口径)
 """
 
-import argparse
-from pathlib import Path
 import re
+import csv
+import math
+import argparse
+from collections import defaultdict, namedtuple
 import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
 
+# -------------------------
+# Edge record
+# -------------------------
+Edge = namedtuple(
+    "Edge",
+    "pair shell dist absH reH imH phase_rad Rx Ry Rz m n atom_m atom_n elem_m elem_n group_m group_n orb_m orb_n"
+)
 
-# ====== PDOS 文件列布局（与你现有脚本一致）======
-COLS = ["E","s","py","pz","px","dxy","dyz","dz2","dxz","dx2y2","tot"]
-D_ORBS = ["dxy","dyz","dz2","dxz","dx2y2"]
+# =========================
+# Parse wannier90.win
+# =========================
+def _extract_block(txt, block_name):
+    m = re.search(rf"begin\s+{block_name}(.*?)end\s+{block_name}", txt, re.S | re.I)
+    return None if not m else m.group(1).strip()
 
+def parse_win_lattice_and_atoms(win_path):
+    with open(win_path, "r", encoding="utf-8", errors="ignore") as f:
+        txt = f.read()
 
-def load_pdos(path: Path) -> pd.DataFrame:
-    return pd.read_csv(path, sep=r"\s+", comment="#", names=COLS, skiprows=1)
+    cell_block = _extract_block(txt, "unit_cell_cart")
+    if cell_block is None:
+        raise RuntimeError("Cannot find unit_cell_cart block in wannier90.win")
 
+    lines = [ln.strip() for ln in cell_block.splitlines() if ln.strip()]
+    if re.match(r"^(ang|angstrom|bohr)\b", lines[0], re.I):
+        unit = lines[0].lower()
+        vec_lines = lines[1:4]
+    else:
+        unit = "ang"
+        vec_lines = lines[0:3]
 
-def trapz(E: np.ndarray, Y: np.ndarray) -> float:
-    return float(np.trapz(Y, E))
+    a1 = np.array([float(x) for x in vec_lines[0].split()[:3]], dtype=float)
+    a2 = np.array([float(x) for x in vec_lines[1].split()[:3]], dtype=float)
+    a3 = np.array([float(x) for x in vec_lines[2].split()[:3]], dtype=float)
 
+    if "bohr" in unit:
+        bohr_to_ang = 0.52917721092
+        a1 *= bohr_to_ang
+        a2 *= bohr_to_ang
+        a3 *= bohr_to_ang
 
-def band_center(E: np.ndarray, D: np.ndarray, Emin: float, Emax: float):
-    m = (E >= Emin) & (E <= Emax)
-    Ew = E[m]
-    Dw = D[m]
-    denom = trapz(Ew, Dw)
-    if abs(denom) < 1e-14:
-        return np.nan, 0.0
-    num = trapz(Ew, Ew * Dw)
-    return num / denom, denom
+    A = np.stack([a1, a2, a3], axis=1)  # columns are lattice vectors
 
+    atoms_block = _extract_block(txt, "atoms_cart")
+    if atoms_block is None:
+        raise RuntimeError("Cannot find atoms_cart block in wannier90.win")
 
-def cosine_sim(E: np.ndarray, A: np.ndarray, B: np.ndarray, Emin: float, Emax: float):
-    m = (E >= Emin) & (E <= Emax)
-    Em = E[m]
-    a = A[m]
-    b = B[m]
-    na = np.sqrt(trapz(Em, a * a))
-    nb = np.sqrt(trapz(Em, b * b))
-    if na < 1e-14 or nb < 1e-14:
-        return np.nan
-    return trapz(Em, a * b) / (na * nb)
-
-
-def auto_groups(sim_mat: np.ndarray, labels, thr: float):
-    """
-    Build graph with edge(u,v) if sim>=thr, return connected components.
-    """
-    n = len(labels)
-    visited = [False] * n
-    groups = []
-    for i in range(n):
-        if visited[i]:
+    atoms = []
+    for idx, ln in enumerate([x for x in atoms_block.splitlines() if x.strip()], start=1):
+        parts = ln.split()
+        if len(parts) < 4:
             continue
-        stack = [i]
-        comp = []
-        visited[i] = True
-        while stack:
-            u = stack.pop()
-            comp.append(u)
-            for v in range(n):
-                if (not visited[v]) and (sim_mat[u, v] >= thr):
-                    visited[v] = True
-                    stack.append(v)
-        groups.append([labels[k] for k in sorted(comp)])
-    return groups
+        elem = parts[0]
+        r = np.array([float(parts[1]), float(parts[2]), float(parts[3])], dtype=float)
+        atoms.append({"id": idx, "elem": elem, "r": r})
 
+    if not atoms:
+        raise RuntimeError("atoms_cart parsed but got 0 atoms")
 
-def compute_window(E: np.ndarray, D: np.ndarray, Emin: float, Emax: float, thr: float, tag: str):
+    return A, atoms
+
+# =========================
+# Parse centres.xyz (WF-only)
+# =========================
+def parse_wf_centres_from_xyz(xyz_path, natoms, nwann):
+    with open(xyz_path, "r", encoding="utf-8", errors="ignore") as f:
+        lines = [ln.strip() for ln in f if ln.strip()]
+
+    N = int(lines[0])
+    if N < natoms + nwann:
+        raise RuntimeError(f"centres.xyz N={N} < natoms+nwann={natoms+nwann}")
+
+    start = 2 + natoms
+    end = start + nwann
+    if len(lines) < end:
+        raise RuntimeError(f"centres.xyz insufficient lines: need >= {end}, got {len(lines)}")
+
+    wf_centers = [None] * (nwann + 1)
+    for i in range(nwann):
+        parts = lines[start + i].split()
+        if len(parts) < 4:
+            raise RuntimeError(f"Bad WF centre line: {lines[start+i]}")
+        wf_centers[i + 1] = np.array([float(parts[1]), float(parts[2]), float(parts[3])], dtype=float)
+
+    return wf_centers
+
+# =========================
+# Parse hr.dat
+# =========================
+def read_hr_header_num_wann(hr_path):
+    with open(hr_path, "r", encoding="utf-8", errors="ignore") as f:
+        f.readline()
+        return int(f.readline().strip())
+
+def parse_hr_dat(hr_path):
     """
-    返回：
-      df_sim, df_orb, df_grp, groups(list[list[str]])
+    Yield (Rx,Ry,Rz,m,n,reH,imH) from wannier90_hr.dat. m,n are 1-based.
     """
-    n = len(D_ORBS)
-    sim = np.zeros((n, n), float)
-    for i in range(n):
-        for j in range(n):
-            if i == j:
-                sim[i, j] = 1.0
-            elif j < i:
-                sim[i, j] = sim[j, i]
-            else:
-                sim[i, j] = cosine_sim(E, D[:, i], D[:, j], Emin, Emax)
+    with open(hr_path, "r", encoding="utf-8", errors="ignore") as f:
+        _ = f.readline()
+        _num_wann = int(f.readline().strip())
+        nrpts = int(f.readline().strip())
 
-    df_sim = pd.DataFrame(sim, index=D_ORBS, columns=D_ORBS)
-    groups = auto_groups(sim, D_ORBS, thr=thr)
+        deg = []
+        while len(deg) < nrpts:
+            ln = f.readline()
+            if not ln:
+                raise RuntimeError("Unexpected EOF while reading degeneracy list")
+            ln = ln.strip()
+            if not ln:
+                continue
+            deg += [int(x) for x in ln.split()]
 
-    # per-orb centers
-    orb_rows = []
-    for i, orb in enumerate(D_ORBS):
-        Ec, Nw = band_center(E, D[:, i], Emin, Emax)
-        orb_rows.append({
-            "orb": orb,
-            "E_center": Ec,
-            "N_window": Nw,
-            "window": f"[{Emin},{Emax}]",
-            "tag": tag
-        })
-    df_orb = pd.DataFrame(orb_rows).sort_values("E_center")
+        for ln in f:
+            ln = ln.strip()
+            if not ln:
+                continue
+            parts = ln.split()
+            if len(parts) < 7:
+                continue
+            Rx, Ry, Rz = int(parts[0]), int(parts[1]), int(parts[2])
+            m, n = int(parts[3]), int(parts[4])
+            reH, imH = float(parts[5]), float(parts[6])
+            yield Rx, Ry, Rz, m, n, reH, imH
 
-    # per-group centers (sum DOS)
-    grp_rows = []
-    for g in groups:
-        idx = [D_ORBS.index(o) for o in g]
-        Dg = D[:, idx].sum(axis=1)
-        Ec, Nw = band_center(E, Dg, Emin, Emax)
-        grp_rows.append({
-            "group": "(" + ",".join(g) + ")",
-            "members": ",".join(g),
-            "size": len(g),
-            "E_center": Ec,
-            "N_window": Nw,
-            "window": f"[{Emin},{Emax}]",
-            "tag": tag
-        })
-    df_grp = pd.DataFrame(grp_rows).sort_values("E_center")
+# =========================
+# Group/order helpers
+# =========================
+def pair_name(g1, g2, order_map):
+    o1 = order_map.get(g1, 999)
+    o2 = order_map.get(g2, 999)
+    if o1 < o2:
+        return f"{g1}<->{g2}"
+    if o2 < o1:
+        return f"{g2}<->{g1}"
+    return f"{min(g1, g2)}<->{max(g1, g2)}"
 
-    return df_sim, df_orb, df_grp, groups
+# =========================
+# Index-based WF mapping
+# =========================
+D_ORBS = ["dxy", "dyz", "dxz", "dz2", "dx2-y2"]
+P_ORBS = ["px", "py", "pz"]
 
+def build_index_mapping(atoms, num_wann):
+    if num_wann != 68:
+        raise RuntimeError(
+            f"Expected num_wann=68 for your system, but got {num_wann}. "
+            f"If your projections changed, update index blocks accordingly."
+        )
 
-def parse_orb_list(s):
-    tokens = re.findall(r"(dxy|dxz|dyz|dz2|dx2y2)", str(s), flags=re.IGNORECASE)
-    return [t.lower() for t in tokens]
+    idx_Tc = [i for i,a in enumerate(atoms) if a["elem"] == "Tc"]
+    idx_Ir = [i for i,a in enumerate(atoms) if a["elem"] == "Ir"]
+    idx_Se = [i for i,a in enumerate(atoms) if a["elem"] == "Se"]
+    idx_Ge = [i for i,a in enumerate(atoms) if a["elem"] == "Ge"]
 
+    if len(idx_Tc) != 1 or len(idx_Ir) != 1 or len(idx_Se) != 6 or len(idx_Ge) != 2:
+        raise RuntimeError(
+            f"Atom counts mismatch: Tc={len(idx_Tc)}, Ir={len(idx_Ir)}, "
+            f"Se={len(idx_Se)}, Ge={len(idx_Ge)}. Check atoms_cart."
+        )
 
-def draw_level_diagram(df_grp: pd.DataFrame, out_png: str, title: str, eref: float = 0.0,
-                       fontsize: int = 12, linewidth: float = 3.0):
-    """
-    用 df_grp（每组 E_center）画能级示意图。
-    """
-    # 过滤无效
-    df = df_grp.copy()
-    df = df[np.isfinite(df["E_center"].values)]
-    if len(df) == 0:
-        raise RuntimeError("No valid E_center to plot.")
+    wf_atom = [None] * (num_wann + 1)
+    wf_elem = [None] * (num_wann + 1)
+    wf_group = [None] * (num_wann + 1)
+    wf_orb = [None] * (num_wann + 1)
 
-    # 按能量排序
-    df = df.sort_values("E_center").reset_index(drop=True)
+    for wf in range(1, 11):
+        wf_atom[wf] = idx_Tc[0]
+        wf_elem[wf] = "Tc"
+        wf_group[wf] = "Tc_d"
+        i = (wf - 1) // 2
+        wf_orb[wf] = D_ORBS[i]
 
-    ys = (df["E_center"].to_numpy(float) - eref)
-    labels = []
-    sizes = []
-    for _, r in df.iterrows():
-        orbs = parse_orb_list(r["members"])
-        label = " + ".join(orbs) if orbs else str(r["group"])
-        labels.append(label)
-        sizes.append(int(r["size"]))
+    for wf in range(11, 21):
+        wf_atom[wf] = idx_Ir[0]
+        wf_elem[wf] = "Ir"
+        wf_group[wf] = "Ir_d"
+        i = (wf - 11) // 2
+        wf_orb[wf] = D_ORBS[i]
 
-    n = len(df)
-    fig_h = max(4.0, 1.2 + 0.8 * n)
-    fig, ax = plt.subplots(figsize=(6.4, fig_h))
+    start = 21
+    for a_i in range(6):
+        atom_idx = idx_Se[a_i]
+        for local in range(6):
+            wf = start + a_i * 6 + local
+            wf_atom[wf] = atom_idx
+            wf_elem[wf] = "Se"
+            wf_group[wf] = "Se_p"
+            j = local // 2
+            wf_orb[wf] = P_ORBS[j]
 
-    x0 = 0.0
-    xspan = 0.55
-    x_offsets = np.linspace(-0.15, 0.15, n) if n > 1 else np.array([0.0])
+    start = 57
+    for a_i in range(2):
+        atom_idx = idx_Ge[a_i]
+        for local in range(6):
+            wf = start + a_i * 6 + local
+            wf_atom[wf] = atom_idx
+            wf_elem[wf] = "Ge"
+            wf_group[wf] = "Ge_p"
+            j = local // 2
+            wf_orb[wf] = P_ORBS[j]
 
-    for i in range(n):
-        y = ys[i]
-        xo = x_offsets[i]
-        ax.hlines(y, x0 - xspan + xo, x0 + xspan + xo, linewidth=linewidth)
-        ax.text(x0 + xspan + 0.10, y, f"{labels[i]} ({sizes[i]})", va="center", fontsize=fontsize)
-        ax.text(x0 - xspan - 0.10, y, f"{y:.3f} eV", va="center", ha="right", fontsize=fontsize-1)
+    return wf_atom, wf_elem, wf_group, wf_orb
 
-    ax.set_xlim(-1.2, 1.9)
-    ax.set_xticks([])
-    ax.set_ylabel(f"Energy (eV)  [E_center - {eref:g}]", fontsize=fontsize)
-    ax.grid(True, axis="y", linestyle="--", linewidth=0.6, alpha=0.5)
-    ax.set_title(title, fontsize=fontsize + 2)
-
-    ypad = 0.15 * (float(np.nanmax(ys)) - float(np.nanmin(ys)) + 1e-9)
-    ax.set_ylim(float(np.nanmin(ys) - ypad), float(np.nanmax(ys) + ypad))
-
-    fig.tight_layout()
-    fig.savefig(out_png, dpi=300)
-    plt.close(fig)
-
-
+# =========================
+# Main
+# =========================
 def main():
     ap = argparse.ArgumentParser()
-
-    ap.add_argument("--up", required=True, help="spin-up PDOS file")
-    ap.add_argument("--dw", required=True, help="spin-down PDOS file")
-
-    ap.add_argument("--Ef", type=float, default=0.0,
-                    help="Fermi level on PDOS energy axis (used for defining VB/CB windows around it). default=0")
-
-    # windows defined relative to Ef
-    ap.add_argument("--vb_width", type=float, default=1.0,
-                    help="VB window width below Ef: [Ef-vb_width, Ef]")
-    ap.add_argument("--cb_width", type=float, default=1.0,
-                    help="CB window width above Ef: [Ef, Ef+cb_width]")
-
-    ap.add_argument("--thr", type=float, default=0.99, help="cosine similarity threshold for grouping")
-    ap.add_argument("--out_prefix", default="Auto", help="output prefix, e.g., TcAuto")
-
-    ap.add_argument("--no_plot", action="store_true", help="do not output png level diagrams")
+    ap.add_argument("--win", required=True, help="wannier90.win")
+    ap.add_argument("--centres", required=True, help="wannier90_centres.xyz")
+    ap.add_argument("--hr", required=True, help="wannier90_hr.dat")
+    ap.add_argument("--tol", type=float, default=0.10, help="distance bin size (Ang)")
+    ap.add_argument("--min_absH", type=float, default=1e-4, help="min |H| kept (eV)")
+    ap.add_argument("--topk", type=int, default=30, help="topK edges per (pair,shell)")
+    ap.add_argument("--skip_same_atom_R0", action="store_true")
+    ap.add_argument("--skip_diag_R0", action="store_true")
+    ap.add_argument("--pairs", default="ALL", help="comma-separated allowed pairs like Tc_d<->Se_p, or ALL")
+    ap.add_argument("--out_summary", default="hopping_summary_by_shell.csv")
+    ap.add_argument("--out_edges", default="", help="optional edges csv output")
+    ap.add_argument("--group_order", default="Tc_d,Ir_d,Se_p,Ge_p,OTHER")
 
     args = ap.parse_args()
 
-    up = load_pdos(Path(args.up))
-    dw = load_pdos(Path(args.dw))
+    order_list = [x.strip() for x in args.group_order.split(",") if x.strip()]
+    order_map = {g: i for i, g in enumerate(order_list, start=1)}
 
-    if not np.allclose(up["E"].values, dw["E"].values, atol=1e-10):
-        raise RuntimeError("Energy grids differ between UP/DW.")
+    A, atoms = parse_win_lattice_and_atoms(args.win)
+    natoms = len(atoms)
+    num_wann = read_hr_header_num_wann(args.hr)
+    wf_centers = parse_wf_centres_from_xyz(args.centres, natoms=natoms, nwann=num_wann)
 
-    E = up["E"].to_numpy(float)
+    wf_atom_id, wf_elem, wf_group, wf_orb = build_index_mapping(atoms, num_wann)
 
-    Dup = up[D_ORBS].to_numpy(float)
-    # 常见：DW 可能为负，取 abs 保持与你之前逻辑一致
-    Ddw = np.abs(dw[D_ORBS].to_numpy(float))
-    D = Dup + Ddw
+    counts = defaultdict(int)
+    for wf in range(1, num_wann + 1):
+        counts[wf_elem[wf]] += 1
+    print("[INFO] num_wann:", num_wann, " natoms:", natoms)
+    print("[INFO] WF counts by elem (index-based):", dict(sorted(counts.items())))
 
-    Ef = args.Ef
-    vb_Emin, vb_Emax = Ef - args.vb_width, Ef
-    cb_Emin, cb_Emax = Ef, Ef + args.cb_width
+    allowed_pairs = None
+    if args.pairs.strip().upper() != "ALL":
+        allowed_pairs = set([p.strip() for p in args.pairs.split(",") if p.strip()])
 
-    # ===== VB =====
-    vb_sim, vb_orb, vb_grp, vb_groups = compute_window(
-        E, D, vb_Emin, vb_Emax, thr=args.thr, tag="VB"
-    )
-    vb_sim.to_csv(f"{args.out_prefix}_VB_sim_matrix.csv")
-    vb_orb.to_csv(f"{args.out_prefix}_VB_orb_centers.csv", index=False)
-    vb_grp.to_csv(f"{args.out_prefix}_VB_auto_groups.csv", index=False)
+    cnt = defaultdict(int)
+    sumsq = defaultdict(float)
+    maxv = defaultdict(float)
+    top_edges = defaultdict(list)
+    filtered_edges = []
 
-    # ===== CB =====
-    cb_sim, cb_orb, cb_grp, cb_groups = compute_window(
-        E, D, cb_Emin, cb_Emax, thr=args.thr, tag="CB"
-    )
-    cb_sim.to_csv(f"{args.out_prefix}_CB_sim_matrix.csv")
-    cb_orb.to_csv(f"{args.out_prefix}_CB_orb_centers.csv", index=False)
-    cb_grp.to_csv(f"{args.out_prefix}_CB_auto_groups.csv", index=False)
+    a1 = A[:, 0]; a2 = A[:, 1]; a3 = A[:, 2]
+    def R_to_T(Rx, Ry, Rz):
+        return Rx * a1 + Ry * a2 + Rz * a3
 
-    # ===== plots =====
-    if not args.no_plot:
-        draw_level_diagram(
-            vb_grp,
-            out_png=f"{args.out_prefix}_VB_levels.png",
-            title=f"{args.out_prefix}: d-level groups in VB window [{vb_Emin:.2f},{vb_Emax:.2f}] (Ef={Ef:g})",
-            eref=0.0
+    for Rx, Ry, Rz, m, n, reH, imH in parse_hr_dat(args.hr):
+        absH = math.hypot(reH, imH)
+        if absH < args.min_absH:
+            continue
+
+        atom_m = wf_atom_id[m]
+        atom_n = wf_atom_id[n]
+        elem_m = wf_elem[m]
+        elem_n = wf_elem[n]
+        gm = wf_group[m]
+        gn = wf_group[n]
+        if gm == "OTHER" or gn == "OTHER":
+            continue
+
+        pair = pair_name(gm, gn, order_map=order_map)
+        if allowed_pairs is not None and pair not in allowed_pairs:
+            continue
+
+        if (Rx, Ry, Rz) == (0, 0, 0):
+            if args.skip_diag_R0 and (m == n):
+                continue
+            if args.skip_same_atom_R0 and (atom_m == atom_n):
+                continue
+
+        T = R_to_T(Rx, Ry, Rz)
+        dr = (wf_centers[n] + T) - wf_centers[m]
+        dist = float(np.linalg.norm(dr))
+        shell = round(dist / args.tol) * args.tol
+
+        # complex phase
+        phase_rad = math.atan2(imH, reH) if absH > 0 else 0.0
+
+        key = (pair, shell)
+        cnt[key] += 1
+        sumsq[key] += absH * absH
+        if absH > maxv[key]:
+            maxv[key] = absH
+
+        e = Edge(
+            pair, shell, dist, absH, reH, imH, phase_rad,
+            Rx, Ry, Rz, m, n,
+            atom_m, atom_n, elem_m, elem_n,
+            gm, gn, wf_orb[m], wf_orb[n]
         )
-        draw_level_diagram(
-            cb_grp,
-            out_png=f"{args.out_prefix}_CB_levels.png",
-            title=f"{args.out_prefix}: d-level groups in CB window [{cb_Emin:.2f},{cb_Emax:.2f}] (Ef={Ef:g})",
-            eref=0.0
-        )
 
-    print(f"[Ef] using Ef = {Ef} eV on the PDOS energy axis.")
-    print("\n[VB window]", (vb_Emin, vb_Emax), "thr=", args.thr, "groups=", vb_groups)
-    print(vb_grp.to_string(index=False))
+        lst = top_edges[key]
+        lst.append(e)
+        lst.sort(key=lambda x: x.absH, reverse=True)
+        if len(lst) > args.topk:
+            lst[:] = lst[:args.topk]
 
-    print("\n[CB window]", (cb_Emin, cb_Emax), "thr=", args.thr, "groups=", cb_groups)
-    print(cb_grp.to_string(index=False))
+        if args.out_edges:
+            filtered_edges.append(e)
 
-    print("\n[OK] Outputs:")
-    print(" ", f"{args.out_prefix}_VB_sim_matrix.csv")
-    print(" ", f"{args.out_prefix}_VB_orb_centers.csv")
-    print(" ", f"{args.out_prefix}_VB_auto_groups.csv")
-    if not args.no_plot:
-        print(" ", f"{args.out_prefix}_VB_levels.png")
-    print(" ", f"{args.out_prefix}_CB_sim_matrix.csv")
-    print(" ", f"{args.out_prefix}_CB_orb_centers.csv")
-    print(" ", f"{args.out_prefix}_CB_auto_groups.csv")
-    if not args.no_plot:
-        print(" ", f"{args.out_prefix}_CB_levels.png")
+    # ---- summary ----
+    with open(args.out_summary, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow([
+            "pair", "shell_A", "count", "max_absH_eV", "rms_absH_eV",
+            f"top{args.topk}_edges(m,n,atom_m,atom_n,group_m,group_n,orb_m,orb_n,R,absH,dist,phase)"
+        ])
+        for (pair, shell) in sorted(cnt.keys(), key=lambda x: (x[0], x[1])):
+            c = cnt[(pair, shell)]
+            rms = math.sqrt(sumsq[(pair, shell)] / c) if c else 0.0
+            tops = top_edges[(pair, shell)]
+            tops_str = "; ".join([
+                f"{e.m}-{e.n}|a{e.atom_m+1}-a{e.atom_n+1}"
+                f"|{e.group_m}-{e.group_n}|{e.orb_m}-{e.orb_n}"
+                f"@({e.Rx},{e.Ry},{e.Rz})|{e.absH:.6g}|d={e.dist:.3f}|ph={e.phase_rad:.3f}"
+                for e in tops
+            ])
+            w.writerow([pair, f"{shell:.3f}", c, f"{maxv[(pair, shell)]:.6g}", f"{rms:.6g}", tops_str])
 
+    # ---- edges ----
+    if args.out_edges:
+        with open(args.out_edges, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow([
+                "pair", "shell_A", "dist_A",
+                "absH_eV", "reH_eV", "imH_eV", "phase_rad", "phase_deg",
+                "Rx", "Ry", "Rz", "m", "n",
+                "atom_m", "atom_n", "elem_m", "elem_n",
+                "group_m", "group_n", "orb_m", "orb_n"
+            ])
+            for e in filtered_edges:
+                w.writerow([
+                    e.pair, f"{e.shell:.3f}", f"{e.dist:.6f}",
+                    f"{e.absH:.10g}", f"{e.reH:.10g}", f"{e.imH:.10g}",
+                    f"{e.phase_rad:.10g}", f"{(e.phase_rad * 180.0 / math.pi):.10g}",
+                    e.Rx, e.Ry, e.Rz, e.m, e.n,
+                    e.atom_m + 1, e.atom_n + 1, e.elem_m, e.elem_n,
+                    e.group_m, e.group_n, e.orb_m, e.orb_n
+                ])
+
+    print("Done.")
+    print("Summary:", args.out_summary)
+    if args.out_edges:
+        print("Edges :", args.out_edges)
 
 if __name__ == "__main__":
     main()

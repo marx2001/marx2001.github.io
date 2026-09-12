@@ -1,4 +1,3 @@
-
 # File location
 #runfile: w90.script
 vasp_band_file: bnd.dat

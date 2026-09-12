@@ -1,4 +1,3 @@
-
 k_vec, k_dist, k_node_dist = my_model.k_path(w90_k_nodes, nk=500, report=False)
 
 int_evals = my_model.solve_ham(w90_kpt)

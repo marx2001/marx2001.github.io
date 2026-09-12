@@ -1,2 +1,1 @@
-
 grep E-fermi OUTCAR

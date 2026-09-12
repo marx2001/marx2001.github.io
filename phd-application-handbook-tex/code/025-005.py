@@ -1,4 +1,3 @@
-
 DFTcode  = VASP
 
 Spinors  = T

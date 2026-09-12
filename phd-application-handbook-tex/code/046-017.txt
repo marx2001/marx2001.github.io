@@ -1,1 +1,7 @@
-pdf_tex_edits/2026-2-5_471929fc.tex
+a = 10.1327
+b = 10.1327
+c = 8.2181
+
+alpha = 90
+beta  = 90
+gamma = 120

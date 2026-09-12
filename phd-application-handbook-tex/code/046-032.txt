@@ -1,1 +1,8 @@
-pdf_tex_edits/2026-2-5_471929fc.tex
+Element: Te
+Name: Te1
+Oxidation state: 0
+Occupancy: 1.0
+
+a = 0.0000
+b = 0.77119
+c = 0.71975

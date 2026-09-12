@@ -1,0 +1,21 @@
+1. DFT得到POSCAR/CONTCAR
+
+2. VESTA打开结构
+
+3. 检查元素、晶格和层结构
+
+4. 扩胞
+
+5. 设置bond
+
+6. 导出VRML
+
+7. Blender导入
+
+8. 调整Camera
+
+9. 调整材质和灯光
+
+10. 高分辨率渲染
+
+11. Illustrator排版

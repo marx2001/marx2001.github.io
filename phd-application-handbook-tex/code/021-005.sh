@@ -1,4 +1,3 @@
-
 Calculated Energy Range: -1000.0, 1000.0 with Fermi level -1.062223
 EFERMI: -1.062223
 --------------------------------

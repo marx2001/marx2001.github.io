@@ -1,1 +1,1 @@
-pdf_tex_edits/*.tex
+x, y, z

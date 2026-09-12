@@ -1,4 +1,3 @@
-
 &TB_FILE
 Hrfile = 'wannier90_hr.dat'   ! 指定Wannier90输出的哈密顿矩阵文件
 Package = 'VASP'              ! 说明原始计算来自VASP

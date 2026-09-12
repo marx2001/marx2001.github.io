@@ -1,937 +1,1294 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-FES Step 05 — Γ/M 解析本征值、branch-switching 与 no-go 条件审计
+TTS Step 04 — Chern 扇区定向扩充、拓扑—平庸边界扫描与闭隙谷追踪
 
-目标
-----
-1. 对 fes 六参数八带模型的单自旋 4x4 块，在 Γ 与 M 点解析因式分解；
-2. 给出四条解析本征值，并验证其与数值 Hamiltonian 完全一致；
-3. 检测半填充时 Γ/M 之间的 B+ 分支 occupied/unoccupied 交换；
-4. 计算严格上界
-
-       E_g^ind <= -|E_{Γ,B+} - E_{M,B+}|
-               = -4 |r1^2-r2^2| / (B1+B2) <= 0,
-
-   其中 B_i = sqrt((m_e+t_d)^2 + 4 r_i^2)；
-5. 审计 Step 04 的所有严格拓扑点和所有粗筛拓扑点；
-6. 补充严格复核 Step 04 因队列上限未覆盖的粗筛 TI 候选；
-7. 沿 Step 04 两个锚点之间的路径，解析定位 Γ/M 直接闭隙与
-   r1^2=r2^2（间接带隙 no-go 上界为零）的位置顺序。
-
-本步骤用于建立“最小六参数 fes 模型中是否存在 type-II QSH 绝缘窗口”
-的解析证据。它不会仅凭有限样本自动宣称数学定理；输出会明确区分：
-
-- exact_identity：解析恒等式；
-- verified_numerical_evidence：严格数值证据；
-- conditional_no_go：在 B+ partner-switching 分支排序下的严格 no-go。
-
-运行示例
+研究目标
 --------
-快速测试：
-    python FES_step05_analytic_no_go.py \
-      --step04-input outputs_fes6_step04_boundary.zip \
-      --output-dir outputs_fes6_step05_no_go \
-      --test --overwrite
+1. 从 TTS Step 03 的严格结果中分别选择 C_up = -2, -1, +1, +2
+   （以及数据中实际存在的其他非零整数扇区）的代表性拓扑锚点；
+2. 围绕每个 Chern 扇区进行局部 Sobol 定向扩充，确认拓扑区域不是孤立点，
+   并为后续多分类和解析机制积累分扇区样本；
+3. 为每个主锚点寻找参数空间中最近的严格平庸绝缘体；
+4. 沿单位参数球面上的最短路径（slerp）扫描拓扑点—平庸点之间的相变；
+5. 稀疏但严格地复核路径上的 Chern 数，并自动识别 Chern 改变区间；
+6. 对直接带隙最小处联合优化 (lambda, kx, ky)，定位真正的闭隙谷；
+7. 判断 |C|=1 是否主要由 Gamma/M 高对称谷驱动，|C|=2 是否主要由
+   C4/D4 对称相关的普通动量谷共同驱动。
 
-正式运行：
-    python FES_step05_analytic_no_go.py \
-      --step04-input outputs_fes6_step04_boundary.zip \
-      --output-dir outputs_fes6_step05_no_go \
-      --workers 4 --overwrite
+重要原则
+--------
+- 复用冻结的 Step 01 Hamiltonian、周期规范和非阿贝尔 spin-Chern 标签器；
+- 复用 Step 03 的严格多网格标签逻辑；
+- 全部物理计算串行，不使用 ProcessPoolExecutor，兼容 Windows/Jupyter；
+- 路径密集扫描只计算能隙，Chern 仅在自适应选中的点严格复核；
+- 本步骤输出的是机制证据和相边界数据，不把机器学习预测当成拓扑结论。
 """
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from datetime import datetime, timezone
-from typing import Dict, Iterable, Sequence
+from typing import Any, Dict, Iterable, Sequence
 import argparse
-import hashlib
+import io
 import json
 import math
-import os
-import shutil
-import sys
+import time
+import warnings
 import zipfile
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-from scipy.optimize import brentq
-import sympy as sp
+from scipy.optimize import minimize
+from scipy.stats import qmc
 
-# The matching Step 02 core must be in the same directory or importable.
-import FES_step02_sobol_scan as core
+try:
+    import TTS_step01_model_and_label_audit_v2 as core
+except ImportError as exc:  # pragma: no cover
+    raise ImportError(
+        "未找到 TTS_step01_model_and_label_audit_v2.py。\n"
+        "请把 Step 01 v2 的 py 文件与本脚本放在同一目录。"
+    ) from exc
 
-np.set_printoptions(precision=12, suppress=True)
+try:
+    import TTS_step03_global_sobol_hierarchical_topology_ML as step3
+except ImportError:
+    try:
+        import TTS_step03_global_sobol_hierarchical_topology_ML_final as step3
+    except ImportError:
+        try:
+            import TTS_step03_global_sobol_hierarchical_topology_ML_fixed as step3
+        except ImportError as exc:  # pragma: no cover
+            raise ImportError(
+                "未找到 Step 03 配套 py 文件。支持以下文件名：\n"
+                "  TTS_step03_global_sobol_hierarchical_topology_ML.py\n"
+                "  TTS_step03_global_sobol_hierarchical_topology_ML_final.py\n"
+                "  TTS_step03_global_sobol_hierarchical_topology_ML_fixed.py"
+            ) from exc
 
-CODE_VERSION = "FES_STEP05_ANALYTIC_NOGO_V1_20260713"
-RESULT_SCHEMA_VERSION = "fes_step05_analytic_nogo_schema_v1"
+EXPECTED_STEP01_VERSION = "TTS_STEP01_V2_20260713"
+EXPECTED_STEP03_VERSION = "TTS_STEP03_V1_20260713"
+if getattr(core, "CODE_VERSION", None) != EXPECTED_STEP01_VERSION:
+    raise RuntimeError(
+        f"Step 01 核心版本不一致：expected={EXPECTED_STEP01_VERSION}, "
+        f"loaded={getattr(core, 'CODE_VERSION', None)}"
+    )
+if getattr(step3, "CODE_VERSION", None) != EXPECTED_STEP03_VERSION:
+    raise RuntimeError(
+        f"Step 03 核心版本不一致：expected={EXPECTED_STEP03_VERSION}, "
+        f"loaded={getattr(step3, 'CODE_VERSION', None)}"
+    )
 
-PARAMS5 = ("m_e", "t1", "t2", "r1", "r2")
-BRANCHES = ("G_A_minus", "G_A_plus", "G_B_minus", "G_B_plus",
-            "M_A_minus", "M_A_plus", "M_B_minus", "M_B_plus")
+np.set_printoptions(precision=10, suppress=True)
 
+CODE_VERSION = "TTS_STEP04_V1_20260713"
+WORKFLOW_STEP = "step04"
+SYSTEM_TAG = "tts8_bns127391"
+TASK_TAG = "chern_sector_boundary_valley_tracking"
+REDUCED7 = core.REDUCED7.copy()
+
+
+# =============================================================================
+# Configuration
+# =============================================================================
 
 @dataclass
-class NoGoConfig:
-    step04_input: str = "outputs_fes6_step04_boundary.zip"
-    output_dir: str = "outputs_fes6_step05_no_go"
-    workers: int = max(1, min(4, os.cpu_count() or 1))
+class Step04Config:
+    output_dir: Path = Path("outputs_tts_step04_chern_sector_boundary_valley_tracking")
+    step3_input: Path | None = None
 
-    validation_samples: int = 128
-    validation_seed: int = 20260713
-    dense_path_points: int = 5001
+    # Representative anchors selected independently in each nonzero Chern sector.
+    target_sectors: tuple[int, ...] | None = (-2, -1, 1, 2)
+    n_anchors_per_sector: int = 2
+    anchor_candidate_pool: int = 24
+    path_anchors_per_sector: int = 1
+    trivial_partner_modes: tuple[str, ...] = ("nearest", "same_t_sign")
 
+    # Local sector-directed Sobol augmentation on the normalized parameter sphere.
+    local_angular_radii: tuple[float, ...] = (0.05, 0.10)
+    local_sobol_power_per_radius: int = 4  # 16 samples/radius/anchor
+    local_seed: int = 20260714
+
+    # Physics verification for local samples and sparse path Chern points.
+    local_gap_nk: int = 41
+    initial_chern_grids: tuple[int, ...] = (21, 31)
+    initial_chern_shifts: tuple[tuple[float, float], ...] = ((0.0, 0.0), (0.5, 0.5))
+    strict_gap_grids: tuple[int, ...] = (51, 71)
+    strict_gap_shifts: tuple[tuple[float, float], ...] = (
+        (0.0, 0.0), (0.5, 0.0), (0.0, 0.5), (0.5, 0.5)
+    )
+    strict_chern_grids: tuple[int, ...] = (31, 41, 51)
+    strict_chern_shifts: tuple[tuple[float, float], ...] = ((0.0, 0.0), (0.5, 0.5))
     gap_tol: float = 1.0e-3
-    chern_tol: float = 0.08
-    min_det_tol: float = 1.0e-7
-    verify_gap_grids: tuple[int, ...] = (51, 71)
-    verify_gap_shifts: tuple[tuple[float, float], ...] = (
-        (0.0, 0.0),
-        (0.5, 0.0),
-        (0.0, 0.5),
-        (0.5, 0.5),
-    )
-    verify_chern_grids: tuple[int, ...] = (21, 31, 41)
-    verify_chern_shifts: tuple[tuple[float, float], ...] = (
-        (0.0, 0.0),
-        (0.5, 0.5),
-    )
+    direct_gap_skip_chern: float = 3.0e-3
+    chern_integer_tol: float = 0.08
+    min_link_tol: float = 1.0e-7
+    sum_rule_tol: float = 0.15
 
-    reverify_all_coarse_ti: bool = False
-    overwrite: bool = False
-    resume: bool = False
-    test_mode: bool = False
+    # Dense path gap scan and adaptive sparse Chern audit.
+    path_n_lambda: int = 121
+    path_gap_nk: int = 35
+    path_chern_stride: int = 10
+    path_extra_gap_minima: int = 6
+    max_chern_points_per_path: int = 25
+    max_transitions_per_path: int = 4
+
+    # Continuous critical valley refinement.
+    critical_k_symmetry_tol: float = 0.10
+    critical_optimizer_starts: int = 6
+    critical_optimizer_maxiter: int = 350
+
+    # Workflow controls.
+    checkpoint_every: int = 8
+    force_recalculate_local: bool = False
+    force_recalculate_paths: bool = False
+    force_recalculate_chern: bool = False
+
+    def normalized(self) -> "Step04Config":
+        self.output_dir = Path(self.output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        (self.output_dir / "figures").mkdir(parents=True, exist_ok=True)
+        if self.step3_input is not None:
+            self.step3_input = Path(self.step3_input)
+        if self.n_anchors_per_sector < 1:
+            raise ValueError("n_anchors_per_sector must be >= 1")
+        if self.path_anchors_per_sector < 1:
+            raise ValueError("path_anchors_per_sector must be >= 1")
+        if self.local_sobol_power_per_radius < 0:
+            raise ValueError("local_sobol_power_per_radius must be >= 0")
+        if self.path_n_lambda < 11:
+            raise ValueError("path_n_lambda must be >= 11")
+        if self.path_gap_nk < 9:
+            raise ValueError("path_gap_nk must be >= 9")
+        if self.checkpoint_every < 1:
+            raise ValueError("checkpoint_every must be >= 1")
+        return self
+
+    @property
+    def n_local_per_radius(self) -> int:
+        return 2 ** int(self.local_sobol_power_per_radius)
 
 
 # =============================================================================
-# 1. 输入、输出与版本管理
+# Safe I/O and Step 03 input discovery
 # =============================================================================
 
-
-def script_sha256() -> str | None:
-    if "__file__" not in globals():
-        return None
-    path = Path(__file__).resolve()
-    return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
-
-
-def prepare_output(config: NoGoConfig) -> Path:
-    out = Path(config.output_dir).resolve()
-    if out.exists() and config.overwrite:
-        shutil.rmtree(out)
-    out.mkdir(parents=True, exist_ok=True)
-    (out / "strict_details").mkdir(exist_ok=True)
-    return out
+def atomic_write_csv(df: pd.DataFrame, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    df.to_csv(tmp, index=False, encoding="utf-8-sig")
+    tmp.replace(path)
 
 
-def _find_result_root(root: Path) -> Path:
-    required = {
-        "fes_step04_all_coarse_scan.csv",
-        "fes_step04_strict_verified_results.csv",
-        "fes_step04_anchor_points.csv",
-    }
-    if required.issubset({p.name for p in root.iterdir() if p.is_file()}):
-        return root
-    candidates = []
-    for path in root.rglob("fes_step04_all_coarse_scan.csv"):
-        parent = path.parent
-        if required.issubset({p.name for p in parent.iterdir() if p.is_file()}):
-            candidates.append(parent)
-    if not candidates:
+def atomic_write_json(obj: dict, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(obj, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _find_default_step3_input() -> Path:
+    candidates = [
+        Path.cwd() / "outputs_tts_step03_global_sobol_hierarchical_topology_ml.zip",
+        Path.cwd().parent / "outputs_tts_step03_global_sobol_hierarchical_topology_ml.zip",
+        Path("/mnt/data") / "outputs_tts_step03_global_sobol_hierarchical_topology_ml.zip",
+        Path.cwd() / "outputs_tts_step03_global_sobol_hierarchical_topology_ml",
+        Path.cwd().parent / "outputs_tts_step03_global_sobol_hierarchical_topology_ml",
+        Path("/mnt/data") / "outputs_tts_step03_global_sobol_hierarchical_topology_ml",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(
+        "未找到 Step 03 结果。请把结果 ZIP 放在当前目录，或在配置中设置 step3_input。"
+    )
+
+
+def _read_unique_csv_from_zip(zip_path: Path, pattern: str) -> tuple[pd.DataFrame, str]:
+    with zipfile.ZipFile(zip_path) as zf:
+        matches = [
+            name for name in zf.namelist()
+            if pattern in Path(name).name and name.lower().endswith(".csv")
+        ]
+        if len(matches) != 1:
+            raise FileNotFoundError(
+                f"ZIP 中匹配 {pattern!r} 的 CSV 数量为 {len(matches)}: {matches}"
+            )
+        member = matches[0]
+        with zf.open(member) as fh:
+            return pd.read_csv(fh, low_memory=False), f"{zip_path}!/{member}"
+
+
+def _read_unique_csv_from_directory(root: Path, pattern: str) -> tuple[pd.DataFrame, str]:
+    matches = [p for p in root.rglob("*.csv") if pattern in p.name]
+    if len(matches) != 1:
         raise FileNotFoundError(
-            f"无法在 {root} 中找到完整 Step 04 结果目录；必须包含 {sorted(required)}"
+            f"目录中匹配 {pattern!r} 的 CSV 数量为 {len(matches)}: {matches}"
         )
-    return sorted(candidates, key=lambda p: len(p.parts))[0]
+    return pd.read_csv(matches[0], low_memory=False), str(matches[0])
 
 
-def locate_step04_directory(input_path: str | Path, output_dir: Path) -> Path:
-    path = Path(input_path).expanduser().resolve()
-    if not path.exists():
-        raise FileNotFoundError(path)
-    if path.is_dir():
-        return _find_result_root(path)
-    if path.suffix.lower() != ".zip":
-        raise ValueError("--step04-input 必须是目录或 ZIP 文件")
-    extract_root = output_dir / "_step04_extracted"
-    if extract_root.exists():
-        shutil.rmtree(extract_root)
-    extract_root.mkdir(parents=True)
-    with zipfile.ZipFile(path, "r") as zf:
-        zf.extractall(extract_root)
-    return _find_result_root(extract_root)
+def load_step3_physics(config: Step04Config) -> tuple[pd.DataFrame, str]:
+    source = config.step3_input or _find_default_step3_input()
+    source = Path(source)
+    pattern = "step03_02_physics_labels_final__"
+    if source.is_file() and source.suffix.lower() == ".zip":
+        return _read_unique_csv_from_zip(source, pattern)
+    if source.is_dir():
+        return _read_unique_csv_from_directory(source, pattern)
+    raise FileNotFoundError(f"无效的 Step 03 输入：{source}")
 
 
-def write_metadata(config: NoGoConfig, output: Path, step04_dir: Path) -> None:
-    metadata = {
-        "code_version": CODE_VERSION,
-        "result_schema_version": RESULT_SCHEMA_VERSION,
-        "run_time_utc": datetime.now(timezone.utc).isoformat(),
-        "script_sha256": script_sha256(),
-        "step02_core_version": getattr(core, "CODE_VERSION", None),
-        "step02_core_sha256": hashlib.sha256(Path(core.__file__).read_bytes()).hexdigest(),
-        "step04_directory": str(step04_dir),
-        "config": asdict(config),
-    }
-    (output / "fes_step05_run_metadata.json").write_text(
-        json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
+# =============================================================================
+# Parameter geometry on the normalized seven-dimensional sphere
+# =============================================================================
+
+def row_vector(row: pd.Series | dict) -> np.ndarray:
+    return np.array([float(row[name]) for name in REDUCED7], dtype=float)
+
+
+def normalize_vector(vector: Sequence[float]) -> np.ndarray:
+    v = np.asarray(vector, dtype=float)
+    norm = float(np.linalg.norm(v))
+    if not np.isfinite(norm) or norm < 1.0e-14:
+        raise ValueError("Cannot normalize zero/nonfinite parameter vector")
+    return v / norm
+
+
+def vector_to_reduced(vector: Sequence[float]) -> dict[str, float]:
+    v = normalize_vector(vector)
+    return {name: float(value) for name, value in zip(REDUCED7, v)}
+
+
+def angular_distance(a: Sequence[float], b: Sequence[float]) -> float:
+    aa = normalize_vector(a)
+    bb = normalize_vector(b)
+    return float(np.arccos(np.clip(float(np.dot(aa, bb)), -1.0, 1.0)))
+
+
+def slerp(a: Sequence[float], b: Sequence[float], lam: float) -> np.ndarray:
+    aa = normalize_vector(a)
+    bb = normalize_vector(b)
+    dot = float(np.clip(np.dot(aa, bb), -1.0, 1.0))
+    omega = float(np.arccos(dot))
+    lam = float(lam)
+    if omega < 1.0e-10:
+        return aa.copy()
+    if abs(math.pi - omega) < 1.0e-7:
+        # Nearly antipodal: normalized linear interpolation is the least arbitrary fallback.
+        mixed = (1.0 - lam) * aa + lam * bb
+        if np.linalg.norm(mixed) < 1.0e-12:
+            mixed = aa.copy()
+            mixed[0] += 1.0e-6
+        return normalize_vector(mixed)
+    return normalize_vector(
+        math.sin((1.0 - lam) * omega) / math.sin(omega) * aa
+        + math.sin(lam * omega) / math.sin(omega) * bb
     )
 
 
 # =============================================================================
-# 2. Γ/M 解析本征值与特征多项式
+# Anchor and nearest-trivial selection
 # =============================================================================
 
+def _strict_topological(physics: pd.DataFrame) -> pd.DataFrame:
+    mask = physics["phase_label"].eq("spin_chern_TI_candidate")
+    if "strict_chern_verified" in physics:
+        mask &= physics["strict_chern_verified"].fillna(0).astype(int).eq(1)
+    if "strict_gap_verified" in physics:
+        mask &= physics["strict_gap_verified"].fillna(0).astype(int).eq(1)
+    return physics.loc[mask].copy()
 
-def analytic_branches(reduced: Dict[str, float]) -> Dict[str, float]:
-    """Return exact closed-form Γ/M eigenvalue branches for one spin block."""
-    m = float(reduced["m_e"])
-    t1 = float(reduced["t1"])
-    t2 = float(reduced["t2"])
-    r1 = float(reduced["r1"])
-    r2 = float(reduced["r2"])
 
-    t_s = 0.5 * (t1 + t2)
-    t_d = 0.5 * (t1 - t2)
+def _strict_trivial(physics: pd.DataFrame) -> pd.DataFrame:
+    mask = physics["phase_label"].eq("trivial_insulator")
+    if "is_strict_insulator" in physics:
+        mask &= physics["is_strict_insulator"].fillna(0).astype(int).eq(1)
+    return physics.loc[mask].copy()
 
-    A1 = math.sqrt((m - t_d) ** 2 + 4.0 * r1 * r1)
-    A2 = math.sqrt((m - t_d) ** 2 + 4.0 * r2 * r2)
-    B1 = math.sqrt((m + t_d) ** 2 + 4.0 * r1 * r1)
-    B2 = math.sqrt((m + t_d) ** 2 + 4.0 * r2 * r2)
 
-    values = {
-        "t_s_half": t_s,
-        "t_d_half": t_d,
-        "A1": A1,
-        "A2": A2,
-        "B1": B1,
-        "B2": B2,
-        "G_A_minus": -t_s - A1,
-        "G_A_plus": -t_s + A1,
-        "G_B_minus": +t_s - B2,
-        "G_B_plus": +t_s + B2,
-        "M_A_minus": -t_s - A2,
-        "M_A_plus": -t_s + A2,
-        "M_B_minus": +t_s - B1,
-        "M_B_plus": +t_s + B1,
+def select_sector_anchors(physics: pd.DataFrame, config: Step04Config) -> pd.DataFrame:
+    topo = _strict_topological(physics)
+    if topo.empty:
+        raise RuntimeError("Step 03 中没有严格 spin-Chern TI 候选。")
+    topo["chern_up_int"] = topo["chern_up_int"].astype(int)
+
+    available = sorted(int(x) for x in topo["chern_up_int"].unique() if int(x) != 0)
+    requested = available if config.target_sectors is None else [
+        int(x) for x in config.target_sectors if int(x) in available
+    ]
+    missing = [] if config.target_sectors is None else [
+        int(x) for x in config.target_sectors if int(x) not in available
+    ]
+    if missing:
+        warnings.warn(f"Step 03 中未找到这些 Chern 扇区，将跳过：{missing}")
+
+    selected_rows: list[dict] = []
+    for sector in requested:
+        group = topo[topo["chern_up_int"].astype(int) == sector].copy()
+        group = group.sort_values("indirect_gap", ascending=False).head(config.anchor_candidate_pool)
+        if group.empty:
+            continue
+
+        chosen_indices: list[int] = [int(group.index[0])]
+        while len(chosen_indices) < min(config.n_anchors_per_sector, len(group)):
+            best_idx = None
+            best_score = -np.inf
+            for idx, row in group.iterrows():
+                idx_i = int(idx)
+                if idx_i in chosen_indices:
+                    continue
+                candidate = row_vector(row)
+                min_dist = min(
+                    angular_distance(candidate, row_vector(physics.loc[j]))
+                    for j in chosen_indices
+                )
+                # Gap is a weak tie-breaker; diversity is primary.
+                score = min_dist + 1.0e-3 * float(row["indirect_gap"])
+                if score > best_score:
+                    best_score = score
+                    best_idx = idx_i
+            if best_idx is None:
+                break
+            chosen_indices.append(best_idx)
+
+        for rank, idx in enumerate(chosen_indices, start=1):
+            row = physics.loc[idx].to_dict()
+            row.update({
+                "anchor_id": f"Cup{sector:+d}_anchor{rank:02d}",
+                "anchor_sector": int(sector),
+                "anchor_rank": int(rank),
+                "is_primary_path_anchor": int(rank <= config.path_anchors_per_sector),
+            })
+            selected_rows.append(row)
+
+    anchors = pd.DataFrame(selected_rows)
+    if anchors.empty:
+        raise RuntimeError("没有可用的分扇区拓扑锚点。")
+    return anchors.reset_index(drop=True)
+
+
+def select_trivial_partners(
+    physics: pd.DataFrame,
+    anchors: pd.DataFrame,
+    config: Step04Config,
+) -> pd.DataFrame:
+    trivial = _strict_trivial(physics).copy()
+    if trivial.empty:
+        raise RuntimeError("Step 03 中没有严格平庸绝缘体。")
+
+    rows: list[dict] = []
+    for _, anchor in anchors[anchors["is_primary_path_anchor"].astype(int) == 1].iterrows():
+        av = row_vector(anchor)
+        anchor_t_sign = int(np.sign(float(anchor["t1"]) * float(anchor["t2"])))
+        used_sample_ids: set[str] = set()
+
+        for mode in config.trivial_partner_modes:
+            candidates = trivial
+            if mode == "same_t_sign":
+                t_sign = np.sign(candidates["t1"].astype(float) * candidates["t2"].astype(float)).astype(int)
+                candidates = candidates[t_sign == anchor_t_sign]
+            elif mode != "nearest":
+                raise ValueError(f"Unknown trivial partner mode: {mode}")
+
+            if candidates.empty:
+                continue
+            scored: list[tuple[float, int]] = []
+            for idx, candidate in candidates.iterrows():
+                sid = str(candidate["sample_id"])
+                if sid in used_sample_ids:
+                    continue
+                scored.append((angular_distance(av, row_vector(candidate)), int(idx)))
+            if not scored:
+                continue
+            dist, idx = min(scored, key=lambda item: item[0])
+            partner = physics.loc[idx]
+            used_sample_ids.add(str(partner["sample_id"]))
+            rows.append({
+                "path_id": f"{anchor['anchor_id']}__{mode}",
+                "anchor_id": str(anchor["anchor_id"]),
+                "anchor_sample_id": str(anchor["sample_id"]),
+                "anchor_sector": int(anchor["anchor_sector"]),
+                "partner_mode": mode,
+                "trivial_sample_id": str(partner["sample_id"]),
+                "angular_distance": float(dist),
+                "euclidean_distance": float(np.linalg.norm(normalize_vector(av) - normalize_vector(row_vector(partner)))),
+                "anchor_t_product": float(anchor["t1"] * anchor["t2"]),
+                "trivial_t_product": float(partner["t1"] * partner["t2"]),
+                **{f"anchor_{name}": float(anchor[name]) for name in REDUCED7},
+                **{f"trivial_{name}": float(partner[name]) for name in REDUCED7},
+                "anchor_indirect_gap": float(anchor["indirect_gap"]),
+                "trivial_indirect_gap": float(partner["indirect_gap"]),
+            })
+    partners = pd.DataFrame(rows)
+    if partners.empty:
+        raise RuntimeError("无法构造拓扑—平庸路径配对。")
+    return partners
+
+
+# =============================================================================
+# Local Sobol augmentation and strict physics labels
+# =============================================================================
+
+def generate_local_sobol(anchors: pd.DataFrame, config: Step04Config) -> pd.DataFrame:
+    rows: list[dict] = []
+    sample_counter = 0
+    for anchor_pos, (_, anchor) in enumerate(anchors.iterrows()):
+        a = normalize_vector(row_vector(anchor))
+        for radius_pos, radius in enumerate(config.local_angular_radii):
+            engine = qmc.Sobol(
+                d=len(REDUCED7),
+                scramble=True,
+                seed=int(config.local_seed + 1009 * anchor_pos + 97 * radius_pos),
+            )
+            cube = 2.0 * engine.random_base2(config.local_sobol_power_per_radius) - 1.0
+            for local_idx, raw in enumerate(cube):
+                tangent = raw - float(np.dot(raw, a)) * a
+                tangent_norm = float(np.linalg.norm(tangent))
+                if tangent_norm < 1.0e-12:
+                    tangent = np.roll(a, 1) - float(np.dot(np.roll(a, 1), a)) * a
+                    tangent_norm = float(np.linalg.norm(tangent))
+                tangent /= tangent_norm
+                radial_fraction = max(0.10, min(1.0, float(np.linalg.norm(raw) / math.sqrt(len(REDUCED7)))))
+                angle = float(radius) * radial_fraction
+                candidate = normalize_vector(math.cos(angle) * a + math.sin(angle) * tangent)
+                reduced = vector_to_reduced(candidate)
+                rows.append({
+                    "sample_id": f"local_{sample_counter:06d}",
+                    "sample_source": "sector_local_sobol",
+                    "is_control": 0,
+                    "is_ml_eligible": 1,
+                    "parent_anchor_id": str(anchor["anchor_id"]),
+                    "parent_sample_id": str(anchor["sample_id"]),
+                    "parent_chern_up": int(anchor["anchor_sector"]),
+                    "local_radius_max": float(radius),
+                    "local_angle_actual": float(angle),
+                    "local_index": int(local_idx),
+                    **reduced,
+                })
+                sample_counter += 1
+    return pd.DataFrame(rows)
+
+
+def make_physics_config(config: Step04Config) -> step3.Step03Config:
+    return step3.Step03Config(
+        output_dir=config.output_dir / "_step03_core_unused",
+        train_sobol_power=2,
+        external_sobol_power=0,
+        gap_nk=config.local_gap_nk,
+        initial_chern_grids=config.initial_chern_grids,
+        initial_chern_shifts=config.initial_chern_shifts,
+        strict_gap_grids=config.strict_gap_grids,
+        strict_gap_shifts=config.strict_gap_shifts,
+        strict_chern_grids=config.strict_chern_grids,
+        strict_chern_shifts=config.strict_chern_shifts,
+        direct_gap_skip_chern=config.direct_gap_skip_chern,
+        gap_tol=config.gap_tol,
+        chern_integer_tol=config.chern_integer_tol,
+        min_link_tol=config.min_link_tol,
+        sum_rule_tol=config.sum_rule_tol,
+        checkpoint_every=config.checkpoint_every,
+        ml_n_jobs=1,
+    )
+
+
+def run_local_physics(
+    local_params: pd.DataFrame,
+    config: Step04Config,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    out = config.output_dir
+    final_path = out / "step04_02_local_physics_labels_final.csv"
+    checkpoint_path = out / "step04_02_local_physics_labels_checkpoint.csv"
+    attempts_path = out / "step04_02_local_chern_attempts.csv"
+    strict_gap_path = out / "step04_02_local_strict_gap_checks.csv"
+
+    if final_path.exists() and not config.force_recalculate_local:
+        final = pd.read_csv(final_path, low_memory=False)
+        if set(final["sample_id"].astype(str)) == set(local_params["sample_id"].astype(str)):
+            attempts = pd.read_csv(attempts_path, low_memory=False) if attempts_path.exists() else pd.DataFrame()
+            gaps = pd.read_csv(strict_gap_path, low_memory=False) if strict_gap_path.exists() else pd.DataFrame()
+            return final, attempts, gaps
+
+    if checkpoint_path.exists() and not config.force_recalculate_local:
+        final_rows = pd.read_csv(checkpoint_path, low_memory=False).to_dict("records")
+        done_ids = {str(row["sample_id"]) for row in final_rows}
+    else:
+        final_rows, done_ids = [], set()
+    attempts_rows = (
+        pd.read_csv(attempts_path, low_memory=False).to_dict("records")
+        if attempts_path.exists() and not config.force_recalculate_local else []
+    )
+    strict_gap_rows = (
+        pd.read_csv(strict_gap_path, low_memory=False).to_dict("records")
+        if strict_gap_path.exists() and not config.force_recalculate_local else []
+    )
+
+    pconfig = make_physics_config(config)
+    started = time.time()
+    processed = 0
+    metadata_cols = [
+        "parent_anchor_id", "parent_sample_id", "parent_chern_up",
+        "local_radius_max", "local_angle_actual", "local_index",
+    ]
+    for _, row in local_params.iterrows():
+        sid = str(row["sample_id"])
+        if sid in done_ids:
+            continue
+        result, attempts, gaps = step3.evaluate_sample_physics(row, pconfig)
+        for col in metadata_cols:
+            result[col] = row[col]
+        final_rows.append(result)
+        for attempt in attempts:
+            attempt.update({col: row[col] for col in metadata_cols})
+        for gap in gaps:
+            gap.update({col: row[col] for col in metadata_cols})
+        attempts_rows.extend(attempts)
+        strict_gap_rows.extend(gaps)
+        processed += 1
+
+        if processed % config.checkpoint_every == 0:
+            atomic_write_csv(pd.DataFrame(final_rows), checkpoint_path)
+            atomic_write_csv(pd.DataFrame(attempts_rows), attempts_path)
+            atomic_write_csv(pd.DataFrame(strict_gap_rows), strict_gap_path)
+            print(f"Local physics: {len(final_rows)}/{len(local_params)} | elapsed {time.time()-started:.1f} s")
+
+    final = pd.DataFrame(final_rows)
+    attempts = pd.DataFrame(attempts_rows)
+    gaps = pd.DataFrame(strict_gap_rows)
+    atomic_write_csv(final, final_path)
+    atomic_write_csv(attempts, attempts_path)
+    atomic_write_csv(gaps, strict_gap_path)
+    return final, attempts, gaps
+
+
+def summarize_local(local: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    phase_counts = (
+        local.groupby(["parent_chern_up", "parent_anchor_id", "local_radius_max", "phase_label"], dropna=False)
+        .size().reset_index(name="count")
+    )
+    summary_rows: list[dict] = []
+    for keys, group in local.groupby(["parent_chern_up", "parent_anchor_id", "local_radius_max"]):
+        sector, anchor_id, radius = keys
+        same_sector = (
+            group["phase_label"].eq("spin_chern_TI_candidate")
+            & group["chern_up_int"].fillna(999).astype(int).eq(int(sector))
+        )
+        summary_rows.append({
+            "parent_chern_up": int(sector),
+            "parent_anchor_id": str(anchor_id),
+            "local_radius_max": float(radius),
+            "n_samples": int(len(group)),
+            "n_same_sector_TI": int(same_sector.sum()),
+            "same_sector_retention_fraction": float(same_sector.mean()),
+            "n_other_TI_sector": int((group["phase_label"].eq("spin_chern_TI_candidate") & ~same_sector).sum()),
+            "n_trivial_insulator": int(group["phase_label"].eq("trivial_insulator").sum()),
+            "n_band_metal": int(group["phase_label"].eq("spin_chern_band_metal").sum()),
+            "n_boundary_or_closing": int(group["phase_label"].isin([
+                "noninsulating_or_gap_closing", "boundary_or_chern_unreliable"
+            ]).sum()),
+            "best_indirect_gap_same_sector": float(group.loc[same_sector, "indirect_gap"].max()) if same_sector.any() else np.nan,
+        })
+    return phase_counts, pd.DataFrame(summary_rows)
+
+
+# =============================================================================
+# Dense path gap scan
+# =============================================================================
+
+def fast_gap_scan(params: Dict[str, float], nk: int) -> dict[str, float]:
+    kxs, kys = core.bz_grid(int(nk), (0.0, 0.0))
+    min_direct = np.inf
+    max_valence = -np.inf
+    min_conduction = np.inf
+    direct_k = (np.nan, np.nan)
+    vbm_k = (np.nan, np.nan)
+    cbm_k = (np.nan, np.nan)
+
+    for kx in kxs:
+        for ky in kys:
+            eig = core.eigvals_full(float(kx), float(ky), params)
+            direct = float(eig[4] - eig[3])
+            if direct < min_direct:
+                min_direct = direct
+                direct_k = (float(kx), float(ky))
+            if float(eig[3]) > max_valence:
+                max_valence = float(eig[3])
+                vbm_k = (float(kx), float(ky))
+            if float(eig[4]) < min_conduction:
+                min_conduction = float(eig[4])
+                cbm_k = (float(kx), float(ky))
+    return {
+        "min_direct_gap": float(min_direct),
+        "indirect_gap": float(min_conduction - max_valence),
+        "direct_gap_kx": direct_k[0],
+        "direct_gap_ky": direct_k[1],
+        "vbm": float(max_valence),
+        "vbm_kx": vbm_k[0],
+        "vbm_ky": vbm_k[1],
+        "cbm": float(min_conduction),
+        "cbm_kx": cbm_k[0],
+        "cbm_ky": cbm_k[1],
     }
-    return values
 
 
-def _ordered_special(branch: Dict[str, float], prefix: str) -> list[tuple[str, float]]:
-    keys = [name for name in BRANCHES if name.startswith(prefix + "_")]
-    return sorted(((name, float(branch[name])) for name in keys), key=lambda item: item[1])
+def generate_path_parameters(partners: pd.DataFrame, config: Step04Config) -> pd.DataFrame:
+    rows: list[dict] = []
+    lambdas = np.linspace(0.0, 1.0, config.path_n_lambda)
+    for _, pair in partners.iterrows():
+        a = np.array([float(pair[f"anchor_{name}"]) for name in REDUCED7])
+        b = np.array([float(pair[f"trivial_{name}"]) for name in REDUCED7])
+        for index, lam in enumerate(lambdas):
+            reduced = vector_to_reduced(slerp(a, b, float(lam)))
+            rows.append({
+                "path_point_id": f"{pair['path_id']}__p{index:04d}",
+                "path_id": str(pair["path_id"]),
+                "path_index": int(index),
+                "lambda": float(lam),
+                "anchor_sector": int(pair["anchor_sector"]),
+                "partner_mode": str(pair["partner_mode"]),
+                "anchor_sample_id": str(pair["anchor_sample_id"]),
+                "trivial_sample_id": str(pair["trivial_sample_id"]),
+                **reduced,
+            })
+    return pd.DataFrame(rows)
 
 
-def analytic_diagnostics(reduced: Dict[str, float]) -> Dict[str, object]:
-    b = analytic_branches(reduced)
-    G = _ordered_special(b, "G")
-    M = _ordered_special(b, "M")
+def run_path_gap_scans(path_params: pd.DataFrame, config: Step04Config) -> pd.DataFrame:
+    output = config.output_dir / "step04_04_path_dense_gap_scan.csv"
+    checkpoint = config.output_dir / "step04_04_path_dense_gap_scan_checkpoint.csv"
+    if output.exists() and not config.force_recalculate_paths:
+        df = pd.read_csv(output, low_memory=False)
+        if set(df["path_point_id"].astype(str)) == set(path_params["path_point_id"].astype(str)):
+            return df
 
-    G_rank = {name: rank for rank, (name, _) in enumerate(G)}
-    M_rank = {name: rank for rank, (name, _) in enumerate(M)}
+    if checkpoint.exists() and not config.force_recalculate_paths:
+        rows = pd.read_csv(checkpoint, low_memory=False).to_dict("records")
+        done = {str(row["path_point_id"]) for row in rows}
+    else:
+        rows, done = [], set()
 
-    gamma_v_name, gamma_v = G[1]
-    gamma_c_name, gamma_c = G[2]
-    M_v_name, M_v = M[1]
-    M_c_name, M_c = M[2]
+    started = time.time()
+    processed = 0
+    for _, row in path_params.iterrows():
+        point_id = str(row["path_point_id"])
+        if point_id in done:
+            continue
+        reduced = {name: float(row[name]) for name in REDUCED7}
+        params = core.raw8_from_reduced7(reduced, e0=0.0)
+        scan = fast_gap_scan(params, config.path_gap_nk)
+        rows.append({**row.to_dict(), **scan, "path_gap_nk": int(config.path_gap_nk)})
+        processed += 1
+        if processed % max(config.checkpoint_every, 10) == 0:
+            atomic_write_csv(pd.DataFrame(rows), checkpoint)
+            print(f"Path gap: {len(rows)}/{len(path_params)} | elapsed {time.time()-started:.1f} s")
 
-    gamma_gap = gamma_c - gamma_v
-    M_gap = M_c - M_v
-    gamma_M_gap = min(gamma_c, M_c) - max(gamma_v, M_v)
-
-    # Signed Gamma/M inversion masses for the A- and B+ branches.
-    # mass_Gamma > 0 means B+ lies below A- at Gamma.
-    # mass_M > 0 means A- lies below B+ at M.
-    mass_Gamma = b["G_A_minus"] - b["G_B_plus"]
-    mass_M = b["M_B_plus"] - b["M_A_minus"]
-    mass_product = mass_Gamma * mass_M
-
-    # The B+ branch is the branch that empirically switches occupancy in all
-    # verified topological points of Steps 02–04.
-    bplus_G_rank = G_rank["G_B_plus"]
-    bplus_M_rank = M_rank["M_B_plus"]
-    bplus_partner_switch = {bplus_G_rank, bplus_M_rank} == {1, 2}
-
-    delta_Bplus = b["M_B_plus"] - b["G_B_plus"]  # B1 - B2
-    denominator = b["B1"] + b["B2"]
-    rationalized_delta = (
-        4.0 * (float(reduced["r1"]) ** 2 - float(reduced["r2"]) ** 2) / denominator
-        if denominator > 0.0 else 0.0
-    )
-    no_go_bound = -abs(delta_Bplus) if bplus_partner_switch else float("nan")
-
-    active_pattern = (
-        f"G:{gamma_v_name}->{gamma_c_name};M:{M_v_name}->{M_c_name}"
-    )
-
-    result: Dict[str, object] = dict(b)
-    result.update(
-        {
-            "G_e1": G[0][1], "G_e2": G[1][1], "G_e3": G[2][1], "G_e4": G[3][1],
-            "M_e1": M[0][1], "M_e2": M[1][1], "M_e3": M[2][1], "M_e4": M[3][1],
-            "gamma_valence_branch": gamma_v_name,
-            "gamma_conduction_branch": gamma_c_name,
-            "M_valence_branch": M_v_name,
-            "M_conduction_branch": M_c_name,
-            "gamma_local_gap_analytic": gamma_gap,
-            "M_local_gap_analytic": M_gap,
-            "gamma_M_indirect_analytic": gamma_M_gap,
-            "mass_Gamma_signed": mass_Gamma,
-            "mass_M_signed": mass_M,
-            "mass_product": mass_product,
-            "mass_same_sign": int(mass_product > 0.0),
-            "mass_boundary_distance": min(abs(mass_Gamma), abs(mass_M)),
-            "active_branch_pattern": active_pattern,
-            "G_Bplus_rank": bplus_G_rank,
-            "M_Bplus_rank": bplus_M_rank,
-            "Bplus_partner_switch": int(bplus_partner_switch),
-            "delta_Bplus_M_minus_G": delta_Bplus,
-            "delta_Bplus_rationalized": rationalized_delta,
-            "Bplus_identity_error": delta_Bplus - rationalized_delta,
-            "conditional_no_go_bound": no_go_bound,
-            "r_square_difference": float(reduced["r1"]) ** 2 - float(reduced["r2"]) ** 2,
-            "r_square_equal": int(abs(float(reduced["r1"]) ** 2 - float(reduced["r2"]) ** 2) < 1e-12),
-        }
-    )
+    result = pd.DataFrame(rows).sort_values(["path_id", "path_index"]).reset_index(drop=True)
+    atomic_write_csv(result, output)
     return result
 
 
-def symbolic_derivation() -> Dict[str, str]:
-    """Derive and return symbolic characteristic polynomials and formulas."""
-    lam, m, t1, t2, r1, r2 = sp.symbols("lambda m_e t_1 t_2 r_1 r_2", real=True)
-    ts = (t1 + t2) / 2
-    td = (t1 - t2) / 2
+def select_adaptive_chern_points(path_gap: pd.DataFrame, config: Step04Config) -> pd.DataFrame:
+    selected_rows: list[pd.Series] = []
+    for path_id, group in path_gap.groupby("path_id", sort=False):
+        group = group.sort_values("path_index").reset_index(drop=True)
+        n = len(group)
+        indices: set[int] = set(range(0, n, max(1, config.path_chern_stride)))
+        indices.update({0, n - 1})
 
-    A1 = sp.sqrt((m - td) ** 2 + 4 * r1 ** 2)
-    A2 = sp.sqrt((m - td) ** 2 + 4 * r2 ** 2)
-    B1 = sp.sqrt((m + td) ** 2 + 4 * r1 ** 2)
-    B2 = sp.sqrt((m + td) ** 2 + 4 * r2 ** 2)
+        # Global and secondary smallest gap points.
+        smallest = group.nsmallest(min(config.path_extra_gap_minima, n), "min_direct_gap").index
+        for idx in smallest:
+            for offset in (-1, 0, 1):
+                if 0 <= int(idx) + offset < n:
+                    indices.add(int(idx) + offset)
 
-    # Factorized forms derived from the 4x4 spin-up matrices.
-    pG = sp.expand(((lam + ts) ** 2 - A1 ** 2) * ((lam - ts) ** 2 - B2 ** 2))
-    pM = sp.expand(((lam + ts) ** 2 - A2 ** 2) * ((lam - ts) ** 2 - B1 ** 2))
+        # All local minima of the discrete path gap.
+        gaps = group["min_direct_gap"].to_numpy(float)
+        for idx in range(1, n - 1):
+            if gaps[idx] <= gaps[idx - 1] and gaps[idx] <= gaps[idx + 1]:
+                indices.update({idx - 1, idx, idx + 1})
 
-    delta_B = sp.simplify(B1 - B2)
-    delta_B_rational = sp.simplify(4 * (r1 ** 2 - r2 ** 2) / (B1 + B2))
-    identity = sp.simplify(delta_B - delta_B_rational)
+        if len(indices) > config.max_chern_points_per_path:
+            mandatory = {0, n - 1, int(np.argmin(gaps))}
+            remaining = sorted(indices - mandatory, key=lambda i: gaps[i])
+            keep = mandatory | set(remaining[: max(0, config.max_chern_points_per_path - len(mandatory))])
+            indices = keep
 
-    formulas = {
-        "p_Gamma_factorized": sp.sstr(sp.factor(pG)),
-        "p_M_factorized": sp.sstr(sp.factor(pM)),
-        "E_Gamma_A_pm": sp.sstr(-ts) + " ± " + sp.sstr(A1),
-        "E_Gamma_B_pm": sp.sstr(ts) + " ± " + sp.sstr(B2),
-        "E_M_A_pm": sp.sstr(-ts) + " ± " + sp.sstr(A2),
-        "E_M_B_pm": sp.sstr(ts) + " ± " + sp.sstr(B1),
-        "delta_Bplus": sp.sstr(delta_B),
-        "delta_Bplus_rationalized": sp.sstr(delta_B_rational),
-        "delta_identity_simplified": sp.sstr(identity),
-        "conditional_no_go": (
-            "If E_{Gamma,B+} and E_{M,B+} exchange occupied/unoccupied rank at half filling, "
-            "then E_g^ind <= -|B1-B2| = -4|r1^2-r2^2|/(B1+B2) <= 0."
-        ),
-    }
-    return formulas
+        for idx in sorted(indices):
+            row = group.iloc[idx].copy()
+            row["sample_id"] = str(row["path_point_id"])
+            row["sample_source"] = "adaptive_path_chern"
+            row["is_control"] = 1  # force strict Chern verification for every selected point
+            row["is_ml_eligible"] = 0
+            selected_rows.append(row)
+    return pd.DataFrame(selected_rows)
 
 
-def write_symbolic_outputs(output: Path) -> Dict[str, str]:
-    formulas = symbolic_derivation()
-    lines = [
-        "fes six-parameter model: Gamma/M exact formulas",
-        "=" * 72,
-        "Definitions:",
-        "  t_s=(t1+t2)/2, t_d=(t1-t2)/2",
-        "  A_i=sqrt((m_e-t_d)^2+4 r_i^2)",
-        "  B_i=sqrt((m_e+t_d)^2+4 r_i^2)",
-        "",
-        "Gamma eigenvalues:",
-        "  E_Gamma,A± = -t_s ± A1",
-        "  E_Gamma,B± = +t_s ± B2",
-        "M eigenvalues:",
-        "  E_M,A± = -t_s ± A2",
-        "  E_M,B± = +t_s ± B1",
-        "",
-        "Exact identity:",
-        "  E_M,B+ - E_Gamma,B+ = B1-B2",
-        "  B1-B2 = 4(r1^2-r2^2)/(B1+B2)",
-        "",
-        "Conditional no-go:",
-        "  If B+ changes occupied/unoccupied rank between Gamma and M,",
-        "  E_g^ind <= -|B1-B2|",
-        "          = -4|r1^2-r2^2|/(B1+B2) <= 0.",
-        "  It is strictly negative when r1^2 != r2^2.",
-        "",
-        "SymPy output:",
+def run_path_chern_audit(
+    selected: pd.DataFrame,
+    config: Step04Config,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    final_path = config.output_dir / "step04_04_path_adaptive_chern_labels.csv"
+    attempts_path = config.output_dir / "step04_04_path_chern_attempts.csv"
+    gaps_path = config.output_dir / "step04_04_path_strict_gap_checks.csv"
+    checkpoint = config.output_dir / "step04_04_path_adaptive_chern_checkpoint.csv"
+
+    if final_path.exists() and not config.force_recalculate_chern:
+        final = pd.read_csv(final_path, low_memory=False)
+        if set(final["sample_id"].astype(str)) == set(selected["sample_id"].astype(str)):
+            attempts = pd.read_csv(attempts_path, low_memory=False) if attempts_path.exists() else pd.DataFrame()
+            gaps = pd.read_csv(gaps_path, low_memory=False) if gaps_path.exists() else pd.DataFrame()
+            return final, attempts, gaps
+
+    if checkpoint.exists() and not config.force_recalculate_chern:
+        rows = pd.read_csv(checkpoint, low_memory=False).to_dict("records")
+        done = {str(row["sample_id"]) for row in rows}
+    else:
+        rows, done = [], set()
+    attempts_rows = (
+        pd.read_csv(attempts_path, low_memory=False).to_dict("records")
+        if attempts_path.exists() and not config.force_recalculate_chern else []
+    )
+    gap_rows = (
+        pd.read_csv(gaps_path, low_memory=False).to_dict("records")
+        if gaps_path.exists() and not config.force_recalculate_chern else []
+    )
+
+    pconfig = make_physics_config(config)
+    started = time.time()
+    processed = 0
+    metadata = [
+        "path_id", "path_point_id", "path_index", "lambda", "anchor_sector",
+        "partner_mode", "anchor_sample_id", "trivial_sample_id",
     ]
-    lines.extend(f"  {key}: {value}" for key, value in formulas.items())
-    (output / "fes_step05_symbolic_formulas.txt").write_text(
-        "\n".join(lines), encoding="utf-8"
-    )
+    for _, row in selected.iterrows():
+        sid = str(row["sample_id"])
+        if sid in done:
+            continue
+        result, attempts, gaps = step3.evaluate_sample_physics(row, pconfig)
+        for col in metadata:
+            result[col] = row[col]
+        for attempt in attempts:
+            attempt.update({col: row[col] for col in metadata})
+        for gap in gaps:
+            gap.update({col: row[col] for col in metadata})
+        rows.append(result)
+        attempts_rows.extend(attempts)
+        gap_rows.extend(gaps)
+        processed += 1
+        if processed % config.checkpoint_every == 0:
+            atomic_write_csv(pd.DataFrame(rows), checkpoint)
+            atomic_write_csv(pd.DataFrame(attempts_rows), attempts_path)
+            atomic_write_csv(pd.DataFrame(gap_rows), gaps_path)
+            print(f"Path Chern: {len(rows)}/{len(selected)} | elapsed {time.time()-started:.1f} s")
 
-    latex = r"""\documentclass{article}
-\usepackage{amsmath}
-\begin{document}
-\section*{fes $\Gamma/M$ analytic spectrum and conditional no-go}
-Define
-\[
- t_s=\frac{t_1+t_2}{2},\qquad t_d=\frac{t_1-t_2}{2},
-\]
-\[
- A_i=\sqrt{(m_e-t_d)^2+4r_i^2},\qquad
- B_i=\sqrt{(m_e+t_d)^2+4r_i^2}.
-\]
-The one-spin eigenvalues are
-\[
- E_{\Gamma,A}^{\pm}=-t_s\pm A_1,\qquad
- E_{\Gamma,B}^{\pm}= t_s\pm B_2,
-\]
-\[
- E_{M,A}^{\pm}=-t_s\pm A_2,\qquad
- E_{M,B}^{\pm}= t_s\pm B_1.
-\]
-The $B^+$ branch difference obeys the exact identity
-\[
- E_{M,B^+}-E_{\Gamma,B^+}=B_1-B_2
- =\frac{4(r_1^2-r_2^2)}{B_1+B_2}.
-\]
-If $B^+$ changes from occupied to unoccupied (or vice versa) between
-$\Gamma$ and $M$ at half filling, the global indirect gap satisfies
-\[
- E_g^{\mathrm{ind}}\le -\left|B_1-B_2\right|
- =-\frac{4\left|r_1^2-r_2^2\right|}{B_1+B_2}\le0.
-\]
-For $r_1^2\ne r_2^2$ the upper bound is strictly negative.
-\end{document}
-"""
-    (output / "fes_step05_symbolic_formulas.tex").write_text(latex, encoding="utf-8")
-    (output / "fes_step05_symbolic_formulas.json").write_text(
-        json.dumps(formulas, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    return formulas
+    final = pd.DataFrame(rows).sort_values(["path_id", "lambda"]).reset_index(drop=True)
+    attempts = pd.DataFrame(attempts_rows)
+    gaps = pd.DataFrame(gap_rows)
+    atomic_write_csv(final, final_path)
+    atomic_write_csv(attempts, attempts_path)
+    atomic_write_csv(gaps, gaps_path)
+    return final, attempts, gaps
 
 
 # =============================================================================
-# 3. 解析公式数值验证
+# Transition brackets and continuous critical-valley refinement
 # =============================================================================
 
+def wrap_k(value: float) -> float:
+    return float((value + math.pi) % (2.0 * math.pi) - math.pi)
 
-def _row_reduced(row: pd.Series | Dict[str, object]) -> Dict[str, float]:
-    return {name: float(row[name]) for name in PARAMS5}
+
+def torus_delta(a: float, b: float) -> float:
+    return wrap_k(float(a) - float(b))
 
 
-def validate_analytic_spectrum(
-    source_df: pd.DataFrame,
-    n_samples: int,
-    seed: int,
-) -> pd.DataFrame:
-    if len(source_df) == 0:
-        return pd.DataFrame()
-    rng = np.random.default_rng(seed)
-    n = min(int(n_samples), len(source_df))
-    indices = rng.choice(len(source_df), size=n, replace=False)
-    rows = []
-    for idx in indices:
-        row = source_df.iloc[int(idx)]
-        reduced = _row_reduced(row)
-        raw6 = core.raw6_from_reduced5(reduced)
-        analytic = analytic_branches(reduced)
+def torus_distance(k: tuple[float, float], q: tuple[float, float]) -> float:
+    return float(math.hypot(torus_delta(k[0], q[0]), torus_delta(k[1], q[1])))
 
-        H_G = core.h_fes_atomic(0.0, 0.0, raw6)
-        H_M = core.h_fes_atomic(math.pi, math.pi, raw6)
-        up = core.SPIN_UP_INDICES
-        G_num = np.linalg.eigvalsh(H_G[np.ix_(up, up)])
-        M_num = np.linalg.eigvalsh(H_M[np.ix_(up, up)])
-        G_ana = np.sort([analytic[name] for name in BRANCHES if name.startswith("G_")])
-        M_ana = np.sort([analytic[name] for name in BRANCHES if name.startswith("M_")])
 
-        rows.append(
-            {
-                "source_row": int(idx),
-                **reduced,
-                "max_abs_error_Gamma": float(np.max(np.abs(G_num - G_ana))),
-                "max_abs_error_M": float(np.max(np.abs(M_num - M_ana))),
-                "max_abs_error": float(max(np.max(np.abs(G_num - G_ana)), np.max(np.abs(M_num - M_ana)))),
-            }
+def classify_k_region(kx: float, ky: float, tol: float) -> dict[str, Any]:
+    k = (wrap_k(kx), wrap_k(ky))
+    high_symmetry = {
+        "Gamma": [(0.0, 0.0)],
+        "X": [(math.pi, 0.0), (-math.pi, 0.0)],
+        "Y": [(0.0, math.pi), (0.0, -math.pi)],
+        "M": [
+            (math.pi, math.pi), (math.pi, -math.pi),
+            (-math.pi, math.pi), (-math.pi, -math.pi),
+        ],
+    }
+    distances = {
+        name: min(torus_distance(k, point) for point in points)
+        for name, points in high_symmetry.items()
+    }
+    nearest_name = min(distances, key=distances.get)
+    if distances[nearest_name] <= tol:
+        region = nearest_name
+        is_high = 1
+    else:
+        diag_plus = abs(torus_delta(k[0], k[1]))
+        diag_minus = abs(torus_delta(k[0], -k[1]))
+        axis_x = abs(wrap_k(k[1]))
+        axis_y = abs(wrap_k(k[0]))
+        if diag_plus <= tol:
+            region = "generic_Sigma_kx_eq_ky"
+        elif diag_minus <= tol:
+            region = "generic_SigmaPrime_kx_eq_minus_ky"
+        elif axis_x <= tol or abs(abs(k[1]) - math.pi) <= tol:
+            region = "generic_horizontal"
+        elif axis_y <= tol or abs(abs(k[0]) - math.pi) <= tol:
+            region = "generic_vertical"
+        else:
+            region = "generic"
+        is_high = 0
+    return {
+        "critical_k_region": region,
+        "critical_is_high_symmetry": int(is_high),
+        "nearest_high_symmetry": nearest_name,
+        "distance_to_nearest_high_symmetry": float(distances[nearest_name]),
+        "distance_to_Sigma": float(abs(torus_delta(k[0], k[1]))),
+        "distance_to_SigmaPrime": float(abs(torus_delta(k[0], -k[1]))),
+    }
+
+
+def _unique_k_points(points: Iterable[tuple[float, float]], tol: float = 1.0e-7) -> list[tuple[float, float]]:
+    unique: list[tuple[float, float]] = []
+    for point in points:
+        p = (wrap_k(point[0]), wrap_k(point[1]))
+        if not any(torus_distance(p, q) <= tol for q in unique):
+            unique.append(p)
+    return unique
+
+
+def c4_orbit(kx: float, ky: float) -> list[tuple[float, float]]:
+    return _unique_k_points([
+        (kx, ky), (-ky, kx), (-kx, -ky), (ky, -kx),
+    ])
+
+
+def d4_orbit(kx: float, ky: float) -> list[tuple[float, float]]:
+    base = c4_orbit(kx, ky)
+    mirrors = [(x, -y) for x, y in base]
+    return _unique_k_points(base + mirrors)
+
+
+def detect_transition_brackets(path_chern: pd.DataFrame, path_gap: pd.DataFrame, config: Step04Config) -> pd.DataFrame:
+    rows: list[dict] = []
+    for path_id, gap_group in path_gap.groupby("path_id", sort=False):
+        ch = path_chern[path_chern["path_id"].astype(str) == str(path_id)].copy()
+        ch = ch.dropna(subset=["chern_up_int"]).sort_values("lambda")
+        valid = ch[ch["chern_exact_consensus"].fillna(0).astype(int) == 1]
+        transition_count = 0
+        if len(valid) >= 2:
+            valid_rows = list(valid.to_dict("records"))
+            for left, right in zip(valid_rows[:-1], valid_rows[1:]):
+                c_left = int(left["chern_up_int"])
+                c_right = int(right["chern_up_int"])
+                if c_left == c_right:
+                    continue
+                rows.append({
+                    "path_id": str(path_id),
+                    "transition_id": f"{path_id}__transition{transition_count:02d}",
+                    "lambda_left": float(left["lambda"]),
+                    "lambda_right": float(right["lambda"]),
+                    "chern_left": c_left,
+                    "chern_right": c_right,
+                    "delta_chern_up": int(c_right - c_left),
+                    "bracket_source": "strict_chern_change",
+                })
+                transition_count += 1
+                if transition_count >= config.max_transitions_per_path:
+                    break
+
+        if transition_count == 0:
+            group = gap_group.sort_values("lambda").reset_index(drop=True)
+            idx = int(group["min_direct_gap"].astype(float).idxmin())
+            # idx above is original index; convert to positional index.
+            pos = int(np.argmin(group["min_direct_gap"].to_numpy(float)))
+            left_pos = max(0, pos - 1)
+            right_pos = min(len(group) - 1, pos + 1)
+            rows.append({
+                "path_id": str(path_id),
+                "transition_id": f"{path_id}__gap_minimum00",
+                "lambda_left": float(group.iloc[left_pos]["lambda"]),
+                "lambda_right": float(group.iloc[right_pos]["lambda"]),
+                "chern_left": np.nan,
+                "chern_right": np.nan,
+                "delta_chern_up": np.nan,
+                "bracket_source": "dense_gap_minimum_fallback",
+            })
+    return pd.DataFrame(rows)
+
+
+def direct_gap_at(kx: float, ky: float, reduced: dict[str, float]) -> float:
+    params = core.raw8_from_reduced7(reduced, e0=0.0)
+    eig = core.eigvals_full(wrap_k(kx), wrap_k(ky), params)
+    return float(max(0.0, eig[4] - eig[3]))
+
+
+def refine_one_transition(
+    bracket: pd.Series,
+    pair: pd.Series,
+    path_gap: pd.DataFrame,
+    config: Step04Config,
+) -> dict[str, Any]:
+    path_id = str(bracket["path_id"])
+    a = np.array([float(pair[f"anchor_{name}"]) for name in REDUCED7])
+    b = np.array([float(pair[f"trivial_{name}"]) for name in REDUCED7])
+    lam_lo = float(min(bracket["lambda_left"], bracket["lambda_right"]))
+    lam_hi = float(max(bracket["lambda_left"], bracket["lambda_right"]))
+    if lam_hi - lam_lo < 1.0e-7:
+        lam_lo = max(0.0, lam_lo - 1.0 / max(10, config.path_n_lambda - 1))
+        lam_hi = min(1.0, lam_hi + 1.0 / max(10, config.path_n_lambda - 1))
+
+    local = path_gap[
+        (path_gap["path_id"].astype(str) == path_id)
+        & (path_gap["lambda"].astype(float) >= lam_lo - 1.0e-12)
+        & (path_gap["lambda"].astype(float) <= lam_hi + 1.0e-12)
+    ].copy()
+    if local.empty:
+        local = path_gap[path_gap["path_id"].astype(str) == path_id].nsmallest(
+            config.critical_optimizer_starts, "min_direct_gap"
         )
+    else:
+        local = local.nsmallest(config.critical_optimizer_starts, "min_direct_gap")
+
+    starts: list[np.ndarray] = []
+    for _, row in local.iterrows():
+        starts.append(np.array([
+            float(np.clip(row["lambda"], lam_lo, lam_hi)),
+            float(row["direct_gap_kx"]), float(row["direct_gap_ky"]),
+        ]))
+    if not starts:
+        starts = [np.array([(lam_lo + lam_hi) / 2.0, 0.0, 0.0])]
+
+    def objective(x: np.ndarray) -> float:
+        lam, kx, ky = float(x[0]), float(x[1]), float(x[2])
+        reduced = vector_to_reduced(slerp(a, b, lam))
+        return direct_gap_at(kx, ky, reduced)
+
+    best = None
+    for start in starts:
+        result = minimize(
+            objective,
+            x0=start,
+            method="L-BFGS-B",
+            bounds=[(lam_lo, lam_hi), (-math.pi, math.pi), (-math.pi, math.pi)],
+            options={"maxiter": int(config.critical_optimizer_maxiter), "ftol": 1.0e-14},
+        )
+        if best is None or float(result.fun) < float(best.fun):
+            best = result
+    assert best is not None
+
+    lam = float(best.x[0])
+    kx, ky = wrap_k(float(best.x[1])), wrap_k(float(best.x[2]))
+    reduced = vector_to_reduced(slerp(a, b, lam))
+    c4 = c4_orbit(kx, ky)
+    d4 = d4_orbit(kx, ky)
+    c4_gaps = [direct_gap_at(x, y, reduced) for x, y in c4]
+    d4_gaps = [direct_gap_at(x, y, reduced) for x, y in d4]
+
+    return {
+        **bracket.to_dict(),
+        "anchor_sector": int(pair["anchor_sector"]),
+        "partner_mode": str(pair["partner_mode"]),
+        "critical_lambda": lam,
+        "critical_direct_gap": float(best.fun),
+        "critical_kx": kx,
+        "critical_ky": ky,
+        "optimizer_success": int(bool(best.success)),
+        "optimizer_status": int(best.status),
+        "optimizer_message": str(best.message),
+        "optimizer_nfev": int(best.nfev),
+        "c4_orbit_size": int(len(c4)),
+        "d4_orbit_size": int(len(d4)),
+        "c4_gap_min": float(min(c4_gaps)),
+        "c4_gap_max": float(max(c4_gaps)),
+        "c4_gap_spread": float(max(c4_gaps) - min(c4_gaps)),
+        "d4_gap_min": float(min(d4_gaps)),
+        "d4_gap_max": float(max(d4_gaps)),
+        "d4_gap_spread": float(max(d4_gaps) - min(d4_gaps)),
+        **classify_k_region(kx, ky, config.critical_k_symmetry_tol),
+        **{name: reduced[name] for name in REDUCED7},
+    }
+
+
+def refine_critical_valleys(
+    brackets: pd.DataFrame,
+    partners: pd.DataFrame,
+    path_gap: pd.DataFrame,
+    config: Step04Config,
+) -> pd.DataFrame:
+    rows: list[dict] = []
+    partner_map = {str(row["path_id"]): row for _, row in partners.iterrows()}
+    started = time.time()
+    for count, (_, bracket) in enumerate(brackets.iterrows(), start=1):
+        pair = partner_map[str(bracket["path_id"])]
+        rows.append(refine_one_transition(bracket, pair, path_gap, config))
+        print(f"Critical valley: {count}/{len(brackets)} | elapsed {time.time()-started:.1f} s")
     return pd.DataFrame(rows)
 
 
 # =============================================================================
-# 4. Step 04 数据解析审计
+# Mechanism summaries and figures
 # =============================================================================
 
-
-def augment_with_analytic(df: pd.DataFrame) -> pd.DataFrame:
-    if len(df) == 0:
-        return df.copy()
-    records = []
-    for _, row in df.iterrows():
-        records.append(analytic_diagnostics(_row_reduced(row)))
-    analytic_df = pd.DataFrame(records, index=df.index)
-    overlap = [col for col in analytic_df.columns if col in df.columns]
-    if overlap:
-        analytic_df = analytic_df.rename(columns={col: f"analytic_{col}" for col in overlap})
-    return pd.concat([df.reset_index(drop=True), analytic_df.reset_index(drop=True)], axis=1)
-
-
-def add_no_go_certificate(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-    verified_gap_col = (
-        "verified_indirect_gap" if "verified_indirect_gap" in out.columns else "indirect_gap"
+def mechanism_summary(critical: pd.DataFrame) -> pd.DataFrame:
+    if critical.empty:
+        return pd.DataFrame()
+    work = critical.copy()
+    work["abs_anchor_sector"] = work["anchor_sector"].abs().astype(int)
+    return (
+        work.groupby(["abs_anchor_sector", "critical_k_region", "critical_is_high_symmetry"], dropna=False)
+        .agg(
+            n_transitions=("transition_id", "size"),
+            median_critical_gap=("critical_direct_gap", "median"),
+            min_critical_gap=("critical_direct_gap", "min"),
+            median_c4_orbit_size=("c4_orbit_size", "median"),
+            median_d4_orbit_size=("d4_orbit_size", "median"),
+            median_c4_gap_spread=("c4_gap_spread", "median"),
+        )
+        .reset_index()
     )
-    observed = pd.to_numeric(out.get(verified_gap_col), errors="coerce")
-    bound = pd.to_numeric(out.get("conditional_no_go_bound"), errors="coerce")
-    out["observed_indirect_for_certificate"] = observed
-    out["no_go_bound_residual_observed_minus_bound"] = observed - bound
-    out["conditional_no_go_certificate"] = (
-        (pd.to_numeric(out["Bplus_partner_switch"], errors="coerce") == 1)
-        & observed.notna()
-        & bound.notna()
-        & (observed <= bound + 5.0e-8)
-        & (bound <= 1.0e-12)
-    ).astype(int)
-    out["gamma_M_exactness_error"] = observed - pd.to_numeric(
-        out["gamma_M_indirect_analytic"], errors="coerce"
-    )
-    return out
 
 
-# =============================================================================
-# 5. 完整复核所有粗筛 TI 候选（修复 Step 04 队列上限遗漏）
-# =============================================================================
-
-
-def strict_verify_row(
-    row: pd.Series,
-    config: NoGoConfig,
-    details_dir: Path,
-) -> Dict[str, object]:
-    point_id = str(row["point_id"])
-    reduced = _row_reduced(row)
-    raw6 = core.raw6_from_reduced5(reduced)
-    result: Dict[str, object] = dict(row)
-    result["strict_error"] = ""
-
-    try:
-        gap_summary, gap_table = core.consensus_gap_audit(
-            raw6,
-            config.verify_gap_grids,
-            config.verify_gap_shifts,
-            config.gap_tol,
-        )
-        result.update(gap_summary)
-        gap_table.insert(0, "point_id", point_id)
-        gap_table.to_csv(
-            details_dir / f"{point_id}_gap_consensus.csv",
-            index=False,
-            encoding="utf-8-sig",
-        )
-    except Exception as exc:
-        result["strict_phase_label"] = "numeric_error"
-        result["strict_error"] = f"gap_failed: {repr(exc)}"
-        return result
-
-    if not bool(int(result.get("verified_is_direct_gapped", 0))):
-        result["strict_phase_label"] = "noninsulating_or_gap_closing"
-        return result
-    if not bool(int(result.get("verified_is_balanced_spin_sector", 0))):
-        result["strict_phase_label"] = "spin_sector_filling_mismatch"
-        return result
-
-    try:
-        ch_summary, ch_table = core.consensus_chern_audit(
-            raw6,
-            config.verify_chern_grids,
-            config.verify_chern_shifts,
-            config.chern_tol,
-            config.min_det_tol,
-            include_total=True,
-        )
-        result.update(ch_summary)
-        ch_table.insert(0, "point_id", point_id)
-        ch_table.to_csv(
-            details_dir / f"{point_id}_chern_consensus.csv",
-            index=False,
-            encoding="utf-8-sig",
-        )
-    except Exception as exc:
-        result["strict_phase_label"] = "chern_unreliable"
-        result["strict_error"] = f"chern_failed: {repr(exc)}"
-        return result
-
-    reliable = bool(int(result.get("verified_chern_reliable", 0)))
-    cu = result.get("verified_chern_up_int")
-    cd = result.get("verified_chern_down_int")
-    ct = result.get("verified_chern_total_int")
-    insulator = bool(int(result.get("verified_is_physical_insulator", 0)))
-
-    topological = reliable and cu is not None and cd is not None and ct == 0 and cu == -cd and cu != 0
-    if not reliable:
-        label = "chern_unreliable"
-    elif topological and insulator:
-        label = "spin_chern_TI_candidate"
-    elif topological:
-        label = "spin_chern_band_metal"
-    elif insulator and cu == 0 and cd == 0 and ct == 0:
-        label = "trivial_insulator"
-    elif not insulator:
-        label = "indirect_overlap"
-    else:
-        label = "other_gapped_phase"
-    result["strict_phase_label"] = label
-    return result
-
-
-def complete_coarse_ti_verification(
-    coarse: pd.DataFrame,
-    existing_strict: pd.DataFrame,
-    config: NoGoConfig,
-    output: Path,
-) -> pd.DataFrame:
-    candidates = coarse[coarse["phase_label"] == "spin_chern_TI_candidate"].copy()
-    existing_ids = set(existing_strict["point_id"].astype(str)) if len(existing_strict) else set()
-
-    if config.test_mode:
-        # Quick test validates parsing, symbolic formulas, analytic spectra and
-        # output generation. It deliberately reuses the existing strict Step 04
-        # table so reduced test grids cannot create scientific false positives.
-        return existing_strict.copy()
-
-    if config.reverify_all_coarse_ti:
-        queue = candidates
-    else:
-        queue = candidates[~candidates["point_id"].astype(str).isin(existing_ids)]
-
-    details_dir = output / "strict_details"
-    new_rows = [strict_verify_row(row, config, details_dir) for _, row in queue.iterrows()]
-    new_df = pd.DataFrame(new_rows)
-
-    combined = existing_strict.copy()
-    if len(new_df):
-        combined = pd.concat([combined, new_df], ignore_index=True, sort=False)
-    combined = combined.drop_duplicates(subset=["point_id"], keep="last")
-    return combined
-
-
-# =============================================================================
-# 6. 锚点路径的稠密解析边界定位
-# =============================================================================
-
-
-def interpolate_reduced(a: Dict[str, float], b: Dict[str, float], lam: float) -> Dict[str, float]:
-    return {name: (1.0 - lam) * a[name] + lam * b[name] for name in PARAMS5}
-
-
-def _roots_from_grid(x: np.ndarray, y: np.ndarray) -> list[float]:
-    roots: list[float] = []
-    for i in range(len(x) - 1):
-        y0, y1 = float(y[i]), float(y[i + 1])
-        if not np.isfinite(y0) or not np.isfinite(y1):
-            continue
-        if y0 == 0.0:
-            roots.append(float(x[i]))
-            continue
-        if y0 * y1 < 0.0:
-            # Linear interpolation is sufficient for bracketing summary; the
-            # dense grid makes the residual negligible.
-            roots.append(float(x[i] - y0 * (x[i + 1] - x[i]) / (y1 - y0)))
-    return roots
-
-
-def dense_anchor_path(anchor_df: pd.DataFrame, n_points: int) -> tuple[pd.DataFrame, Dict[str, object]]:
-    if len(anchor_df) < 2:
-        return pd.DataFrame(), {}
-    topo_row = anchor_df[anchor_df["anchor_role"] == "best_topological"]
-    pos_row = anchor_df[anchor_df["anchor_role"] == "positive_gap_anchor"]
-    if len(topo_row) == 0 or len(pos_row) == 0:
-        topo_row = anchor_df.iloc[[0]]
-        pos_row = anchor_df.iloc[[1]]
-    a = _row_reduced(topo_row.iloc[0])
-    b = _row_reduced(pos_row.iloc[0])
-
-    lambdas = np.linspace(0.0, 1.0, int(n_points))
-    rows = []
-    for lam in lambdas:
-        reduced = interpolate_reduced(a, b, float(lam))
-        diag = analytic_diagnostics(reduced)
-        rows.append({"path_lambda": float(lam), **reduced, **diag})
-    df = pd.DataFrame(rows)
-
-    summary = {
-        "mass_Gamma_zero_roots": _roots_from_grid(
-            df["path_lambda"].to_numpy(), df["mass_Gamma_signed"].to_numpy()
-        ),
-        "mass_M_zero_roots": _roots_from_grid(
-            df["path_lambda"].to_numpy(), df["mass_M_signed"].to_numpy()
-        ),
-        "min_gamma_local_gap": float(df["gamma_local_gap_analytic"].min()),
-        "lambda_min_gamma_local_gap": float(df.loc[df["gamma_local_gap_analytic"].idxmin(), "path_lambda"]),
-        "min_M_local_gap": float(df["M_local_gap_analytic"].min()),
-        "lambda_min_M_local_gap": float(df.loc[df["M_local_gap_analytic"].idxmin(), "path_lambda"]),
-        "gamma_M_indirect_zero_roots": _roots_from_grid(
-            df["path_lambda"].to_numpy(), df["gamma_M_indirect_analytic"].to_numpy()
-        ),
-        "delta_Bplus_zero_roots": _roots_from_grid(
-            df["path_lambda"].to_numpy(), df["delta_Bplus_M_minus_G"].to_numpy()
-        ),
-        "min_gamma_M_indirect": float(df["gamma_M_indirect_analytic"].min()),
-        "max_gamma_M_indirect": float(df["gamma_M_indirect_analytic"].max()),
-    }
-    return df, summary
-
-
-def plot_dense_path(df: pd.DataFrame, output_path: Path) -> None:
-    if len(df) == 0:
+def plot_local_retention(summary: pd.DataFrame, path: Path) -> None:
+    if summary.empty:
         return
-    fig, ax = plt.subplots(figsize=(8.0, 5.0))
-    x = df["path_lambda"].to_numpy()
-    ax.plot(x, df["mass_Gamma_signed"], label=r"$\mu_\Gamma$")
-    ax.plot(x, df["mass_M_signed"], label=r"$\mu_M$")
-    ax.plot(x, df["gamma_M_indirect_analytic"], label=r"$g_{\Gamma M}^{ind}$")
-    ax.plot(x, df["conditional_no_go_bound"], linestyle="--", label="B+ no-go bound")
-    ax.axhline(0.0, linewidth=1.0)
-    ax.set_xlabel(r"Path coordinate $\lambda$")
-    ax.set_ylabel("Energy")
-    ax.legend(frameon=False)
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=220)
+    pivot = summary.pivot_table(
+        index="parent_anchor_id",
+        columns="local_radius_max",
+        values="same_sector_retention_fraction",
+        aggfunc="mean",
+    )
+    ax = pivot.plot(kind="bar", figsize=(11, 5))
+    ax.set_ylabel("Same-sector TI retention fraction")
+    ax.set_xlabel("Parent anchor")
+    ax.set_ylim(0.0, 1.05)
+    ax.set_title("TTS Step 04: local Chern-sector stability")
+    plt.tight_layout()
+    plt.savefig(path, dpi=180)
+    plt.close()
+
+
+def plot_paths(path_gap: pd.DataFrame, critical: pd.DataFrame, figure_dir: Path) -> None:
+    for path_id, group in path_gap.groupby("path_id", sort=False):
+        group = group.sort_values("lambda")
+        fig, ax = plt.subplots(figsize=(7.5, 4.8))
+        ax.plot(group["lambda"], group["min_direct_gap"], label="direct gap")
+        ax.plot(group["lambda"], group["indirect_gap"], label="indirect gap")
+        ax.axhline(0.0, linewidth=1.0)
+        subset = critical[critical["path_id"].astype(str) == str(path_id)]
+        for _, row in subset.iterrows():
+            ax.axvline(float(row["critical_lambda"]), linestyle="--", alpha=0.7)
+        ax.set_xlabel("Spherical path coordinate λ")
+        ax.set_ylabel("Gap")
+        ax.set_title(str(path_id))
+        ax.legend()
+        plt.tight_layout()
+        safe = "".join(ch if ch.isalnum() or ch in "_-" else "_" for ch in str(path_id))
+        plt.savefig(figure_dir / f"step04_path_{safe}.png", dpi=180)
+        plt.close(fig)
+
+
+def plot_critical_k(critical: pd.DataFrame, path: Path) -> None:
+    if critical.empty:
+        return
+    fig, ax = plt.subplots(figsize=(6.5, 6.0))
+    for sector, group in critical.groupby("anchor_sector"):
+        ax.scatter(group["critical_kx"], group["critical_ky"], label=f"C_up={int(sector):+d}")
+    ax.set_xlim(-math.pi, math.pi)
+    ax.set_ylim(-math.pi, math.pi)
+    ax.set_xticks([-math.pi, 0.0, math.pi], ["-π", "0", "π"])
+    ax.set_yticks([-math.pi, 0.0, math.pi], ["-π", "0", "π"])
+    ax.set_xlabel("kx")
+    ax.set_ylabel("ky")
+    ax.set_title("Refined gap-closing valleys")
+    ax.legend()
+    ax.set_aspect("equal", adjustable="box")
+    plt.tight_layout()
+    plt.savefig(path, dpi=180)
     plt.close(fig)
 
 
 # =============================================================================
-# 7. 汇总与主流程
+# Main workflow
 # =============================================================================
 
+def run_step04(config: Step04Config | None = None) -> Dict[str, Any]:
+    config = (config or Step04Config()).normalized()
+    started = time.time()
 
-def build_branch_pattern_counts(df: pd.DataFrame, label_col: str) -> pd.DataFrame:
-    if len(df) == 0:
-        return pd.DataFrame()
-    cols = [label_col, "active_branch_pattern", "Bplus_partner_switch"]
-    return (
-        df.groupby(cols, dropna=False)
-        .size()
-        .reset_index(name="count")
-        .sort_values([label_col, "count"], ascending=[True, False])
+    print("[1/8] Load Step 03 strict physics labels")
+    physics, physics_source = load_step3_physics(config)
+    required = {"sample_id", "phase_label", "chern_up_int", "indirect_gap", *REDUCED7}
+    missing = sorted(required - set(physics.columns))
+    if missing:
+        raise KeyError(f"Step 03 physics CSV 缺少列：{missing}")
+
+    print("[2/8] Select sector anchors and nearest trivial partners")
+    anchors = select_sector_anchors(physics, config)
+    partners = select_trivial_partners(physics, anchors, config)
+    atomic_write_csv(anchors, config.output_dir / "step04_01_selected_chern_sector_anchors.csv")
+    atomic_write_csv(partners, config.output_dir / "step04_01_nearest_trivial_path_partners.csv")
+
+    print("[3/8] Generate sector-directed local Sobol samples")
+    local_params = generate_local_sobol(anchors, config)
+    atomic_write_csv(local_params, config.output_dir / "step04_02_local_sobol_parameters.csv")
+
+    print("[4/8] Strict local physics labels")
+    local_physics, local_attempts, local_strict_gaps = run_local_physics(local_params, config)
+    local_phase_counts, local_summary = summarize_local(local_physics)
+    atomic_write_csv(local_phase_counts, config.output_dir / "step04_03_local_phase_counts.csv")
+    atomic_write_csv(local_summary, config.output_dir / "step04_03_local_sector_stability_summary.csv")
+
+    print("[5/8] Dense topology-to-trivial path gap scans")
+    path_params = generate_path_parameters(partners, config)
+    atomic_write_csv(path_params, config.output_dir / "step04_04_path_parameters.csv")
+    path_gap = run_path_gap_scans(path_params, config)
+
+    print("[6/8] Adaptive strict Chern audit on path")
+    selected_chern = select_adaptive_chern_points(path_gap, config)
+    atomic_write_csv(selected_chern, config.output_dir / "step04_04_path_selected_chern_points.csv")
+    path_chern, path_attempts, path_strict_gaps = run_path_chern_audit(selected_chern, config)
+
+    print("[7/8] Detect transition brackets and refine critical valleys")
+    brackets = detect_transition_brackets(path_chern, path_gap, config)
+    atomic_write_csv(brackets, config.output_dir / "step04_05_transition_brackets.csv")
+    critical = refine_critical_valleys(brackets, partners, path_gap, config)
+    atomic_write_csv(critical, config.output_dir / "step04_05_refined_critical_valleys.csv")
+    mech = mechanism_summary(critical)
+    atomic_write_csv(mech, config.output_dir / "step04_05_mechanism_summary.csv")
+
+    print("[8/8] Figures and run summary")
+    plot_local_retention(local_summary, config.output_dir / "figures" / "step04_local_sector_retention.png")
+    plot_paths(path_gap, critical, config.output_dir / "figures")
+    plot_critical_k(critical, config.output_dir / "figures" / "step04_refined_critical_valleys.png")
+
+    sector_counts = {
+        str(int(k)): int(v)
+        for k, v in anchors["anchor_sector"].value_counts().sort_index().items()
+    }
+    local_same = int((
+        local_physics["phase_label"].eq("spin_chern_TI_candidate")
+        & local_physics["chern_up_int"].fillna(999).astype(int).eq(
+            local_physics["parent_chern_up"].astype(int)
+        )
+    ).sum())
+    summary = {
+        "code_version": CODE_VERSION,
+        "step01_version": core.CODE_VERSION,
+        "step03_version": step3.CODE_VERSION,
+        "step3_physics_source": physics_source,
+        "n_step3_rows": int(len(physics)),
+        "anchor_counts_by_sector": sector_counts,
+        "n_anchors": int(len(anchors)),
+        "n_path_pairs": int(len(partners)),
+        "n_local_samples": int(len(local_physics)),
+        "n_local_same_sector_TI": local_same,
+        "local_same_sector_TI_fraction": float(local_same / len(local_physics)) if len(local_physics) else np.nan,
+        "n_dense_path_points": int(len(path_gap)),
+        "n_adaptive_chern_points": int(len(path_chern)),
+        "n_transition_brackets": int(len(brackets)),
+        "n_refined_critical_valleys": int(len(critical)),
+        "critical_region_counts": {
+            str(k): int(v) for k, v in critical["critical_k_region"].value_counts().items()
+        } if not critical.empty else {},
+        "elapsed_seconds": float(time.time() - started),
+        "configuration": asdict(config),
+    }
+    atomic_write_json(summary, config.output_dir / "step04_06_run_summary.json")
+    print(json.dumps(summary, indent=2, ensure_ascii=False, default=str))
+
+    return {
+        "summary": summary,
+        "physics_step3": physics,
+        "anchors": anchors,
+        "partners": partners,
+        "local_parameters": local_params,
+        "local_physics": local_physics,
+        "local_chern_attempts": local_attempts,
+        "local_strict_gap_checks": local_strict_gaps,
+        "local_phase_counts": local_phase_counts,
+        "local_stability_summary": local_summary,
+        "path_parameters": path_params,
+        "path_gap": path_gap,
+        "path_chern": path_chern,
+        "path_chern_attempts": path_attempts,
+        "path_strict_gap_checks": path_strict_gaps,
+        "transition_brackets": brackets,
+        "critical_valleys": critical,
+        "mechanism_summary": mech,
+    }
+
+
+# =============================================================================
+# CLI
+# =============================================================================
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output-dir", type=Path, default=Step04Config.output_dir)
+    parser.add_argument("--step3-input", type=Path, default=None)
+    parser.add_argument("--anchors-per-sector", type=int, default=2)
+    parser.add_argument("--local-power", type=int, default=4)
+    parser.add_argument("--path-n-lambda", type=int, default=121)
+    parser.add_argument("--path-gap-nk", type=int, default=35)
+    parser.add_argument("--smoke-test", action="store_true")
+    parser.add_argument("--force", action="store_true")
+    return parser
+
+
+def config_from_args(args: argparse.Namespace) -> Step04Config:
+    if args.smoke_test:
+        return Step04Config(
+            output_dir=Path(args.output_dir),
+            step3_input=args.step3_input,
+            target_sectors=(-2, -1, 1, 2),
+            n_anchors_per_sector=1,
+            path_anchors_per_sector=1,
+            trivial_partner_modes=("nearest",),
+            local_angular_radii=(0.06,),
+            local_sobol_power_per_radius=1,
+            local_gap_nk=17,
+            initial_chern_grids=(15, 17),
+            strict_gap_grids=(17, 21),
+            strict_gap_shifts=((0.0, 0.0), (0.5, 0.5)),
+            strict_chern_grids=(17, 21),
+            path_n_lambda=21,
+            path_gap_nk=15,
+            path_chern_stride=7,
+            path_extra_gap_minima=2,
+            max_chern_points_per_path=7,
+            critical_optimizer_starts=2,
+            critical_optimizer_maxiter=80,
+            checkpoint_every=2,
+            force_recalculate_local=args.force,
+            force_recalculate_paths=args.force,
+            force_recalculate_chern=args.force,
+        )
+    return Step04Config(
+        output_dir=Path(args.output_dir),
+        step3_input=args.step3_input,
+        n_anchors_per_sector=int(args.anchors_per_sector),
+        local_sobol_power_per_radius=int(args.local_power),
+        path_n_lambda=int(args.path_n_lambda),
+        path_gap_nk=int(args.path_gap_nk),
+        force_recalculate_local=args.force,
+        force_recalculate_paths=args.force,
+        force_recalculate_chern=args.force,
     )
 
 
-def run_pipeline(config: NoGoConfig) -> Dict[str, Path]:
-    output = prepare_output(config)
-    step04_dir = locate_step04_directory(config.step04_input, output)
-    write_metadata(config, output, step04_dir)
-    write_symbolic_outputs(output)
-
-    coarse = pd.read_csv(step04_dir / "fes_step04_all_coarse_scan.csv")
-    strict = pd.read_csv(step04_dir / "fes_step04_strict_verified_results.csv")
-    anchors = pd.read_csv(step04_dir / "fes_step04_anchor_points.csv")
-
-    # Validate exact analytic spectrum against numerical matrices.
-    validation_n = 16 if config.test_mode else config.validation_samples
-    validation = validate_analytic_spectrum(coarse, validation_n, config.validation_seed)
-    validation_path = output / "fes_step05_eigenvalue_validation.csv"
-    validation.to_csv(validation_path, index=False, encoding="utf-8-sig")
-
-    # Complete every coarse TI candidate; default only fills missing Step 04 rows.
-    strict_complete = complete_coarse_ti_verification(coarse, strict, config, output)
-    strict_complete_path = output / "fes_step05_all_coarse_TI_strict_verification.csv"
-    strict_complete.to_csv(strict_complete_path, index=False, encoding="utf-8-sig")
-
-    coarse_aug = add_no_go_certificate(augment_with_analytic(coarse))
-    coarse_aug_path = output / "fes_step05_all_coarse_analytic_audit.csv"
-    coarse_aug.to_csv(coarse_aug_path, index=False, encoding="utf-8-sig")
-
-    strict_aug = add_no_go_certificate(augment_with_analytic(strict_complete))
-    strict_aug_path = output / "fes_step05_strict_analytic_audit.csv"
-    strict_aug.to_csv(strict_aug_path, index=False, encoding="utf-8-sig")
-
-    topological = strict_aug[
-        strict_aug["strict_phase_label"].isin(["spin_chern_band_metal", "spin_chern_TI_candidate"])
-    ].copy()
-    topological_path = output / "fes_step05_verified_topological_no_go_certificates.csv"
-    topological.to_csv(topological_path, index=False, encoding="utf-8-sig")
-
-    pattern_counts = build_branch_pattern_counts(strict_aug, "strict_phase_label")
-    pattern_path = output / "fes_step05_branch_pattern_counts.csv"
-    pattern_counts.to_csv(pattern_path, index=False, encoding="utf-8-sig")
-
-    dense_n = 501 if config.test_mode else config.dense_path_points
-    dense_path, path_summary = dense_anchor_path(anchors, dense_n)
-    dense_path_path = output / "fes_step05_anchor_path_analytic_dense.csv"
-    dense_path.to_csv(dense_path_path, index=False, encoding="utf-8-sig")
-    plot_dense_path(dense_path, output / "fes_step05_anchor_path_analytic.png")
-
-    n_top = len(topological)
-    n_cert = int(topological.get("conditional_no_go_certificate", pd.Series(dtype=int)).sum())
-    n_switch = int(topological.get("Bplus_partner_switch", pd.Series(dtype=int)).sum())
-    n_strict_ti = int((strict_aug["strict_phase_label"] == "spin_chern_TI_candidate").sum())
-
-    reliable_mask = (
-        pd.to_numeric(strict_aug.get("verified_chern_reliable"), errors="coerce") == 1
-    ) & pd.to_numeric(strict_aug.get("verified_chern_up_int"), errors="coerce").notna()
-    reliable = strict_aug[reliable_mask].copy()
-    if len(reliable):
-        actual_top = pd.to_numeric(reliable["verified_chern_up_int"], errors="coerce").abs() > 0
-        predicted_top = pd.to_numeric(reliable["mass_product"], errors="coerce") > 0
-        mass_accuracy = float((actual_top.to_numpy() == predicted_top.to_numpy()).mean())
-        mass_false_positive = int((~actual_top & predicted_top).sum())
-        mass_false_negative = int((actual_top & ~predicted_top).sum())
-    else:
-        mass_accuracy = None
-        mass_false_positive = 0
-        mass_false_negative = 0
-
-    summary = {
-        "code_version": CODE_VERSION,
-        "step04_total_coarse_points": int(len(coarse)),
-        "step04_coarse_TI_candidates": int((coarse["phase_label"] == "spin_chern_TI_candidate").sum()),
-        "strict_rows_after_completion": int(len(strict_complete)),
-        "strict_spin_chern_TI_candidates": n_strict_ti,
-        "strict_topological_points": n_top,
-        "topological_Bplus_partner_switch_count": n_switch,
-        "topological_conditional_no_go_certificate_count": n_cert,
-        "topological_certificate_fraction": float(n_cert / n_top) if n_top else None,
-        "reliable_chern_rows_for_mass_test": int(len(reliable)),
-        "mass_same_sign_topology_accuracy": mass_accuracy,
-        "mass_same_sign_false_positive_count": mass_false_positive,
-        "mass_same_sign_false_negative_count": mass_false_negative,
-        "candidate_topology_rule": "|C_up|=1 iff mass_Gamma*mass_M>0 (empirically tested, not yet analytically proven)",
-        "max_verified_topological_indirect_gap": (
-            float(pd.to_numeric(topological["verified_indirect_gap"], errors="coerce").max())
-            if n_top and "verified_indirect_gap" in topological else None
-        ),
-        "max_abs_Gamma_eigenvalue_validation_error": (
-            float(validation["max_abs_error_Gamma"].max()) if len(validation) else None
-        ),
-        "max_abs_M_eigenvalue_validation_error": (
-            float(validation["max_abs_error_M"].max()) if len(validation) else None
-        ),
-        "max_Bplus_identity_error": (
-            float(np.nanmax(np.abs(pd.to_numeric(strict_aug["Bplus_identity_error"], errors="coerce"))))
-            if len(strict_aug) else None
-        ),
-        "max_topological_gamma_M_exactness_error": (
-            float(np.nanmax(np.abs(pd.to_numeric(topological["gamma_M_exactness_error"], errors="coerce"))))
-            if n_top else None
-        ),
-        "conditional_no_go_statement": (
-            "Within the half-filled branch regime where B+ exchanges occupied/unoccupied rank "
-            "between Gamma and M, E_ind <= -4|r1^2-r2^2|/(B1+B2) <= 0."
-        ),
-        "scope_warning": (
-            "This is an exact conditional statement for the detected branch ordering. "
-            "A complete model-wide theorem additionally requires proving that every nonzero-spin-Chern "
-            "phase of the six-parameter Hamiltonian necessarily has this branch ordering."
-        ),
-        "dense_anchor_path": path_summary,
-    }
-
-    summary_path = output / "fes_step05_no_go_summary.json"
-    summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    report_lines = [
-        "FES Step 05 analytic no-go audit",
-        "=" * 72,
-        f"Strict topological points: {n_top}",
-        f"B+ partner-switching points: {n_switch}/{n_top}",
-        f"Conditional no-go certificates: {n_cert}/{n_top}",
-        f"Strict spin-Chern TI candidates: {n_strict_ti}",
-        f"Best verified topological indirect gap: {summary['max_verified_topological_indirect_gap']}",
-        "",
-        "Candidate topology rule from strict data:",
-        f"  |C_up|=1 iff mu_Gamma*mu_M>0 accuracy: {mass_accuracy}",
-        f"  false positives / false negatives: {mass_false_positive} / {mass_false_negative}",
-        "",
-        "Exact conditional result:",
-        "  If B+ exchanges occupied/unoccupied rank between Gamma and M,",
-        "  E_ind <= -|B1-B2| = -4|r1^2-r2^2|/(B1+B2) <= 0.",
-        "",
-        "Logical status:",
-        "  - Gamma/M eigenvalue formulas: exact.",
-        "  - B1-B2 rationalization: exact.",
-        "  - No-go under B+ partner switching: exact.",
-        "  - All currently verified topological points satisfying partner switching: numerical evidence.",
-        "  - Model-wide no-go theorem: requires a separate proof that nonzero Chern always implies this ordering.",
-    ]
-    (output / "fes_step05_no_go_report.txt").write_text("\n".join(report_lines), encoding="utf-8")
-
-    return {
-        "output_dir": output,
-        "summary": summary_path,
-        "validation": validation_path,
-        "strict_audit": strict_aug_path,
-        "topological_certificates": topological_path,
-        "dense_path": dense_path_path,
-        "report": output / "fes_step05_no_go_report.txt",
-    }
-
-
-# =============================================================================
-# 8. CLI
-# =============================================================================
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--step04-input", default="outputs_fes6_step04_boundary.zip")
-    parser.add_argument("--output-dir", default="outputs_fes6_step05_no_go")
-    parser.add_argument("--workers", type=int, default=max(1, min(4, os.cpu_count() or 1)))
-    parser.add_argument("--validation-samples", type=int, default=128)
-    parser.add_argument("--dense-path-points", type=int, default=5001)
-    parser.add_argument("--reverify-all-coarse-ti", action="store_true")
-    parser.add_argument("--overwrite", action="store_true")
-    parser.add_argument("--resume", action="store_true")
-    parser.add_argument("--test", action="store_true")
-    return parser.parse_args()
-
-
-def main() -> None:
-    args = parse_args()
-    if args.overwrite and args.resume:
-        raise ValueError("--overwrite 与 --resume 不能同时使用")
-
-    if args.test:
-        config = NoGoConfig(
-            step04_input=args.step04_input,
-            output_dir=args.output_dir,
-            workers=1,
-            validation_samples=16,
-            dense_path_points=501,
-            verify_gap_grids=(17, 21),
-            verify_gap_shifts=((0.0, 0.0), (0.5, 0.5)),
-            verify_chern_grids=(11, 15),
-            verify_chern_shifts=((0.0, 0.0),),
-            reverify_all_coarse_ti=False,
-            overwrite=bool(args.overwrite),
-            resume=bool(args.resume),
-            test_mode=True,
-        )
-    else:
-        config = NoGoConfig(
-            step04_input=args.step04_input,
-            output_dir=args.output_dir,
-            workers=max(1, args.workers),
-            validation_samples=max(1, args.validation_samples),
-            dense_path_points=max(101, args.dense_path_points),
-            reverify_all_coarse_ti=bool(args.reverify_all_coarse_ti),
-            overwrite=bool(args.overwrite),
-            resume=bool(args.resume),
-            test_mode=False,
-        )
-
-    print("=" * 78)
-    print("FES Step 05: analytic Gamma/M no-go audit")
-    print("Version:", CODE_VERSION)
-    print("Core   :", getattr(core, "CODE_VERSION", "unknown"))
-    print("Input  :", Path(config.step04_input).resolve())
-    print("Output :", Path(config.output_dir).resolve())
-    print("=" * 78)
-
-    paths = run_pipeline(config)
-    print(json.dumps({key: str(value) for key, value in paths.items()}, ensure_ascii=False, indent=2))
+def main() -> int:
+    args = build_arg_parser().parse_args()
+    config = config_from_args(args)
+    run_step04(config)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

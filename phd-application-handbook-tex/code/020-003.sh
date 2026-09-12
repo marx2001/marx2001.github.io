@@ -1,4 +1,3 @@
-
 magnetization (x)
 
 # of ion       s       p       d       tot

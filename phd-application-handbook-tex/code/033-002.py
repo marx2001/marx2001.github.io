@@ -1,4 +1,3 @@
-
 # v1.8 code
 from pythtb import tb_model 
 

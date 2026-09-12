@@ -2072,7 +2072,7 @@ subroutine Berry_curvature_slab
       !
       ! 注释：
       !
-      !          目前，您必须在kpoints中定义想要的k路径
+      !          目前，必须在kpoints中定义想要的k路径
       !
       ! 作者：QuanSheng Wu (wuquansheng@gmail.com)
       !

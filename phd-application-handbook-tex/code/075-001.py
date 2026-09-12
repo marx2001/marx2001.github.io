@@ -1,21 +1,25 @@
-from twist2d import *
+import numpy as np
 
-twist_demo = Twist2D()
+# 系数矩阵 A
+A = np.array([
+    [18, 18, 18, 1],
+    [-6, -6, 18, 1],
+    [-6, 2, 2, 1],
+    [-2, -6, 2, 1]
+])
 
-m = 6
-n = 7
+# 从用户输入右端向量 b
+print("请输入右端常数向量 b 的4个数（以空格分隔，例如：1 2 3 4）:")
+b = np.array(list(map(float, input().split())))
 
-super_a1_mult = [m, n]
-super_a2_mult = [-n, m+n]
-twist_demo.add_layer(super_a1_mult, super_a2_mult, layer_dis=3, prim_poscar="POSCAR")
+# 检查维度是否正确
+if len(b) != 4:
+    raise ValueError("必须输入4个数！")
 
-super_a1_mult = [n, m]
-super_a2_mult = [-m, n+m]
-twist_demo.add_layer(super_a1_mult, super_a2_mult, prim_poscar="POSCAR")
+# 求解线性方程组 Ax = b
+x = np.linalg.solve(A, b)
 
-twist_demo.twist_layers(start_z=0.1)
-
-twist_demo.write_res_to_poscar()
-
-twisted_angles = twist_demo.calc_layers_twist_angles()
-print(twisted_angles)
+# 输出结果
+print("\n方程组的解为：")
+for i, val in enumerate(x, start=1):
+    print(f"x{i} = {val:.6f}")

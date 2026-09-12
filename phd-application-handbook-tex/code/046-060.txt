@@ -1,3 +1,1 @@
-超过 80 行的代码块：
-正文中只显示前 30 行；
-完整代码自动放入 Appendix: Source Codes。
+gamma = 60°

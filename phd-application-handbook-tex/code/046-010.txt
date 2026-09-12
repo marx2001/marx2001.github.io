@@ -1,2 +1,1 @@
-只要 pdf_tex_edits/ 中存在与 converted/ 同名的 .tex 文件，
-最终 PDF 就优先使用 pdf_tex_edits/ 中的手动版本。
+Build → Build Crystal...

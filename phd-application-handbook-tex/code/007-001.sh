@@ -1,4 +1,3 @@
-
 SYSTEM = MOPTSNS
 LREAL= Auto
 ALGO= Fast 

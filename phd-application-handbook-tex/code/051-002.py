@@ -1,1603 +1,1984 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Step 19: main-text package with four non-trivial edge/Hall examples.
+
+The main-text selection is intentionally compact:
+
+    (a) Lieb, C_s = +1
+    (b) FES,  C_s = +1
+    (c) TTS,  C_s = +1
+    (d) TTS,  C_s = +2
+
+Critical and trivial examples from Step 18 remain available as supplementary
+material and are not repeated here.  Each main-text case contains a
+WannierTools-style semi-infinite edge spectral function, spin-resolved Hall
+conductivity, bulk-band data, the exact parameter vector and validation
+metadata.  Plot colors are inherited from the phase-map palettes in Step 18.
+"""
+
 from __future__ import annotations
 
-"""
-TTS Step11M — Lieb-aligned fixed-slice mechanism closure
-=========================================================
-
-This stage deliberately keeps the five background parameters
-
-    (m_e, t1, t2, r1, r2)
-
-fixed, exactly as a representative reduced-parameter phase diagram should do.
-
-The workflow follows the same logic used in the Lieb study:
-1. reduce the topology problem to a physically interpretable two-parameter plane;
-2. complete and certify the phase boundaries in that plane;
-3. define signed local mass coordinates from those certified boundaries;
-4. validate the mass-sign rule with spatially blocked holdout tests;
-5. resolve the only remaining local junction by strict Chern mapping and
-   selected multi-closure edge certificates.
-
-It does NOT claim a universal seven-dimensional mass formula.
-"""
-
-import json
-import math
-import zipfile
-from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
+import argparse
+import base64
+import json
+import re
+import struct
+import time
 
 import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap, to_rgb
+from matplotlib.lines import Line2D
+from matplotlib.patches import Rectangle
+from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 import numpy as np
 import pandas as pd
-from matplotlib.colors import BoundaryNorm, ListedColormap
-from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score
 
-import TTS_step09M_minus2_local_kp_refinement as base
-import TTS_step09M_minus2_linear_signed_v2 as linear_v2
-import TTS_step09M_D_multiclosure_path_atlas as step09d
-import TTS_step10M_generic_four_valley_boundary_atlas as step10
+import TTS_step18_three_system_wanniertools_style_edge_ahc_examples as core
 
 
-CODE_VERSION = "TTS_STEP11M_LIEB_ALIGNED_FIXED_SLICE_V1_20260724"
-REDUCED7 = list(base.REDUCED7)
-FIXED5 = ["m_e", "t1", "t2", "r1", "r2"]
-PHASE_CODES = {-2, -1, 0, 1, 2}
-
-PHASE_ORDER = [-2, -1, 0, 1, 2, 99]
-PHASE_COLORS = {
-    2: (242/255, 142/255, 139/255),
-    1: (127/255, 203/255, 161/255),
-    0: (178/255, 178/255, 178/255),
-    -1: (138/255, 163/255, 205/255),
-    -2: (63/255, 99/255, 173/255),
-    99: (1.0, 1.0, 1.0),
+CODE_VERSION = "TTS_STEP19_MAINTEXT_FOUR_TOPOLOGICAL_V1_20260730"
+DEFAULT_OUTPUT = (
+    core.DEFAULT_OUTPUT / "main_text_four_topological"
+)
+CASE_ORDER = (
+    "a_lieb_Cs_plus1",
+    "b_fes_Cs_plus1",
+    "c_tts_Cs_plus1",
+    "d_tts_Cs_plus2",
+)
+PANEL_LABEL = {
+    "a_lieb_Cs_plus1": "(a)",
+    "b_fes_Cs_plus1": "(b)",
+    "c_tts_Cs_plus1": "(c)",
+    "d_tts_Cs_plus2": "(d)",
+}
+DISPLAY_TITLE = {
+    "a_lieb_Cs_plus1": r"Lieb:  $C_s=+1$",
+    "b_fes_Cs_plus1": r"FES:  $C_s=+1$",
+    "c_tts_Cs_plus1": r"TTS:  $C_s=+1$",
+    "d_tts_Cs_plus2": r"TTS:  $C_s=+2$",
 }
 
 
-@dataclass
-class Step11Config:
-    output_dir: Path
-
-    # Left-lower branch completion.
-    left_bridge_target_count: int = 2
-    left_bridge_min_gap_in_r3: float = 0.020
-    bridge_normal_half_width: float = 0.030
-
-    # Right-upper junction strict map.
-    junction_r3_range: tuple[float, float] = (0.052, 0.068)
-    junction_r4_range: tuple[float, float] = (0.116, 0.140)
-    junction_grid_n: int = 7
-    junction_max_edge_certificates: int = 3
-
-    # Strict physics.
-    strict_gap_grids: tuple[int, ...] = (71, 101)
-    strict_chern_grids: tuple[int, ...] = (61, 81, 101)
-    strict_chern_shifts: tuple[tuple[float, float], ...] = (
-        (0.0, 0.0),
-        (0.5, 0.5),
+def configure_step19_plot_style() -> None:
+    """Times New Roman throughout, with bold italic/roman math preserved."""
+    core.configure_plot_style()
+    plt.rcParams.update(
+        {
+            "font.family": "Times New Roman",
+            "font.weight": "bold",
+            "axes.labelweight": "bold",
+            "axes.titleweight": "bold",
+            "mathtext.fontset": "custom",
+            "mathtext.rm": "Times New Roman:bold",
+            "mathtext.it": "Times New Roman:italic:bold",
+            "mathtext.bf": "Times New Roman:bold",
+            "mathtext.sf": "Times New Roman:bold",
+            "mathtext.tt": "Times New Roman:bold",
+            "mathtext.fallback": "stix",
+            "svg.fonttype": "none",
+            "axes.unicode_minus": True,
+        }
     )
 
-    # Local mass-coordinate validation.
-    local_mass_band_half_width: float = 0.045
-    boundary_exclusion_width: float = 0.004
-    spatial_folds: int = 4
 
-    quick: bool = False
-    random_seed: int = 20260724
+def save_figure_inkscape_safe(
+    fig: plt.Figure,
+    stem: Path,
+    dpi: int,
+    primary_svg_editable: bool = False,
+) -> list[str]:
+    """Save a complete SVG plus a separately editable Matplotlib SVG.
 
-    def normalized(self) -> "Step11Config":
-        self.output_dir = Path(self.output_dir).expanduser().resolve()
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        (self.output_dir / "bridge_points").mkdir(exist_ok=True)
-        (self.output_dir / "junction_points").mkdir(exist_ok=True)
-        (self.output_dir / "junction_edges").mkdir(exist_ok=True)
-        (self.output_dir / "figures").mkdir(exist_ok=True)
-        (self.output_dir / "_strict_core").mkdir(exist_ok=True)
-        (self.output_dir / "_search_core").mkdir(exist_ok=True)
-        if self.junction_grid_n < 3:
-            raise ValueError("junction_grid_n must be >= 3")
-        if self.spatial_folds < 2:
-            raise ValueError("spatial_folds must be >= 2")
-        return self
-
-
-# -----------------------------------------------------------------------------
-# Generic archive I/O
-# -----------------------------------------------------------------------------
-
-
-def read_csv_token(source: str | Path, token: str) -> pd.DataFrame:
-    source = Path(source).expanduser().resolve()
-    if source.is_file() and source.suffix.lower() == ".zip":
-        with zipfile.ZipFile(source) as archive:
-            matches = [
-                name for name in archive.namelist()
-                if token in Path(name).name or token in name
-            ]
-            matches = [name for name in matches if name.lower().endswith(".csv")]
-            if not matches:
-                raise FileNotFoundError(f"No CSV containing {token!r} in {source}")
-            selected = sorted(matches, key=lambda x: (len(Path(x).parts), len(x)))[0]
-            with archive.open(selected) as stream:
-                return pd.read_csv(stream, low_memory=False)
-    if source.is_dir():
-        matches = sorted(source.rglob(f"*{token}*"))
-        if not matches:
-            raise FileNotFoundError(token)
-        return pd.read_csv(matches[0], low_memory=False)
-    raise FileNotFoundError(source)
-
-
-def read_json_token(source: str | Path, token: str) -> dict[str, Any]:
-    source = Path(source).expanduser().resolve()
-    if source.is_file() and source.suffix.lower() == ".zip":
-        with zipfile.ZipFile(source) as archive:
-            matches = [
-                name for name in archive.namelist()
-                if token in Path(name).name or token in name
-            ]
-            matches = [name for name in matches if name.lower().endswith(".json")]
-            if not matches:
-                raise FileNotFoundError(f"No JSON containing {token!r} in {source}")
-            selected = sorted(matches, key=lambda x: (len(Path(x).parts), len(x)))[0]
-            with archive.open(selected) as stream:
-                return json.load(stream)
-    if source.is_dir():
-        matches = sorted(source.rglob(f"*{token}*"))
-        if not matches:
-            raise FileNotFoundError(token)
-        return json.loads(matches[0].read_text(encoding="utf-8"))
-    raise FileNotFoundError(source)
-
-
-def phase_code(row: pd.Series | dict[str, Any]) -> int:
-    if isinstance(row, dict):
-        get = row.get
-    else:
-        get = row.get
-    value = get("paper_phase_code", np.nan)
-    if pd.notna(value):
-        value = int(value)
-        return value if value in PHASE_CODES else 99
-    label = str(get("phase_label", ""))
-    cup = get("chern_up_int", np.nan)
-    if label in {"spin_chern_TI_candidate", "trivial_insulator"} and pd.notna(cup):
-        cup = int(cup)
-        return cup if cup in PHASE_CODES else 99
-    return 99
-
-
-# -----------------------------------------------------------------------------
-# Fixed-background and branch models
-# -----------------------------------------------------------------------------
-
-
-def load_step10_tables(step10_source: str | Path) -> dict[str, pd.DataFrame]:
-    return {
-        "points": read_csv_token(
-            step10_source,
-            "step10M_03_certified_generic_boundary_points.csv",
-        ),
-        "fits": read_csv_token(
-            step10_source,
-            "step10M_13_generic_boundary_curve_fits.csv",
-        ),
-        "mass_atlas": read_csv_token(
-            step10_source,
-            "step10M_14_generic_branch_mass_atlas.csv",
-        ),
+    Some Inkscape builds intermittently omit one or more of Matplotlib's
+    embedded raster layers when a figure contains several surface-spectrum
+    images and inset colour bars.  The primary SVG therefore contains one
+    flattened, self-contained PNG layer and also carries a relative-file
+    fallback for older Inkscape versions.  The companion ``*_editable.svg``
+    retains vector text, axes, and bulk-band curves.
+    """
+    stem.parent.mkdir(parents=True, exist_ok=True)
+    png_path = stem.with_suffix(".png")
+    pdf_path = stem.with_suffix(".pdf")
+    svg_path = stem.with_suffix(".svg")
+    editable_svg_path = stem.with_name(stem.name + "_editable").with_suffix(
+        ".svg"
+    )
+    save_kwargs = {
+        "dpi": dpi,
+        "bbox_inches": "tight",
+        "pad_inches": 0.04,
+        "facecolor": "white",
     }
+    fig.savefig(png_path, **save_kwargs)
+    fig.savefig(pdf_path, **save_kwargs)
+    fig.savefig(editable_svg_path, **save_kwargs)
 
-
-def validate_fixed_background(points: pd.DataFrame, tolerance: float = 1.0e-10) -> dict[str, float]:
-    background = {}
-    for name in FIXED5:
-        values = points[name].to_numpy(float)
-        spread = float(np.max(values) - np.min(values))
-        if spread > tolerance:
-            raise RuntimeError(
-                f"Step10 points do not belong to one fixed slice: "
-                f"{name} spread={spread:.3e}"
-            )
-        background[name] = float(np.mean(values))
-    return background
-
-
-def fit_row_for_branch(fits: pd.DataFrame, branch: str) -> pd.Series:
-    selected = fits[
-        fits["branch_hint"].astype(str).eq(branch)
-        & fits["fit_available"].astype(int).eq(1)
+    if primary_svg_editable:
+        fig.savefig(svg_path, **save_kwargs)
+        make_svg_raster_layers_inkscape_compatible(svg_path)
+    else:
+        png_bytes = png_path.read_bytes()
+        if png_bytes[:8] != b"\x89PNG\r\n\x1a\n":
+            raise RuntimeError(f"Unexpected PNG header: {png_path}")
+        width, height = struct.unpack(">II", png_bytes[16:24])
+        encoded = base64.b64encode(png_bytes).decode("ascii")
+        absolute_png = str(png_path.resolve()).replace("\\", "/")
+        svg_text = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n'
+            '<svg xmlns="http://www.w3.org/2000/svg"\n'
+            '     xmlns:xlink="http://www.w3.org/1999/xlink"\n'
+            '     xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/'
+            'sodipodi-0.dtd"\n'
+            f'     width="{width}" height="{height}" '
+            f'viewBox="0 0 {width} {height}">\n'
+            '  <title>Inkscape-compatible complete figure</title>\n'
+            f'  <image x="0" y="0" width="{width}" height="{height}"\n'
+            '         preserveAspectRatio="xMidYMid meet"\n'
+            f'         href="data:image/png;base64,{encoded}"\n'
+            f'         xlink:href="{png_path.name}"\n'
+            f'         sodipodi:absref="{absolute_png}"/>\n'
+            '</svg>\n'
+        )
+        svg_path.write_text(svg_text, encoding="utf-8")
+    plt.close(fig)
+    return [
+        str(png_path),
+        str(pdf_path),
+        str(svg_path),
+        str(editable_svg_path),
     ]
-    if len(selected) != 1:
-        raise RuntimeError(f"Expected one available fit for {branch}, found {len(selected)}")
-    return selected.iloc[0]
 
 
-def polynomial_value(fit: pd.Series, x: float | np.ndarray) -> float | np.ndarray:
-    return (
-        float(fit["coefficient_2"]) * np.asarray(x) ** 2
-        + float(fit["coefficient_1"]) * np.asarray(x)
-        + float(fit["coefficient_0"])
+def make_svg_raster_layers_inkscape_compatible(svg_path: Path) -> list[Path]:
+    """Give each scientific raster layer an external fallback for Inkscape."""
+    svg_text = svg_path.read_text(encoding="utf-8")
+    pattern = re.compile(
+        r'xlink:href="data:image/png;base64,\s*([^"]+)"',
+        flags=re.DOTALL,
+    )
+    layer_paths: list[Path] = []
+    layer_index = 0
+
+    def replace_layer(match: re.Match[str]) -> str:
+        nonlocal layer_index
+        layer_index += 1
+        encoded = re.sub(r"\s+", "", match.group(1))
+        layer_path = svg_path.with_name(
+            f"{svg_path.stem}_raster_layer_{layer_index:02d}.png"
+        )
+        layer_path.write_bytes(base64.b64decode(encoded))
+        layer_paths.append(layer_path)
+        return (
+            f'href="data:image/png;base64,{encoded}" '
+            f'xlink:href="{layer_path.name}"'
+        )
+
+    updated = pattern.sub(replace_layer, svg_text)
+    if layer_index == 0:
+        raise RuntimeError(f"No raster layer found in editable SVG: {svg_path}")
+    # Keep STIXGeneral on MathText accent/symbol glyphs.  Matplotlib encodes the
+    # overbar and parallel sign as STIX private-use glyphs; changing their font
+    # family makes Inkscape display a circled stroke or a short minus instead.
+    svg_path.write_text(updated, encoding="utf-8")
+    return layer_paths
+
+
+def save_editable_svg_only(
+    fig: plt.Figure,
+    svg_path: Path,
+    dpi: int,
+) -> list[str]:
+    """Update only one editable SVG, leaving PNG/PDF/other figures untouched."""
+    svg_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(
+        svg_path,
+        dpi=dpi,
+        bbox_inches="tight",
+        pad_inches=0.04,
+        facecolor="white",
+    )
+    make_svg_raster_layers_inkscape_compatible(svg_path)
+    plt.close(fig)
+    return [str(svg_path)]
+
+
+def clean_params(values: dict[str, float], names: tuple[str, ...]) -> dict[str, float]:
+    return {name: float(values[name]) for name in names}
+
+
+def select_lieb_main(lieb: Any) -> core.SelectedState:
+    master_path = (
+        core.LIEB_ROOT
+        / "outputs_step08_analytic_boundary_wanniertools_edge_msg123342_lieb8_from_step06_n1024_pairs4_seed20260711"
+        / "step08_01_analytic_feature_master.csv"
+    )
+    master = pd.read_csv(master_path)
+    candidates = master[
+        (pd.to_numeric(master["chern_reliable"], errors="coerce") == 1)
+        & (pd.to_numeric(master["gap_convergence_ok"], errors="coerce") == 1)
+        & (pd.to_numeric(master["chern_up_int"], errors="coerce") == 1)
+        & (pd.to_numeric(master["final_indirect_gap"], errors="coerce") > 0)
+    ].copy()
+    if candidates.empty:
+        raise RuntimeError("No reliable insulating Lieb C_s=+1 candidate")
+    # The largest-gap candidate (about 1.88 eV) makes the bulk/edge panel look
+    # artificially empty.  Select a clean, converged intermediate-gap example
+    # close to the roughly 0.5 eV gap scale in the user's reference figure.
+    target_gap = 0.50
+    candidates["display_gap_score"] = (
+        (
+            pd.to_numeric(candidates["final_indirect_gap"], errors="coerce")
+            - target_gap
+        ).abs()
+        + 0.25
+        * (
+            pd.to_numeric(candidates["final_direct_gap"], errors="coerce")
+            - pd.to_numeric(
+                candidates["final_indirect_gap"], errors="coerce"
+            )
+        ).abs()
+    )
+    row = candidates.sort_values(
+        ["display_gap_score", "final_direct_gap"],
+        ascending=[True, False],
+    ).iloc[0]
+    physical = [float(row[name]) for name in lieb.PHYS7]
+    params = clean_params(lieb.phys7_to_raw8(physical), tuple(lieb.RAW8))
+    return core.SelectedState(
+        system="lieb",
+        state="topological",
+        source_id=str(row["sample_id"]),
+        path_id="lieb_step08_intermediate_gap_Cs_plus1_near_0p5eV",
+        params=params,
+        expected_chern_up=1,
+        expected_chern_down=-1,
+        critical_kx=float(row["refined_direct_kx"]),
+        critical_ky=float(row["refined_direct_ky"]),
+        selection_note=(
+            "Reliable converged Lieb C_s=+1 insulator selected near a 0.5 eV "
+            "indirect gap for visual comparability with the reference panel; "
+            "the previous maximum-gap example was intentionally not used."
+        ),
     )
 
 
-def polynomial_derivative(fit: pd.Series, x: float) -> float:
-    return 2.0 * float(fit["coefficient_2"]) * float(x) + float(fit["coefficient_1"])
-
-
-def branch_mass_vector(mass_atlas: pd.DataFrame, branch: str) -> np.ndarray:
-    group = (
-        mass_atlas[mass_atlas["branch_hint"].astype(str).eq(branch)]
-        .set_index("parameter")
-        .reindex(REDUCED7)
+def select_fes_main(fes: Any) -> core.SelectedState:
+    strict_path = (
+        core.FES_ROOT
+        / "outputs_fes6_step04_boundary"
+        / "fes_step04_strict_verified_results.csv"
     )
-    vector = group["mean_normalized_mass_gradient"].to_numpy(float)
-    vector /= max(float(np.linalg.norm(vector)), 1.0e-15)
-    return vector
-
-
-def signed_mass_definition(
-    fits: pd.DataFrame,
-    mass_atlas: pd.DataFrame,
-    branch: str,
-) -> dict[str, Any]:
-    fit = fit_row_for_branch(fits, branch)
-    vector = branch_mass_vector(mass_atlas, branch)
-    independent = str(fit["independent_parameter"])
-    dependent = str(fit["dependent_parameter"])
-
-    x_mid = 0.5 * (float(fit["x_min"]) + float(fit["x_max"]))
-    derivative = polynomial_derivative(fit, x_mid)
-
-    if independent == "r3" and dependent == "r4":
-        # F = r4 - f(r3)
-        raw_gradient = np.array([-derivative, 1.0], dtype=float)
-        raw_expression = (
-            f"r4 - ({float(fit['coefficient_2']):+.10g}*r3^2 "
-            f"{float(fit['coefficient_1']):+.10g}*r3 "
-            f"{float(fit['coefficient_0']):+.10g})"
-        )
-    elif independent == "r4" and dependent == "r3":
-        # F = r3 - f(r4)
-        raw_gradient = np.array([1.0, -derivative], dtype=float)
-        raw_expression = (
-            f"r3 - ({float(fit['coefficient_2']):+.10g}*r4^2 "
-            f"{float(fit['coefficient_1']):+.10g}*r4 "
-            f"{float(fit['coefficient_0']):+.10g})"
-        )
-    else:
-        raise RuntimeError(
-            f"Unsupported branch fit coordinates: {independent}->{dependent}"
-        )
-
-    plane_mass = vector[-2:]
-    orientation = 1.0 if float(np.dot(raw_gradient, plane_mass)) >= 0 else -1.0
-    return {
-        "branch_hint": branch,
-        "independent_parameter": independent,
-        "dependent_parameter": dependent,
-        "selected_degree": int(fit["selected_degree"]),
-        "coefficient_2": float(fit["coefficient_2"]),
-        "coefficient_1": float(fit["coefficient_1"]),
-        "coefficient_0": float(fit["coefficient_0"]),
-        "x_min": float(fit["x_min"]),
-        "x_max": float(fit["x_max"]),
-        "orientation": float(orientation),
-        "formula": f"{orientation:+.0f} * [{raw_expression}]",
-        "mass_gradient_plane_r3": float(plane_mass[0]),
-        "mass_gradient_plane_r4": float(plane_mass[1]),
+    strict = pd.read_csv(strict_path)
+    candidates = strict[
+        (pd.to_numeric(strict["verified_chern_reliable"], errors="coerce") == 1)
+        & (pd.to_numeric(strict["verified_chern_up_int"], errors="coerce") == 1)
+    ].copy()
+    if candidates.empty:
+        raise RuntimeError("No reliable FES C_s=+1 candidate")
+    row = candidates.sort_values(
+        ["verified_min_direct_gap", "verified_indirect_gap"],
+        ascending=False,
+    ).iloc[0]
+    reduced = {
+        name: float(row[name])
+        for name in ("m_e", "t1", "t2", "r1", "r2")
     }
-
-
-def evaluate_signed_mass(definition: dict[str, Any], frame: pd.DataFrame) -> np.ndarray:
-    a2 = float(definition["coefficient_2"])
-    a1 = float(definition["coefficient_1"])
-    a0 = float(definition["coefficient_0"])
-    orientation = float(definition["orientation"])
-    if definition["independent_parameter"] == "r3":
-        raw = frame["r4"].to_numpy(float) - (
-            a2 * frame["r3"].to_numpy(float) ** 2
-            + a1 * frame["r3"].to_numpy(float)
-            + a0
-        )
-    else:
-        raw = frame["r3"].to_numpy(float) - (
-            a2 * frame["r4"].to_numpy(float) ** 2
-            + a1 * frame["r4"].to_numpy(float)
-            + a0
-        )
-    return orientation * raw
-
-
-# -----------------------------------------------------------------------------
-# Left-lower branch completion
-# -----------------------------------------------------------------------------
-
-
-def prepare_left_bridge_targets(
-    points: pd.DataFrame,
-    fits: pd.DataFrame,
-    *,
-    target_count: int,
-    minimum_gap: float,
-) -> pd.DataFrame:
-    branch = "generic_left_lower"
-    group = (
-        points[points["branch_hint"].astype(str).eq(branch)]
-        .sort_values("r3")
-        .reset_index(drop=True)
+    params = clean_params(fes.raw6_from_reduced5(reduced), tuple(fes.RAW6))
+    return core.SelectedState(
+        system="fes",
+        state="topological",
+        source_id=str(row["point_id"]),
+        path_id="fes_step04_largest_verified_direct_gap_Cs_plus1",
+        params=params,
+        expected_chern_up=1,
+        expected_chern_down=-1,
+        critical_kx=float(row["verified_direct_gap_kx"]),
+        critical_ky=float(row["verified_direct_gap_ky"]),
+        selection_note=(
+            "Largest verified direct gap among reliable FES C_s=+1 samples. "
+            "Its negative indirect gap makes it a spin-Chern band metal, not "
+            "a globally insulating quantized Hall plateau."
+        ),
     )
-    fit = fit_row_for_branch(fits, branch)
-    gaps = []
-    for i in range(len(group) - 1):
-        left = float(group.iloc[i]["r3"])
-        right = float(group.iloc[i + 1]["r3"])
-        gap = right - left
-        if gap >= float(minimum_gap):
-            gaps.append((gap, left, right))
-    gaps.sort(reverse=True)
 
-    target_values: list[float] = []
-    for gap, left, right in gaps:
-        remaining = max(1, int(round(gap / max(minimum_gap, 1.0e-6))) - 1)
-        count = min(remaining, target_count - len(target_values))
-        if count <= 0:
-            break
-        target_values.extend(
-            np.linspace(left, right, count + 2, dtype=float)[1:-1].tolist()
+
+def select_tts_main(tts: Any, chern_up: int) -> core.SelectedState:
+    representatives_path = (
+        core.TTS_ROOT
+        / "outputs_tts_step07_observable_validation"
+        / "step07_01_selected_observable_representatives.csv"
+    )
+    representatives = pd.read_csv(representatives_path)
+    candidates = representatives[
+        pd.to_numeric(
+            representatives["expected_chern_up"], errors="coerce"
+        ) == int(chern_up)
+    ]
+    if candidates.empty:
+        raise RuntimeError(f"No TTS C_s={chern_up:+d} representative")
+    row = candidates.sort_values(
+        ["indirect_gap", "min_direct_gap"],
+        ascending=False,
+    ).iloc[0]
+    reduced = {
+        name: float(row[name])
+        for name in tts.REDUCED7
+    }
+    params = clean_params(tts.raw8_from_reduced7(reduced), tuple(tts.RAW8))
+    return core.SelectedState(
+        system="tts",
+        state="topological",
+        source_id=str(row["sample_id"]),
+        path_id=f"tts_step07_largest_strict_indirect_gap_Cs_{chern_up:+d}",
+        params=params,
+        expected_chern_up=int(chern_up),
+        expected_chern_down=-int(chern_up),
+        critical_kx=float(row["direct_gap_kx"]),
+        critical_ky=float(row["direct_gap_ky"]),
+        selection_note=str(row["selection_reason"]),
+    )
+
+
+def select_main_cases(modules: dict[str, Any]) -> list[dict[str, Any]]:
+    cases = [
+        {
+            "case_id": "a_lieb_Cs_plus1",
+            "selected": select_lieb_main(modules["lieb"]),
+        },
+        {
+            "case_id": "b_fes_Cs_plus1",
+            "selected": select_fes_main(modules["fes"]),
+        },
+        {
+            "case_id": "c_tts_Cs_plus1",
+            "selected": select_tts_main(modules["tts"], +1),
+        },
+        {
+            "case_id": "d_tts_Cs_plus2",
+            "selected": select_tts_main(modules["tts"], +2),
+        },
+    ]
+    if tuple(case["case_id"] for case in cases) != CASE_ORDER:
+        raise RuntimeError("Unexpected main-text case ordering")
+    return cases
+
+
+def choose_case_window(system: str, direct_gap: float) -> float:
+    if system == "lieb":
+        return float(np.clip(0.62 * direct_gap + 0.08, 0.55, 1.20))
+    if system == "fes":
+        return 0.10
+    return 0.60
+
+
+def classification(audit: dict[str, Any]) -> str:
+    if int(audit["is_global_insulator"]) == 1:
+        return "spin_chern_insulator"
+    if int(audit["is_direct_gapped"]) == 1:
+        return "spin_chern_band_metal"
+    return "gapless"
+
+
+def title_for(case_id: str, panel: bool = True) -> str:
+    prefix = PANEL_LABEL[case_id] + "  " if panel else ""
+    return prefix + DISPLAY_TITLE[case_id]
+
+
+def draw_surface(
+    ax: plt.Axes,
+    result: dict[str, Any],
+    specs: dict[str, core.ModelSpec],
+    title: str,
+) -> None:
+    selected = result["selected"]
+    spec = specs[selected.system]
+    rgb = core.surface_rgb(spec, selected, result["surface"])
+    ax.imshow(
+        rgb,
+        origin="lower",
+        extent=[
+            -np.pi,
+            np.pi,
+            -result["window"],
+            result["window"],
+        ],
+        aspect="auto",
+        interpolation="nearest",
+        rasterized=True,
+    )
+    ax.axhline(0.0, color=core.BLACK, lw=1.0, ls="--")
+    ax.set_xlim(-np.pi, np.pi)
+    ax.set_ylim(-result["window"], result["window"])
+    ax.set_xticks([-np.pi, 0.0, np.pi])
+    ax.set_xticklabels([r"$-\pi$", "0", r"$\pi$"])
+    ax.set_xlabel(r"$k_{\parallel}$", fontweight="bold")
+    ax.set_ylabel(
+        r"$(E-E_{\mathrm{ref}})\ \mathrm{(eV)}$",
+        fontweight="bold",
+    )
+    ax.set_title(title, fontweight="bold")
+    core.style_axis(ax)
+    # A taller-than-wide box shortens the physical horizontal axis without
+    # changing the displayed momentum interval [-pi, pi].
+    ax.set_box_aspect(1.08)
+
+
+def draw_hall(
+    ax: plt.Axes,
+    result: dict[str, Any],
+    specs: dict[str, core.ModelSpec],
+    title: str,
+    show_legend: bool,
+) -> None:
+    selected = result["selected"]
+    spec = specs[selected.system]
+    hall = result["hall"]
+    color_up, color_down = core.spin_colors(spec, selected)
+    phase = core.phase_color(spec, selected.expected_chern_up)
+    audit = result["audit"]
+    ef = float(audit["energy_reference"])
+    if int(audit["is_global_insulator"]) == 1:
+        interval_low = float(audit["vbm"]) - ef
+        interval_high = float(audit["cbm"]) - ef
+    else:
+        # FES is an indirect-overlap metal.  Highlight only its local direct
+        # gap around the reference valley; do not imply a global bulk gap.
+        half_local_gap = 0.5 * float(audit["critical_valley_gap"])
+        interval_low = -half_local_gap
+        interval_high = +half_local_gap
+    ax.axvspan(
+        interval_low,
+        interval_high,
+        color=core.lighten(phase, 0.76),
+        alpha=0.65,
+        zorder=0,
+    )
+    ax.plot(
+        hall["energy"],
+        hall["sigma_xy_up_e2_over_h"],
+        color=color_up,
+        lw=2.0,
+        label=r"$\sigma_{xy}^{\uparrow}$",
+    )
+    ax.plot(
+        hall["energy"],
+        hall["sigma_xy_down_e2_over_h"],
+        color=color_down,
+        lw=2.0,
+        label=r"$\sigma_{xy}^{\downarrow}$",
+    )
+    ax.axhline(0.0, color="#777777", lw=0.8)
+    ax.axvline(0.0, color=core.BLACK, lw=0.9, ls=":")
+    ax.set_xlim(-result["window"], result["window"])
+    ax.set_ylim(-2.35, 2.35)
+    ax.set_xlabel(r"$E-E_{\mathrm{ref}}$", fontweight="bold")
+    ax.set_ylabel(r"$\sigma_{xy}\ (e^2/h)$", fontweight="bold")
+    ax.set_title(title, fontweight="bold")
+    if show_legend:
+        ax.legend(loc="best", frameon=False, handlelength=2.0)
+    core.style_axis(ax)
+    ax.set_box_aspect(1.08)
+
+
+def plot_individual_pair(
+    result: dict[str, Any],
+    specs: dict[str, core.ModelSpec],
+    stem: Path,
+    dpi: int,
+) -> list[str]:
+    fig, axes = plt.subplots(1, 2, figsize=(5.85, 3.35))
+    case_id = result["case_id"]
+    draw_surface(axes[0], result, specs, title_for(case_id, panel=False))
+    draw_hall(axes[1], result, specs, "Spin-resolved Hall response", True)
+    fig.tight_layout(w_pad=1.25)
+    return save_figure_inkscape_safe(fig, stem, dpi)
+
+
+def plot_surface_four(
+    results: list[dict[str, Any]],
+    specs: dict[str, core.ModelSpec],
+    stem: Path,
+    dpi: int,
+) -> list[str]:
+    fig, axes = plt.subplots(2, 2, figsize=(5.85, 6.65))
+    for ax, result in zip(axes.flat, results):
+        draw_surface(
+            ax,
+            result,
+            specs,
+            title_for(result["case_id"]),
         )
-        if len(target_values) >= target_count:
-            break
+    fig.tight_layout(h_pad=1.0, w_pad=1.05)
+    return save_figure_inkscape_safe(fig, stem, dpi)
 
-    rows = []
-    for index, r3 in enumerate(sorted(target_values[:target_count])):
-        r4 = float(polynomial_value(fit, r3))
-        nearest_index = int(
-            np.argmin(
-                np.hypot(
-                    group["r3"].to_numpy(float) - r3,
-                    group["r4"].to_numpy(float) - r4,
+
+def plot_hall_four(
+    results: list[dict[str, Any]],
+    specs: dict[str, core.ModelSpec],
+    stem: Path,
+    dpi: int,
+) -> list[str]:
+    fig, axes = plt.subplots(2, 2, figsize=(5.85, 6.65), sharey=True)
+    for index, (ax, result) in enumerate(zip(axes.flat, results)):
+        draw_hall(
+            ax,
+            result,
+            specs,
+            title_for(result["case_id"]),
+            show_legend=(index == 0),
+        )
+    fig.tight_layout(h_pad=1.0, w_pad=1.05)
+    return save_figure_inkscape_safe(fig, stem, dpi)
+
+
+def principal_edge_window(result: dict[str, Any]) -> float:
+    """Return an energy window focused on the edge states near the main gap."""
+    audit = result["audit"]
+    selected = result["selected"]
+    surface_energy = np.asarray(result["surface"]["energy"], dtype=float)
+    full_window = float(np.max(np.abs(surface_energy)))
+    if selected.system in ("lieb", "tts"):
+        return min(1.5, full_window)
+    if int(audit["is_global_insulator"]) == 1:
+        ef = float(audit["energy_reference"])
+        half_gap_extent = max(
+            abs(float(audit["vbm"]) - ef),
+            abs(float(audit["cbm"]) - ef),
+        )
+        if result["selected"].system == "lieb":
+            focused = 1.25 * half_gap_extent
+        else:
+            # Include appreciable projected bulk-band background outside the
+            # topological gap while keeping the edge branches visually central.
+            focused = max(0.42, 2.05 * half_gap_extent)
+    else:
+        # The FES example is an indirect-overlap metal.  Focus on the local
+        # direct-gap neighborhood plus enough surrounding projected bulk bands.
+        focused = max(0.075, 12.0 * float(audit["critical_valley_gap"]))
+    return float(min(full_window, focused))
+
+
+def edge_spin_colors(
+    selected: core.SelectedState | None = None,
+) -> tuple[str, str]:
+    """Use a fixed red/blue convention for spin-up/spin-down edge spectra."""
+    del selected
+    return core.LIEB_FES_COLORS[+1], core.LIEB_FES_COLORS[-1]
+
+
+def edge_spin_colormap() -> LinearSegmentedColormap:
+    """WannierTools-style spin map: blue -1, white 0, red +1."""
+    color_up, color_down = edge_spin_colors()
+    return LinearSegmentedColormap.from_list(
+        "edge_spin_down_white_up",
+        [color_down, "white", color_up],
+        N=256,
+    )
+
+
+def edge_surface_rgb(
+    selected: core.SelectedState,
+    surface: dict[str, np.ndarray | float],
+) -> np.ndarray:
+    """Use the project's WannierTools-style spin-resolved spectral mixing."""
+    visible_up = np.log1p(
+        np.asarray(surface["surface_dos_up"], dtype=float)
+    )
+    visible_down = np.log1p(
+        np.asarray(surface["surface_dos_down"], dtype=float)
+    )
+    scale = max(
+        float(np.max(visible_up)),
+        float(np.max(visible_down)),
+        1.0e-14,
+    )
+    visible_up /= scale
+    visible_down /= scale
+    intensity = np.maximum(visible_up, visible_down)
+    total = np.maximum(visible_up + visible_down, 1.0e-14)
+    color_up, color_down = edge_spin_colors(selected)
+    rgb_up = np.asarray(to_rgb(color_up), dtype=float)
+    rgb_down = np.asarray(to_rgb(color_down), dtype=float)
+    mixed = (
+        visible_up[..., None] * rgb_up[None, None, :]
+        + visible_down[..., None] * rgb_down[None, None, :]
+    ) / total[..., None]
+    white = np.ones_like(mixed)
+    rgb = white * (1.0 - intensity[..., None]) + mixed * intensity[..., None]
+    return np.clip(rgb, 0.0, 1.0)
+
+
+def add_spin_colorbar(ax: plt.Axes) -> None:
+    """Add an editable vector blue-white-red spin-polarization colour bar."""
+    color_up, color_down = edge_spin_colors()
+    cmap = edge_spin_colormap()
+    cax = inset_axes(
+        ax,
+        width="3.2%",
+        height="94%",
+        loc="lower left",
+        bbox_to_anchor=(1.025, 0.03, 1.0, 1.0),
+        bbox_transform=ax.transAxes,
+        borderpad=0.0,
+    )
+    strip_count = 96
+    for index in range(strip_count):
+        y0 = index / float(strip_count)
+        y1 = (index + 1) / float(strip_count)
+        color = cmap((index + 0.5) / float(strip_count))
+        cax.add_patch(
+            Rectangle(
+                (0.0, y0),
+                1.0,
+                y1 - y0 + 1.0e-5,
+                transform=cax.transAxes,
+                facecolor=color,
+                edgecolor="none",
+                linewidth=0.0,
+            )
+        )
+    cax.set_xlim(0.0, 1.0)
+    cax.set_ylim(0.0, 1.0)
+    cax.set_xticks([])
+    cax.set_yticks([])
+    for spine in cax.spines.values():
+        spine.set_visible(True)
+        spine.set_color(core.BLACK)
+        spine.set_linewidth(1.25)
+    cax.set_ylabel(
+        r"$P_z$",
+        rotation=90,
+        labelpad=7,
+        fontweight="bold",
+    )
+    cax.yaxis.set_label_position("right")
+    cax.text(
+        1.55,
+        1.0,
+        r"$\uparrow$",
+        color=color_up,
+        ha="left",
+        va="center",
+        transform=cax.transAxes,
+        fontsize=14,
+        fontweight="bold",
+        clip_on=False,
+    )
+    cax.text(
+        1.55,
+        0.0,
+        r"$\downarrow$",
+        color=color_down,
+        ha="left",
+        va="center",
+        transform=cax.transAxes,
+        fontsize=14,
+        fontweight="bold",
+        clip_on=False,
+    )
+
+
+def draw_edge_only(
+    ax: plt.Axes,
+    result: dict[str, Any],
+    specs: dict[str, core.ModelSpec],
+    title: str,
+    show_legend: bool = True,
+) -> None:
+    selected = result["selected"]
+    spec = specs[selected.system]
+    surface = result["surface"]
+    rgb = edge_surface_rgb(selected, surface)
+    # Retain the established WannierTools-like continuum, but reduce its
+    # contrast slightly relative to the earlier 1.28 enhancement.
+    rgb = np.clip(1.0 - 1.15 * (1.0 - rgb), 0.0, 1.0)
+    full_window = float(
+        np.max(np.abs(np.asarray(surface["energy"], dtype=float)))
+    )
+    focused_window = principal_edge_window(result)
+    ax.imshow(
+        rgb,
+        origin="lower",
+        extent=[-np.pi, np.pi, -full_window, full_window],
+        aspect="auto",
+        interpolation="nearest",
+    )
+    ax.axhline(0.0, color=core.BLACK, lw=1.0, ls="--")
+    ax.set_xlim(-np.pi, np.pi)
+    ax.set_ylim(-focused_window, focused_window)
+    ax.set_xticks([-np.pi, 0.0, np.pi])
+    # The calculation uses A1=(1,0) as the periodic direction and A2=(0,1)
+    # as the open/surface-normal direction.  Thus k_parallel=kx and the
+    # projected 1D edge BZ follows X-Gamma-X.  A Y-Gamma-Y path
+    # would instead require an x-normal edge and a new surface calculation.
+    edge_tick_labels = ax.set_xticklabels(
+        ["X", "\u0393", "X"]
+    )
+    for tick_label in edge_tick_labels:
+        tick_label.set_fontfamily("Times New Roman")
+        tick_label.set_fontweight("bold")
+        tick_label.set_fontstyle("normal")
+    ax.set_xlabel(r"$k_{\parallel}$", fontweight="bold")
+    ax.set_ylabel(
+        r"$(E-E_{\mathrm{ref}})\ \mathrm{(eV)}$",
+        fontweight="bold",
+    )
+    ax.set_title(title + r"  $(010)$ edge", fontweight="bold")
+    if show_legend:
+        color_up, color_down = edge_spin_colors(selected)
+        cup = int(selected.expected_chern_up)
+        cdown = int(selected.expected_chern_down)
+        handles = [
+            Line2D(
+                [0],
+                [0],
+                color=color_up,
+                lw=3.0,
+                label=rf"$C_{{\uparrow}}={cup:+d}$",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color=color_down,
+                lw=3.0,
+                label=rf"$C_{{\downarrow}}={cdown:+d}$",
+            ),
+        ]
+        ax.legend(
+            handles=handles,
+            loc="upper right",
+            frameon=True,
+            facecolor="white",
+            edgecolor="none",
+            framealpha=0.72,
+            borderaxespad=0.35,
+            handlelength=1.7,
+        )
+    add_spin_colorbar(ax)
+    core.style_axis(ax)
+    # Preserve k_parallel in [-pi, pi], but make the printed axis physically
+    # shorter and emphasize the gap-region dispersion.
+    ax.set_box_aspect(1.12)
+
+
+def plot_edge_only_individual(
+    result: dict[str, Any],
+    specs: dict[str, core.ModelSpec],
+    stem: Path,
+    dpi: int,
+) -> list[str]:
+    fig, ax = plt.subplots(figsize=(3.15, 3.45))
+    draw_edge_only(
+        ax,
+        result,
+        specs,
+        specs[result["selected"].system].label,
+        show_legend=True,
+    )
+    fig.tight_layout()
+    return save_figure_inkscape_safe(fig, stem, dpi)
+
+
+def plot_edge_only_three_systems(
+    results: list[dict[str, Any]],
+    specs: dict[str, core.ModelSpec],
+    stem: Path,
+    dpi: int,
+) -> list[str]:
+    cs1_results = [
+        result
+        for result in results
+        if int(result["selected"].expected_chern_up) == 1
+    ]
+    if [result["selected"].system for result in cs1_results] != [
+        "lieb",
+        "fes",
+        "tts",
+    ]:
+        raise RuntimeError("Expected Lieb/FES/TTS C_s=+1 edge cases")
+    fig, axes = plt.subplots(1, 3, figsize=(8.55, 3.65))
+    for index, (ax, result) in enumerate(zip(axes, cs1_results)):
+        draw_edge_only(
+            ax,
+            result,
+            specs,
+            f"({chr(ord('a') + index)})  "
+            + specs[result["selected"].system].label,
+            show_legend=True,
+        )
+    fig.tight_layout(w_pad=2.1)
+    return save_figure_inkscape_safe(fig, stem, dpi)
+
+
+def square_bulk_path(
+    points_per_segment: int,
+) -> tuple[np.ndarray, np.ndarray, list[float], list[str]]:
+    """Full square-BZ path Gamma-X-M-Y-Gamma."""
+    named = [
+        (r"$\Gamma$", (0.0, 0.0)),
+        ("X", (np.pi, 0.0)),
+        ("M", (np.pi, np.pi)),
+        ("Y", (0.0, np.pi)),
+        (r"$\Gamma$", (0.0, 0.0)),
+    ]
+    klist: list[np.ndarray] = []
+    distance: list[float] = []
+    ticks = [0.0]
+    labels = [named[0][0]]
+    current = 0.0
+    previous: np.ndarray | None = None
+    for segment in range(len(named) - 1):
+        start = np.asarray(named[segment][1], dtype=float)
+        stop = np.asarray(named[segment + 1][1], dtype=float)
+        for index in range(int(points_per_segment) + 1):
+            if segment > 0 and index == 0:
+                continue
+            fraction = index / float(points_per_segment)
+            kpoint = (1.0 - fraction) * start + fraction * stop
+            if previous is not None:
+                current += float(np.linalg.norm(kpoint - previous))
+            klist.append(kpoint)
+            distance.append(current)
+            previous = kpoint
+        ticks.append(current)
+        labels.append(named[segment + 1][0])
+    return np.asarray(klist), np.asarray(distance), ticks, labels
+
+
+def tts_altermagnetic_bulk_path(
+    points_per_segment: int,
+) -> tuple[np.ndarray, np.ndarray, list[float], list[str]]:
+    """TTS path containing Sigma and Sigma-prime spin-split diagonals."""
+    named = [
+        (r"$\Gamma$", (0.0, 0.0)),
+        ("X", (np.pi, 0.0)),
+        ("M", (np.pi, np.pi)),
+        (r"$\Gamma$", (0.0, 0.0)),
+        (r"$M^\prime$", (-np.pi, np.pi)),
+        ("Y", (0.0, np.pi)),
+        (r"$\Gamma$", (0.0, 0.0)),
+    ]
+    klist: list[np.ndarray] = []
+    distance: list[float] = []
+    ticks = [0.0]
+    labels = [named[0][0]]
+    current = 0.0
+    previous: np.ndarray | None = None
+    for segment in range(len(named) - 1):
+        start = np.asarray(named[segment][1], dtype=float)
+        stop = np.asarray(named[segment + 1][1], dtype=float)
+        for index in range(int(points_per_segment) + 1):
+            if segment > 0 and index == 0:
+                continue
+            fraction = index / float(points_per_segment)
+            kpoint = (1.0 - fraction) * start + fraction * stop
+            if previous is not None:
+                current += float(np.linalg.norm(kpoint - previous))
+            klist.append(kpoint)
+            distance.append(current)
+            previous = kpoint
+        ticks.append(current)
+        labels.append(named[segment + 1][0])
+    return np.asarray(klist), np.asarray(distance), ticks, labels
+
+
+def display_bulk_path(
+    system: str,
+    points_per_segment: int,
+) -> tuple[np.ndarray, np.ndarray, list[float], list[str]]:
+    if system == "tts":
+        return tts_altermagnetic_bulk_path(points_per_segment)
+    return square_bulk_path(points_per_segment)
+
+
+def calculate_square_bulk_bands(
+    spec: core.ModelSpec,
+    selected: core.SelectedState,
+    energy_reference: float,
+    points_per_segment: int,
+) -> tuple[pd.DataFrame, list[float], list[str]]:
+    """Spin-resolved bands on the system-appropriate display path."""
+    klist, distance, ticks, labels = display_bulk_path(
+        spec.key,
+        points_per_segment,
+    )
+    spin_blocks = (
+        ("up", np.asarray(spec.spin_up_indices, dtype=int), 1.0),
+        ("down", np.asarray(spec.spin_down_indices, dtype=int), -1.0),
+    )
+    rows: list[dict[str, float | int | str]] = []
+    for k_index, ((kx, ky), coordinate) in enumerate(
+        zip(klist, distance)
+    ):
+        hamiltonian = spec.h_atomic(
+            float(kx), float(ky), selected.params
+        )
+        for spin_sector, indices, spin_z in spin_blocks:
+            spin_hamiltonian = hamiltonian[np.ix_(indices, indices)]
+            energies = np.linalg.eigvalsh(spin_hamiltonian)
+            for band_index, energy in enumerate(energies):
+                rows.append(
+                    {
+                        "k_index": int(k_index),
+                        "path_coordinate": float(coordinate),
+                        "kx": float(kx),
+                        "ky": float(ky),
+                        "spin_sector": spin_sector,
+                        "band": int(band_index + 1),
+                        "energy": float(energy - energy_reference),
+                        "spin_z": float(spin_z),
+                    }
+                )
+    return pd.DataFrame(rows), ticks, labels
+
+
+def draw_square_bulk(
+    ax: plt.Axes,
+    result: dict[str, Any],
+    specs: dict[str, core.ModelSpec],
+    title: str,
+) -> None:
+    selected = result["selected"]
+    spec = specs[selected.system]
+    bulk = result["bulk_square"]
+    color_up, color_down = edge_spin_colors(selected)
+    up_bands = {
+        int(index): band
+        for index, band in bulk[bulk["spin_sector"] == "up"].groupby("band")
+    }
+    down_bands = {
+        int(index): band
+        for index, band in bulk[bulk["spin_sector"] == "down"].groupby("band")
+    }
+    for band_index in sorted(set(up_bands) | set(down_bands)):
+        up_band = up_bands.get(band_index)
+        down_band = down_bands.get(band_index)
+        degenerate = (
+            up_band is not None
+            and down_band is not None
+            and len(up_band) == len(down_band)
+            and np.allclose(
+                up_band["energy"].to_numpy(),
+                down_band["energy"].to_numpy(),
+                rtol=0.0,
+                atol=1.0e-10,
+            )
+        )
+        if up_band is not None:
+            ax.plot(
+                up_band["path_coordinate"],
+                up_band["energy"],
+                color=color_up,
+                ls="-",
+                lw=2.25 if degenerate else 1.60,
+                alpha=0.98,
+                zorder=2,
+            )
+        if down_band is not None:
+            ax.plot(
+                down_band["path_coordinate"],
+                down_band["energy"],
+                color=color_down,
+                ls="-",
+                lw=1.15 if degenerate else 1.60,
+                alpha=0.98,
+                zorder=3,
+            )
+    for tick in result["bulk_square_ticks"]:
+        ax.axvline(tick, color="#AFAFAF", lw=0.75, ls="--", zorder=0)
+    ax.axhline(0.0, color=core.BLACK, lw=1.0, ls="--")
+    ax.set_xlim(
+        float(result["bulk_square_ticks"][0]),
+        float(result["bulk_square_ticks"][-1]),
+    )
+    ax.set_ylim(
+        -principal_edge_window(result),
+        principal_edge_window(result),
+    )
+    ax.set_xticks(result["bulk_square_ticks"])
+    ax.set_xticklabels(result["bulk_square_labels"])
+    ax.set_xlabel("Bulk momentum path", fontweight="bold")
+    ax.set_ylabel(
+        r"$(E-E_{\mathrm{ref}})\ \mathrm{(eV)}$",
+        fontweight="bold",
+    )
+    ax.set_title(title, fontweight="bold")
+    core.style_axis(ax)
+    ax.set_box_aspect(1.12)
+
+
+def plot_bulk_edge_individual(
+    result: dict[str, Any],
+    specs: dict[str, core.ModelSpec],
+    stem: Path,
+    dpi: int,
+) -> list[str]:
+    label = specs[result["selected"].system].label
+    fig, axes = plt.subplots(1, 2, figsize=(6.65, 3.55))
+    draw_square_bulk(
+        axes[0],
+        result,
+        specs,
+        label + ": bulk",
+    )
+    draw_edge_only(
+        axes[1],
+        result,
+        specs,
+        label,
+        show_legend=True,
+    )
+    fig.subplots_adjust(
+        left=0.10,
+        right=0.93,
+        bottom=0.18,
+        top=0.88,
+        wspace=0.52,
+    )
+    return save_figure_inkscape_safe(fig, stem, dpi)
+
+
+def plot_bulk_edge_rows(
+    results: list[dict[str, Any]],
+    specs: dict[str, core.ModelSpec],
+    stem: Path,
+    dpi: int,
+    primary_svg_editable: bool = False,
+    svg_only: bool = False,
+) -> list[str]:
+    """Reference-style rows: bulk on the left, matching edge on the right."""
+    row_count = len(results)
+    fig, axes = plt.subplots(
+        row_count,
+        2,
+        figsize=(6.85, 3.35 * row_count),
+        squeeze=False,
+    )
+    for row_index, result in enumerate(results):
+        system_label = specs[result["selected"].system].label
+        is_band_metal = (
+            result["selected"].system == "fes"
+            and int(result["audit"]["is_global_insulator"]) == 0
+        )
+        bulk_letter = chr(ord("a") + 2 * row_index)
+        edge_letter = chr(ord("a") + 2 * row_index + 1)
+        cs_value = int(result["selected"].expected_chern_up)
+        bulk_title = (
+            rf"({bulk_letter})  {system_label}: bulk, "
+            rf"$C_s={cs_value:+d}$"
+        )
+        edge_title = rf"({edge_letter})  {system_label}"
+        if is_band_metal:
+            bulk_title += "  (band metal)"
+            edge_title += "  (band metal)"
+        draw_square_bulk(
+            axes[row_index, 0],
+            result,
+            specs,
+            bulk_title,
+        )
+        draw_edge_only(
+            axes[row_index, 1],
+            result,
+            specs,
+            edge_title,
+            show_legend=True,
+        )
+    fig.subplots_adjust(
+        left=0.11,
+        right=0.92,
+        bottom=0.07,
+        top=0.97,
+        hspace=0.48,
+        wspace=0.54,
+    )
+    if svg_only:
+        return save_editable_svg_only(fig, stem.with_suffix(".svg"), dpi)
+    return save_figure_inkscape_safe(
+        fig,
+        stem,
+        dpi,
+        primary_svg_editable=primary_svg_editable,
+    )
+
+
+def parameter_record(case_id: str, selected: core.SelectedState) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "case_id": case_id,
+        "system": selected.system,
+        "source_id": selected.source_id,
+        "C_s": selected.expected_chern_up,
+        "C_up": selected.expected_chern_up,
+        "C_down": selected.expected_chern_down,
+    }
+    record.update(selected.params)
+    return record
+
+
+def run(output_dir: Path, quick: bool = False) -> dict[str, Any]:
+    started = time.time()
+    configure_step19_plot_style()
+    settings = core.build_settings(quick)
+    output_dir = Path(output_dir)
+    figures_dir = output_dir / "figures"
+    data_dir = output_dir / "data"
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    specs, modules = core.build_model_specs()
+    cases = select_main_cases(modules)
+    results: list[dict[str, Any]] = []
+    audit_records: list[dict[str, Any]] = []
+    hall_records: list[dict[str, Any]] = []
+    parameter_records: list[dict[str, Any]] = []
+
+    print("[1/4] Four main-text representatives", flush=True)
+    for index, case in enumerate(cases, start=1):
+        case_id = str(case["case_id"])
+        selected: core.SelectedState = case["selected"]
+        spec = specs[selected.system]
+        sample_dir = data_dir / case_id
+        sample_dir.mkdir(parents=True, exist_ok=True)
+        print(
+            f"  [{index}/4] {case_id}: gap/Chern/Fourier",
+            flush=True,
+        )
+
+        gap = core.gap_audit(spec, selected, settings.gap_nk)
+        chern = core.chern_audit(spec, selected, settings.chern_nk)
+        audit = {
+            "case_id": case_id,
+            "panel": PANEL_LABEL[case_id],
+            "system": selected.system,
+            "source_id": selected.source_id,
+            "path_id": selected.path_id,
+            "expected_C_s": selected.expected_chern_up,
+            "expected_chern_up": selected.expected_chern_up,
+            "expected_chern_down": selected.expected_chern_down,
+            "selection_note": selected.selection_note,
+            **gap,
+            **chern,
+        }
+        audit["C_s_numeric"] = (
+            float(chern["chern_up"]) - float(chern["chern_down"])
+        ) / 2.0
+        audit["chern_matches_selection"] = int(
+            int(chern["chern_up_int"]) == selected.expected_chern_up
+            and int(chern["chern_down_int"]) == selected.expected_chern_down
+        )
+        audit["classification"] = classification(audit)
+        if selected.system == "tts":
+            magnetic_audit = modules["tts"].model_tests(
+                selected.params,
+                n_random=12,
+            )
+            audit["sigma_max_spin_splitting"] = float(
+                magnetic_audit[
+                    "sigma_kx_eq_ky_max_spin_splitting"
+                ]
+            )
+            audit["sigma_prime_max_spin_splitting"] = float(
+                magnetic_audit[
+                    "sigma_prime_minus_kx_eq_ky_max_spin_splitting"
+                ]
+            )
+            audit["symmetry_axis_max_spin_splitting"] = float(
+                max(
+                    magnetic_audit[
+                        "delta_ky0_spin_degeneracy_error"
+                    ],
+                    magnetic_audit[
+                        "delta_prime_kx0_spin_degeneracy_error"
+                    ],
+                    magnetic_audit[
+                        "Z_kxpi_spin_degeneracy_error"
+                    ],
+                    magnetic_audit[
+                        "Z_prime_kypi_spin_degeneracy_error"
+                    ],
                 )
             )
+        audit_records.append(audit)
+        parameter_records.append(parameter_record(case_id, selected))
+
+        window = choose_case_window(
+            selected.system,
+            float(gap["min_direct_gap"]),
         )
-        nearest = group.iloc[nearest_index]
-        rows.append({
-            "target_id": f"left_bridge_target_{index+1:02d}",
-            "branch_hint": branch,
-            "target_r3": r3,
-            "target_r4": r4,
-            "nearest_point_id": str(nearest["point_id"]),
-            "nearest_kx": float(nearest["critical_kx_representative"]),
-            "nearest_ky": float(nearest["critical_ky_representative"]),
-            "nearest_normal_r3": float(nearest["normal_r3"]),
-            "nearest_normal_r4": float(nearest["normal_r4"]),
-        })
-    return pd.DataFrame(rows)
-
-
-def run_left_bridge_completion(
-    *,
-    tts_archive: str | Path,
-    step10_source: str | Path,
-    output_dir: str | Path,
-    config: Step11Config,
-) -> pd.DataFrame:
-    config = config.normalized()
-    tables = load_step10_tables(step10_source)
-    background = validate_fixed_background(tables["points"])
-    targets = prepare_left_bridge_targets(
-        tables["points"],
-        tables["fits"],
-        target_count=config.left_bridge_target_count,
-        minimum_gap=config.left_bridge_min_gap_in_r3,
-    )
-    targets.to_csv(
-        config.output_dir / "step11M_01_left_bridge_target_manifest.csv",
-        index=False,
-        encoding="utf-8-sig",
-    )
-    if targets.empty:
-        return pd.DataFrame()
-
-    core, step4, step5, source_dir = base.import_reference_modules(tts_archive)
-    linear_v2.patch_step5_linear_path(step5, core)
-    step3 = linear_v2.import_step3(source_dir)
-
-    continuation = step10.ContinuationConfig(
-        output_dir=config.output_dir / "_bridge_internal",
-        normal_half_width=config.bridge_normal_half_width,
-        strict_gap_grids=tuple(config.strict_gap_grids),
-        strict_chern_grids=tuple(config.strict_chern_grids),
-        strict_chern_shifts=tuple(config.strict_chern_shifts),
-        quick=config.quick,
-        random_seed=config.random_seed,
-    ).normalized()
-    strict_config = step10.strict_step3_config(
-        step3,
-        config.output_dir / "_strict_core",
-        continuation,
-    )
-    kp_config = step10.step5_config(
-        step5,
-        config.output_dir / "_search_core",
-        continuation,
-    )
-    step5._step10m_config = kp_config
-
-    fit = fit_row_for_branch(tables["fits"], "generic_left_lower")
-    result_rows = []
-    for target_index, target in targets.iterrows():
-        point_id = str(target["target_id"])
-        point_file = config.output_dir / "bridge_points" / f"{point_id}.json"
-        if point_file.is_file():
-            payload = json.loads(point_file.read_text(encoding="utf-8"))
-            summary = payload.get("point_summary", {})
-            if summary:
-                result_rows.append(summary)
-            continue
-
-        r3 = float(target["target_r3"])
-        r4 = float(target["target_r4"])
-        derivative = polynomial_derivative(fit, r3)
-        normal = np.array([-derivative, 1.0], dtype=float)
-        nearest_normal = np.array(
-            [float(target["nearest_normal_r3"]), float(target["nearest_normal_r4"])],
-            dtype=float,
+        ef = float(gap["energy_reference"])
+        hoppings = core.extract_hoppings(
+            spec,
+            selected.params,
+            nfft=settings.fourier_n,
         )
-        if float(np.dot(normal, nearest_normal)) < 0:
-            normal *= -1.0
-        normal /= max(float(np.linalg.norm(normal)), 1.0e-15)
-
-        center = {
-            **background,
-            "r3": r3,
-            "r4": r4,
-        }
-        previous_k = (
-            float(target["nearest_kx"]),
-            float(target["nearest_ky"]),
-        )
-
-        closure = None
-        pair = None
-        candidate_rows = []
-        for width_index, width in enumerate(
-            (
-                config.bridge_normal_half_width,
-                1.5 * config.bridge_normal_half_width,
-                2.0 * config.bridge_normal_half_width,
-            )
-        ):
-            pair = step10.build_pair(center, normal, float(width), point_id)
-            closure, candidates = step10.search_generic_closure(
-                step5,
-                pair,
-                previous_k,
-                continuation,
-                5000 + 100 * target_index + width_index,
-            )
-            candidates["point_id"] = point_id
-            candidates["normal_half_width"] = float(width)
-            candidate_rows.extend(candidates.to_dict("records"))
-            if closure is not None:
-                break
-
-        if closure is None or pair is None:
-            payload = {
-                "point_summary": {
-                    "point_id": point_id,
-                    "branch_hint": "generic_left_lower",
-                    "point_certificate_pass": 0,
-                    "failure_reason": "no_generic_four_valley_closure",
-                    "predictor_r3": r3,
-                    "predictor_r4": r4,
-                },
-                "search_candidates": candidate_rows,
+        hopping_rows = [
+            {
+                "rx": rx,
+                "ry": ry,
+                "max_abs_hopping": float(np.max(np.abs(matrix))),
             }
-        else:
-            payload = step10.analyse_boundary_point(
-                core=core,
-                step5=step5,
-                step3=step3,
-                strict_config=strict_config,
-                pair=pair,
-                closure=closure,
-                point_id=point_id,
-                branch_hint="generic_left_lower",
-                seed_id=str(target["nearest_point_id"]),
-                trace_direction=0,
-                step_index=int(target_index + 1),
-                config=continuation,
-            )
-            payload["search_candidates"] = candidate_rows
+            for (rx, ry), matrix in sorted(hoppings.items())
+        ]
+        pd.DataFrame(hopping_rows).to_csv(
+            sample_dir / "wannier_hopping_summary.csv",
+            index=False,
+        )
 
-        point_file.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
+        bulk, bulk_ticks, bulk_labels = core.calculate_bulk_bands(
+            spec,
+            selected,
+            ef,
+            settings.band_points_per_segment,
+        )
+        bulk.to_csv(sample_dir / "bulk_bands.csv", index=False)
+        bulk_square, bulk_square_ticks, bulk_square_labels = (
+            calculate_square_bulk_bands(
+                spec,
+                selected,
+                ef,
+                settings.band_points_per_segment,
+            )
+        )
+        bulk_square.to_csv(
+            sample_dir / "bulk_bands_display_path.csv",
+            index=False,
+        )
+
+        eta = max(
+            5.0e-4 if selected.system == "fes" else 1.5e-3,
+            0.006 * window,
+        )
+        print(
+            f"  [{index}/4] {case_id}: semi-infinite edge "
+            f"(window={window:.4f}, eta={eta:.3e})",
+            flush=True,
+        )
+        surface = core.calculate_surface(
+            spec,
+            hoppings,
+            ef,
+            window,
+            settings.surface_k_points,
+            settings.surface_energy_points,
+            eta,
+        )
+        np.savez_compressed(
+            sample_dir / "wanniertools_style_surface_spectrum.npz",
+            **surface,
+        )
+
+        hall_nk = core.hall_mesh_for_state(selected, settings)
+        print(
+            f"  [{index}/4] {case_id}: Hall response nk={hall_nk}",
+            flush=True,
+        )
+        hall, hall_summary = core.calculate_hall(
+            spec,
+            hoppings,
+            ef,
+            window,
+            hall_nk,
+            settings.response_energy_points,
+        )
+        hall.to_csv(
+            sample_dir / "wanniertools_style_hall.csv",
+            index=False,
+        )
+        hall_record = {
+            "case_id": case_id,
+            "panel": PANEL_LABEL[case_id],
+            "system": selected.system,
+            "source_id": selected.source_id,
+            "expected_C_s": selected.expected_chern_up,
+            "classification": audit["classification"],
+            **hall_summary,
+        }
+        hall_records.append(hall_record)
+        (sample_dir / "parameters_and_reference.json").write_text(
+            json.dumps(
+                {
+                    "case_id": case_id,
+                    "code_version": CODE_VERSION,
+                    "selected_state": {
+                        "system": selected.system,
+                        "source_id": selected.source_id,
+                        "path_id": selected.path_id,
+                        "C_s": selected.expected_chern_up,
+                        "C_up": selected.expected_chern_up,
+                        "C_down": selected.expected_chern_down,
+                        "selection_note": selected.selection_note,
+                    },
+                    "parameters": selected.params,
+                    "energy_reference": ef,
+                    "energy_reference_kind": gap["energy_reference_kind"],
+                    "plot_window": window,
+                    "surface_eta": eta,
+                    "classification": audit["classification"],
+                },
+                indent=2,
+                ensure_ascii=False,
+            ),
             encoding="utf-8",
         )
-        summary = payload.get("point_summary", {})
-        if summary:
-            result_rows.append(summary)
-
-    result = pd.DataFrame(result_rows)
-    result.to_csv(
-        config.output_dir / "step11M_02_left_bridge_completion_results.csv",
-        index=False,
-        encoding="utf-8-sig",
-    )
-    return result
-
-
-# -----------------------------------------------------------------------------
-# Strict junction grid
-# -----------------------------------------------------------------------------
-
-
-def junction_checkpoint_path(config: Step11Config, ix: int, iy: int) -> Path:
-    return config.output_dir / "junction_points" / f"junction_{ix:02d}_{iy:02d}.json"
-
-
-def run_junction_strict_grid(
-    *,
-    tts_archive: str | Path,
-    step10_source: str | Path,
-    output_dir: str | Path,
-    config: Step11Config,
-) -> pd.DataFrame:
-    config = config.normalized()
-    tables = load_step10_tables(step10_source)
-    background = validate_fixed_background(tables["points"])
-
-    core, step4, step5, source_dir = base.import_reference_modules(tts_archive)
-    linear_v2.patch_step5_linear_path(step5, core)
-    step3 = linear_v2.import_step3(source_dir)
-
-    continuation = step10.ContinuationConfig(
-        output_dir=config.output_dir / "_junction_internal",
-        strict_gap_grids=tuple(config.strict_gap_grids),
-        strict_chern_grids=tuple(config.strict_chern_grids),
-        strict_chern_shifts=tuple(config.strict_chern_shifts),
-        quick=config.quick,
-        random_seed=config.random_seed,
-    ).normalized()
-    strict_config = step10.strict_step3_config(
-        step3,
-        config.output_dir / "_strict_core",
-        continuation,
-    )
-
-    r3_values = np.linspace(
-        config.junction_r3_range[0],
-        config.junction_r3_range[1],
-        int(config.junction_grid_n),
-    )
-    r4_values = np.linspace(
-        config.junction_r4_range[0],
-        config.junction_r4_range[1],
-        int(config.junction_grid_n),
-    )
-
-    rows = []
-    for iy, r4 in enumerate(r4_values):
-        for ix, r3 in enumerate(r3_values):
-            path = junction_checkpoint_path(config, ix, iy)
-            if path.is_file():
-                summary = json.loads(path.read_text(encoding="utf-8"))
-            else:
-                reduced = {**background, "r3": float(r3), "r4": float(r4)}
-                result = step10.evaluate_strict(
-                    step3,
-                    strict_config,
-                    reduced,
-                    f"step11M_junction_{ix:02d}_{iy:02d}",
-                )
-                summary = result["summary"]
-                summary.update({"junction_ix": ix, "junction_iy": iy})
-                path.write_text(
-                    json.dumps(summary, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
-            summary = dict(summary)
-            summary["junction_ix"] = ix
-            summary["junction_iy"] = iy
-            summary["paper_phase_code"] = phase_code(summary)
-            rows.append(summary)
-
-    frame = pd.DataFrame(rows)
-    frame.to_csv(
-        config.output_dir / "step11M_03_right_junction_strict_grid.csv",
-        index=False,
-        encoding="utf-8-sig",
-    )
-    return frame
-
-
-def junction_boundary_edges(frame: pd.DataFrame) -> pd.DataFrame:
-    lookup = {
-        (int(row.junction_ix), int(row.junction_iy)): row
-        for row in frame.itertuples()
-    }
-    rows = []
-    for (ix, iy), row in lookup.items():
-        for neighbour in ((ix + 1, iy), (ix, iy + 1)):
-            if neighbour not in lookup:
-                continue
-            other = lookup[neighbour]
-            left_valid = (
-                int(getattr(row, "strict_gap_verified", 0) or 0) == 1
-                and int(getattr(row, "strict_chern_verified", 0) or 0) == 1
-                and int(row.paper_phase_code) in PHASE_CODES
-            )
-            right_valid = (
-                int(getattr(other, "strict_gap_verified", 0) or 0) == 1
-                and int(getattr(other, "strict_chern_verified", 0) or 0) == 1
-                and int(other.paper_phase_code) in PHASE_CODES
-            )
-            if not (left_valid and right_valid):
-                continue
-            c0 = int(row.paper_phase_code)
-            c1 = int(other.paper_phase_code)
-            if c0 == c1:
-                continue
-            delta = c1 - c0
-            if abs(delta) == 4:
-                candidate = "generic_four_valley_candidate"
-            elif abs(delta) == 2:
-                candidate = "two_valley_or_multiclosure_candidate"
-            elif abs(delta) == 1:
-                candidate = "single_valley_candidate"
-            else:
-                candidate = "multiclosure_candidate"
-            rows.append({
-                "edge_id": f"edge_{ix:02d}_{iy:02d}__{neighbour[0]:02d}_{neighbour[1]:02d}",
-                "ix0": ix,
-                "iy0": iy,
-                "ix1": neighbour[0],
-                "iy1": neighbour[1],
-                "r3_0": float(row.r3),
-                "r4_0": float(row.r4),
-                "chern_0": c0,
-                "r3_1": float(other.r3),
-                "r4_1": float(other.r4),
-                "chern_1": c1,
-                "delta_chern_up": delta,
-                "mid_r3": 0.5 * (float(row.r3) + float(other.r3)),
-                "mid_r4": 0.5 * (float(row.r4) + float(other.r4)),
-                "candidate_mechanism": candidate,
-            })
-    return pd.DataFrame(rows)
-
-
-def select_representative_junction_edges(
-    edges: pd.DataFrame,
-    max_edges: int,
-) -> pd.DataFrame:
-    if edges.empty:
-        return edges.copy()
-    selected_rows = []
-    # First retain one edge for every distinct signed Chern transition.
-    for transition, group in edges.groupby(["chern_0", "chern_1"]):
-        group = group.copy()
-        center = group[["mid_r3", "mid_r4"]].mean().to_numpy(float)
-        distance = np.linalg.norm(
-            group[["mid_r3", "mid_r4"]].to_numpy(float) - center,
-            axis=1,
+        results.append(
+            {
+                "case_id": case_id,
+                "selected": selected,
+                "audit": audit,
+                "window": window,
+                "bulk": bulk,
+                "bulk_ticks": bulk_ticks,
+                "bulk_labels": bulk_labels,
+                "bulk_square": bulk_square,
+                "bulk_square_ticks": bulk_square_ticks,
+                "bulk_square_labels": bulk_square_labels,
+                "surface": surface,
+                "hall": hall,
+            }
         )
-        selected_rows.append(group.iloc[int(np.argmin(distance))])
-    selected = pd.DataFrame(selected_rows)
-    if len(selected) > max_edges:
-        selected = selected.head(max_edges)
-    elif len(selected) < max_edges:
-        remaining = edges[~edges["edge_id"].isin(selected["edge_id"])].copy()
-        while len(selected) < max_edges and len(remaining):
-            selected_points = selected[["mid_r3", "mid_r4"]].to_numpy(float)
-            candidates = remaining[["mid_r3", "mid_r4"]].to_numpy(float)
-            min_dist = np.min(
-                np.linalg.norm(
-                    candidates[:, None, :] - selected_points[None, :, :],
-                    axis=2,
-                ),
-                axis=1,
-            )
-            pick = int(np.argmax(min_dist))
-            selected = pd.concat(
-                [selected, remaining.iloc[[pick]]],
-                ignore_index=True,
-            )
-            remaining = remaining.drop(remaining.index[pick])
-    return selected.reset_index(drop=True)
-
-
-# -----------------------------------------------------------------------------
-# Selected junction-edge multi-closure certificates
-# -----------------------------------------------------------------------------
-
-
-def build_pair_from_edge(
-    edge: pd.Series,
-    background: dict[str, float],
-) -> pd.Series:
-    start = pd.Series(
-        {
-            **background,
-            "r3": float(edge["r3_0"]),
-            "r4": float(edge["r4_0"]),
-        }
-    )
-    end = pd.Series(
-        {
-            **background,
-            "r3": float(edge["r3_1"]),
-            "r4": float(edge["r4_1"]),
-        }
-    )
-    return base.build_pair_series(start, end, path_id=str(edge["edge_id"]))
-
-
-def analyse_junction_edge_multiclosure(
-    *,
-    edge: pd.Series,
-    background: dict[str, float],
-    core,
-    step5,
-    step3,
-    strict_config,
-    search_config,
-    multi_config: step09d.MultiClosureConfig,
-) -> dict[str, Any]:
-    edge_id = str(edge["edge_id"])
-    pair = build_pair_from_edge(edge, background)
-
-    gap_scan = step09d.dense_gap_scan(step5, pair, multi_config, edge_id)
-    coarse, coarse_attempts = step09d.coarse_chern_scan(
-        core,
-        step5,
-        pair,
-        multi_config,
-        edge_id,
-    )
-    brackets = step09d.detect_candidate_brackets(
-        gap_scan,
-        coarse,
-        multi_config,
-    )
-
-    all_closures = []
-    search_rows = []
-    for bracket_index, bracket_row in brackets.iterrows():
-        bracket = pd.Series({
-            "transition_id": f"{edge_id}_bracket{bracket_index:02d}",
-            "path_id": edge_id,
-            "lambda_left": float(bracket_row["lambda_left"]),
-            "lambda_right": float(bracket_row["lambda_right"]),
-            "chern_left": np.nan,
-            "chern_right": np.nan,
-        })
-        candidates, closures = step5.search_transition_closures(
-            bracket,
-            pair,
-            search_config,
-            9000 + int(bracket_index),
+        print(
+            f"       direct={float(gap['min_direct_gap']):.6g}, "
+            f"indirect={float(gap['indirect_gap']):.6g}, "
+            f"C_s={float(audit['C_s_numeric']):+.6f}",
+            flush=True,
         )
-        search_rows.extend(
-            [
+
+    print("[2/4] Summary tables", flush=True)
+    audit_df = pd.DataFrame(audit_records)
+    hall_df = pd.DataFrame(hall_records)
+    params_df = pd.DataFrame(parameter_records)
+    audit_df.to_csv(
+        output_dir / "step19_01_maintext_case_summary.csv",
+        index=False,
+    )
+    hall_df.to_csv(
+        output_dir / "step19_02_hall_summary.csv",
+        index=False,
+    )
+    params_df.to_csv(
+        output_dir / "step19_03_parameter_table.csv",
+        index=False,
+    )
+
+    print("[3/4] Four individual figures and two optional composites", flush=True)
+    manifest: list[dict[str, str]] = []
+    for result in results:
+        case_id = result["case_id"]
+        files = plot_individual_pair(
+            result,
+            specs,
+            figures_dir / f"Fig_maintext_{case_id}_edge_and_hall",
+            settings.dpi,
+        )
+        for path in files:
+            manifest.append(
                 {
-                    "edge_id": edge_id,
-                    "bracket_index": int(bracket_index),
-                    **row,
+                    "figure_role": "individual_maintext_edge_and_hall",
+                    "case_id": case_id,
+                    "path": path,
                 }
-                for row in candidates
-            ]
+            )
+        edge_files = plot_edge_only_individual(
+            result,
+            specs,
+            figures_dir / f"Fig_edge_only_{case_id}_Cup_Cdown",
+            settings.dpi,
         )
-        for closure in closures:
-            item = dict(closure)
-            item["source_bracket_index"] = int(bracket_index)
-            all_closures.append(item)
-
-    unique = step09d.global_deduplicate_closures(
-        step5,
-        all_closures,
-        multi_config.closure_lambda_dedup_tol,
-    )
-    groups = step09d.closure_groups(unique)
-    centres = [
-        float(np.mean([float(row["critical_lambda"]) for row in group]))
-        for group in groups
-    ]
-
-    segment_results = []
-    segment_rows = []
-    boundaries = [0.0, *centres, 1.0]
-    for segment_index, (left, right) in enumerate(
-        zip(boundaries[:-1], boundaries[1:])
+        for path in edge_files:
+            manifest.append(
+                {
+                    "figure_role": "individual_edge_only_Cup_Cdown",
+                    "case_id": case_id,
+                    "path": path,
+                }
+            )
+        bulk_edge_files = plot_bulk_edge_individual(
+            result,
+            specs,
+            figures_dir / f"Fig_bulk_edge_pair_{case_id}",
+            settings.dpi,
+        )
+        for path in bulk_edge_files:
+            manifest.append(
+                {
+                    "figure_role": "individual_bulk_edge_pair",
+                    "case_id": case_id,
+                    "path": path,
+                }
+            )
+    for path in plot_edge_only_three_systems(
+        results,
+        specs,
+        figures_dir / "Fig_edge_only_three_systems_Cup_Cdown",
+        settings.dpi,
     ):
-        probe = step09d.find_reliable_segment_probe(
-            step3,
-            strict_config,
-            pair,
-            edge_id,
-            float(left),
-            float(right),
-            multi_config.segment_probe_fractions,
-            segment_index,
+        manifest.append(
+            {
+                "figure_role": "three_system_edge_only_Cup_Cdown",
+                "case_id": "lieb_fes_tts_Cs_plus1",
+                "path": path,
+            }
         )
-        segment_results.append(probe)
-        summary = probe["summary"]
-        segment_rows.append({
-            "edge_id": edge_id,
-            "segment_index": segment_index,
-            "lambda_left_bound": left,
-            "lambda_right_bound": right,
-            "lambda": summary.get("lambda"),
-            "strict_chern_up": step09d.reliable_chern(summary),
-            "strict_phase_label": summary.get("phase_label"),
-            "min_direct_gap": summary.get("min_direct_gap"),
-        })
-
-    closure_rows = []
-    kp_rows = []
-    gradient_rows = []
-    berry_rows = []
-    group_certificates = []
-
-    for group_index, group in enumerate(groups):
-        group_id = f"{edge_id}_group{group_index:02d}"
-        group_charge = 0
-        all_consensus = True
-        all_rank3 = True
-        valley_count = 0
-        for closure_index, closure in enumerate(group):
-            closure_id = f"{group_id}_closure{closure_index:02d}"
-            reduced = linear_v2.linear_reduced_on_path(
-                pair,
-                float(closure["critical_lambda"]),
-            )
-            closure_rows.append({
-                "edge_id": edge_id,
-                "closure_group_id": group_id,
-                "closure_id": closure_id,
-                **closure,
-                **reduced,
-            })
-            analysis = step09d.analyse_closure(
-                step5,
-                pair,
-                search_config,
-                edge_id,
-                group_id,
-                closure_id,
-                closure,
-            )
-            kp_rows.extend(analysis["kp_rows"])
-            gradient_rows.extend(analysis["gradient_rows"])
-            berry_rows.extend(analysis["berry_summary_rows"])
-            group_charge += int(analysis["charge_sum"])
-            all_consensus = all_consensus and bool(analysis["all_consensus"])
-            all_rank3 = all_rank3 and bool(analysis["all_rank3"])
-            valley_count += int(analysis["n_active_valleys"])
-
-        left_chern = (
-            step09d.reliable_chern(segment_results[group_index]["summary"])
-            if group_index < len(segment_results) else None
-        )
-        right_chern = (
-            step09d.reliable_chern(segment_results[group_index + 1]["summary"])
-            if group_index + 1 < len(segment_results) else None
-        )
-        delta = (
-            None
-            if left_chern is None or right_chern is None
-            else int(right_chern - left_chern)
-        )
-        signed_match = (
-            delta is not None
-            and all_consensus
-            and int(group_charge) == int(delta)
-        )
-        group_certificates.append({
-            "edge_id": edge_id,
-            "closure_group_id": group_id,
-            "mean_critical_lambda": centres[group_index],
-            "n_closure_orbits": len(group),
-            "n_active_spin_up_valleys": valley_count,
-            "left_chern_up": left_chern,
-            "right_chern_up": right_chern,
-            "observed_delta_chern_up": delta,
-            "berry_charge_sum_up": group_charge,
-            "all_berry_charges_consensus": int(all_consensus),
-            "all_kp_jacobians_rank3": int(all_rank3),
-            "signed_charge_matches": int(signed_match),
-            "closure_group_certificate_pass": int(signed_match and all_rank3),
-        })
-
-    endpoint_delta = int(edge["chern_1"] - edge["chern_0"])
-    total_charge = int(sum(row["berry_charge_sum_up"] for row in group_certificates))
-    all_groups_pass = bool(
-        len(group_certificates)
-        and all(
-            int(row["closure_group_certificate_pass"]) == 1
-            for row in group_certificates
-        )
-    )
-    edge_certificate = {
-        "edge_id": edge_id,
-        "grid_chern_0": int(edge["chern_0"]),
-        "grid_chern_1": int(edge["chern_1"]),
-        "grid_endpoint_delta_chern_up": endpoint_delta,
-        "n_closure_groups": len(groups),
-        "n_closure_orbits": len(unique),
-        "n_active_spin_up_valleys_total": int(
-            sum(row["n_active_spin_up_valleys"] for row in group_certificates)
-        ),
-        "berry_charge_sum_over_all_groups": total_charge,
-        "signed_total_charge_matches_grid_delta": int(
-            total_charge == endpoint_delta
-        ),
-        "all_closure_groups_certified": int(all_groups_pass),
-        "edge_multiclosure_certificate_pass": int(
-            all_groups_pass and total_charge == endpoint_delta
-        ),
-    }
-    return {
-        "edge": edge.to_dict(),
-        "gap_scan": gap_scan.to_dict("records"),
-        "coarse_chern": coarse.to_dict("records"),
-        "coarse_chern_attempts": coarse_attempts.to_dict("records"),
-        "candidate_brackets": brackets.to_dict("records"),
-        "search_candidates": search_rows,
-        "closures": closure_rows,
-        "segments": segment_rows,
-        "kp_summaries": kp_rows,
-        "mass_gradients": gradient_rows,
-        "berry_summaries": berry_rows,
-        "group_certificates": group_certificates,
-        "edge_certificate": edge_certificate,
-    }
-
-
-def run_junction_edge_certificates(
-    *,
-    tts_archive: str | Path,
-    step10_source: str | Path,
-    junction_grid: pd.DataFrame,
-    output_dir: str | Path,
-    config: Step11Config,
-) -> pd.DataFrame:
-    config = config.normalized()
-    tables = load_step10_tables(step10_source)
-    background = validate_fixed_background(tables["points"])
-    edges = junction_boundary_edges(junction_grid)
-    edges.to_csv(
-        config.output_dir / "step11M_04_right_junction_boundary_edges.csv",
-        index=False,
-        encoding="utf-8-sig",
-    )
-    selected = select_representative_junction_edges(
-        edges,
-        config.junction_max_edge_certificates,
-    )
-    selected.to_csv(
-        config.output_dir / "step11M_05_selected_junction_edges.csv",
-        index=False,
-        encoding="utf-8-sig",
-    )
-    if selected.empty:
-        return pd.DataFrame()
-
-    core, step4, step5, source_dir = base.import_reference_modules(tts_archive)
-    linear_v2.patch_step5_linear_path(step5, core)
-    step3 = linear_v2.import_step3(source_dir)
-
-    multi_config = step09d.MultiClosureConfig(
-        output_dir=config.output_dir / "_junction_multiclosure",
-        lambda_points=(151 if config.quick else 301),
-        diagonal_k_points=(81 if config.quick else 141),
-        candidate_gap_ceiling=2.0e-2,
-        candidate_log_prominence=0.25,
-        candidate_min_index_distance=4,
-        bracket_half_width_indices=6,
-        coarse_chern_lambda_points=(11 if config.quick else 17),
-        coarse_chern_grids=((21,) if config.quick else (21, 31)),
-        coarse_chern_shifts=((0.0, 0.0),),
-        strict_chern_grids=tuple(config.strict_chern_grids),
-        strict_chern_shifts=tuple(config.strict_chern_shifts),
-        strict_gap_grids=tuple(config.strict_gap_grids),
-        full_search_quick=config.quick,
-        random_seed=config.random_seed,
-    ).normalized()
-
-    strict_config = step09d.configure_strict_step3(
-        step3,
-        config.output_dir / "_strict_core",
-        multi_config,
-    )
-    search_config = step09d.configure_step5_search(
-        step5,
-        config.output_dir / "_search_core",
-        multi_config,
-    )
-
-    certificate_rows = []
-    for _, edge in selected.iterrows():
-        edge_id = str(edge["edge_id"])
-        path = config.output_dir / "junction_edges" / f"{edge_id}.json"
-        if path.is_file():
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        else:
-            payload = analyse_junction_edge_multiclosure(
-                edge=edge,
-                background=background,
-                core=core,
-                step5=step5,
-                step3=step3,
-                strict_config=strict_config,
-                search_config=search_config,
-                multi_config=multi_config,
-            )
-            path.write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-        certificate_rows.append(payload["edge_certificate"])
-
-    result = pd.DataFrame(certificate_rows)
-    result.to_csv(
-        config.output_dir / "step11M_06_junction_edge_certificates.csv",
-        index=False,
-        encoding="utf-8-sig",
-    )
-    return result
-
-
-# -----------------------------------------------------------------------------
-# Lieb-style local signed-mass validation
-# -----------------------------------------------------------------------------
-
-
-def load_formal_lower_grid(formal_scan_source: str | Path) -> pd.DataFrame:
-    frame = base.load_lower_grid(formal_scan_source)
-    frame = frame.copy()
-    frame["paper_phase_code"] = frame.apply(phase_code, axis=1)
-    if "r3" not in frame:
-        frame["r3"] = frame["scan_x"]
-    if "r4" not in frame:
-        frame["r4"] = frame["scan_y"]
-    return frame
-
-
-def mapping_from_train(sign_values: np.ndarray, labels: np.ndarray) -> dict[int, int]:
-    mapping = {}
-    for sign in (-1, 1):
-        selected = labels[sign_values == sign]
-        if len(selected) == 0:
-            continue
-        values, counts = np.unique(selected, return_counts=True)
-        mapping[sign] = int(values[int(np.argmax(counts))])
-    return mapping
-
-
-def validate_one_branch_mass(
-    grid: pd.DataFrame,
-    definition: dict[str, Any],
-    *,
-    band_half_width: float,
-    boundary_exclusion: float,
-    spatial_folds: int,
-) -> tuple[pd.DataFrame, dict[str, Any]]:
-    frame = grid.copy()
-    frame["signed_mass"] = evaluate_signed_mass(definition, frame)
-    independent = definition["independent_parameter"]
-    x = frame[independent].to_numpy(float)
-
-    x_min = float(definition["x_min"])
-    x_max = float(definition["x_max"])
-    x_margin = max(0.02, 0.15 * (x_max - x_min))
-    selected = frame[
-        frame["paper_phase_code"].isin([-2, 2])
-        & (frame["signed_mass"].abs() <= float(band_half_width))
-        & (frame["signed_mass"].abs() >= float(boundary_exclusion))
-        & (frame[independent] >= x_min - x_margin)
-        & (frame[independent] <= x_max + x_margin)
-    ].copy()
-    if len(selected) < 8:
-        return selected, {
-            "branch_hint": definition["branch_hint"],
-            "n_points": int(len(selected)),
-            "n_folds_evaluated": 0,
-            "balanced_accuracy": np.nan,
-            "accuracy": np.nan,
-            "macro_f1": np.nan,
-            "status": "insufficient_local_grid_points",
-        }
-
-    selected["mass_sign"] = np.where(selected["signed_mass"] >= 0, 1, -1)
-    edges = np.linspace(
-        float(selected[independent].min()),
-        float(selected[independent].max()),
-        int(spatial_folds) + 1,
-    )
-    selected["spatial_fold"] = np.clip(
-        np.digitize(selected[independent], edges[1:-1], right=False),
-        0,
-        spatial_folds - 1,
-    )
-
-    prediction_rows = []
-    for fold in sorted(selected["spatial_fold"].unique()):
-        train = selected[selected["spatial_fold"] != fold]
-        test = selected[selected["spatial_fold"] == fold]
-        if len(test) == 0:
-            continue
-        mapping = mapping_from_train(
-            train["mass_sign"].to_numpy(int),
-            train["paper_phase_code"].to_numpy(int),
-        )
-        if set(mapping) != {-1, 1}:
-            continue
-        predicted = np.array(
-            [mapping[int(sign)] for sign in test["mass_sign"]],
-            dtype=int,
-        )
-        part = test[
-            ["r3", "r4", "signed_mass", "mass_sign", "paper_phase_code", "spatial_fold"]
-        ].copy()
-        part["prediction"] = predicted
-        part["branch_hint"] = definition["branch_hint"]
-        prediction_rows.append(part)
-
-    if not prediction_rows:
-        return selected, {
-            "branch_hint": definition["branch_hint"],
-            "n_points": int(len(selected)),
-            "n_folds_evaluated": 0,
-            "balanced_accuracy": np.nan,
-            "accuracy": np.nan,
-            "macro_f1": np.nan,
-            "status": "no_valid_spatial_folds",
-        }
-
-    predictions = pd.concat(prediction_rows, ignore_index=True)
-    y = predictions["paper_phase_code"].to_numpy(int)
-    p = predictions["prediction"].to_numpy(int)
-    metrics = {
-        "branch_hint": definition["branch_hint"],
-        "n_points": int(len(selected)),
-        "n_predictions": int(len(predictions)),
-        "n_folds_evaluated": int(predictions["spatial_fold"].nunique()),
-        "balanced_accuracy": float(balanced_accuracy_score(y, p)),
-        "accuracy": float(accuracy_score(y, p)),
-        "macro_f1": float(f1_score(y, p, average="macro")),
-        "status": "evaluated",
-    }
-    return predictions, metrics
-
-
-# -----------------------------------------------------------------------------
-# Aggregation and figures
-# -----------------------------------------------------------------------------
-
-
-def collect_bridge_payloads(config: Step11Config) -> list[dict[str, Any]]:
-    rows = []
-    for path in sorted((config.output_dir / "bridge_points").glob("*.json")):
-        rows.append(json.loads(path.read_text(encoding="utf-8")))
-    return rows
-
-
-def refit_completed_branches(
-    step10_points: pd.DataFrame,
-    bridge_payloads: list[dict[str, Any]],
-    config: Step11Config,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    rows = [step10_points]
-    new_rows = []
-    for payload in bridge_payloads:
-        summary = payload.get("point_summary", {})
-        if int(summary.get("point_certificate_pass", 0) or 0) == 1:
-            new_rows.append(summary)
-    if new_rows:
-        rows.append(pd.DataFrame(new_rows))
-    points = pd.concat(rows, ignore_index=True)
-    points = step10.deduplicate_points(points, distance=2.5e-3)
-
-    continuation = step10.ContinuationConfig(
-        output_dir=config.output_dir / "_fit_internal",
-        min_branch_points_for_fit=4,
-    )
-    fit_rows = [
-        step10.fit_branch(group, branch, 4)
-        for branch, group in points.groupby("branch_hint")
+    cs1_results = [
+        result
+        for result in results
+        if int(result["selected"].expected_chern_up) == 1
     ]
-    fits = pd.DataFrame(fit_rows)
-    mass_atlas = step10.branch_mass_atlas(
-        points,
-        bootstrap_repeats=(200 if config.quick else 1000),
-        seed=config.random_seed,
+    for role, row_results, stem_name in (
+        (
+            "three_system_bulk_edge_rows",
+            cs1_results,
+            "Fig_bulk_edge_three_systems_Cs_plus1",
+        ),
+        (
+            "four_case_bulk_edge_rows",
+            results,
+            "Fig_bulk_edge_four_topological_cases",
+        ),
+    ):
+        for path in plot_bulk_edge_rows(
+            row_results,
+            specs,
+            figures_dir / stem_name,
+            settings.dpi,
+            primary_svg_editable=(
+                stem_name == "Fig_bulk_edge_four_topological_cases"
+            ),
+        ):
+            manifest.append(
+                {
+                    "figure_role": role,
+                    "case_id": "multiple",
+                    "path": path,
+                }
+            )
+    for role, files in (
+        (
+            "optional_four_panel_edge_composite",
+            plot_surface_four(
+                results,
+                specs,
+                figures_dir / "Fig_maintext_four_edge_spectra",
+                settings.dpi,
+            ),
+        ),
+        (
+            "optional_four_panel_hall_composite",
+            plot_hall_four(
+                results,
+                specs,
+                figures_dir / "Fig_maintext_four_hall_conductivity",
+                settings.dpi,
+            ),
+        ),
+    ):
+        for path in files:
+            manifest.append(
+                {"figure_role": role, "case_id": "all_four", "path": path}
+            )
+    pd.DataFrame(manifest).to_csv(
+        output_dir / "step19_04_figure_manifest.csv",
+        index=False,
     )
-    return points, fits, mass_atlas
 
-
-def plot_fixed_slice_phase_map(
-    formal_grid: pd.DataFrame,
-    certified_points: pd.DataFrame,
-    fits: pd.DataFrame,
-    junction_grid: pd.DataFrame,
-    output_path: Path,
-) -> None:
-    cmap = ListedColormap([PHASE_COLORS[value] for value in PHASE_ORDER])
-    norm = BoundaryNorm(
-        [-2.5, -1.5, -0.5, 0.5, 1.5, 2.5, 99.5],
-        cmap.N,
-    )
-
-    pivot = formal_grid.pivot(
-        index="scan_iy",
-        columns="scan_ix",
-        values="paper_phase_code",
-    ).sort_index()
-    x = formal_grid.pivot(
-        index="scan_iy",
-        columns="scan_ix",
-        values="scan_x",
-    ).sort_index().iloc[0].to_numpy(float)
-    y = formal_grid.pivot(
-        index="scan_iy",
-        columns="scan_ix",
-        values="scan_y",
-    ).sort_index().iloc[:, 0].to_numpy(float)
-
-    def edges(values: np.ndarray) -> np.ndarray:
-        mids = 0.5 * (values[:-1] + values[1:])
-        return np.r_[
-            values[0] - (mids[0] - values[0]),
-            mids,
-            values[-1] + (values[-1] - mids[-1]),
-        ]
-
-    fig, ax = plt.subplots(figsize=(16.0 / 2.54, 10.0 / 2.54))
-    ax.pcolormesh(
-        edges(x),
-        edges(y),
-        pivot.to_numpy(float),
-        cmap=cmap,
-        norm=norm,
-        shading="flat",
-    )
-
-    markers = {
-        "generic_left_lower": "s",
-        "generic_right_upper": "^",
+    print("[4/4] Validation certificate", flush=True)
+    hall_by_case = {
+        str(row["case_id"]): row
+        for row in hall_records
     }
-    for branch, group in certified_points.groupby("branch_hint"):
-        ax.scatter(
-            group["r3"],
-            group["r4"],
-            s=25,
-            marker=markers.get(branch, "D"),
-            facecolors="white",
-            edgecolors="black",
-            linewidths=0.8,
-            label=branch.replace("generic_", "") + " certified",
-        )
-        fit = fits[
-            fits["branch_hint"].astype(str).eq(branch)
-            & fits["fit_available"].astype(int).eq(1)
-        ]
-        if len(fit):
-            row = fit.iloc[0]
-            xx = np.linspace(float(row["x_min"]), float(row["x_max"]), 300)
-            yy = polynomial_value(row, xx)
-            if row["independent_parameter"] == "r3":
-                ax.plot(xx, yy, "k-", linewidth=1.0)
-            else:
-                ax.plot(yy, xx, "k-", linewidth=1.0)
-
-    if len(junction_grid):
-        reliable = junction_grid[
-            junction_grid["paper_phase_code"].isin([-2, 0, 2])
-        ]
-        ax.scatter(
-            reliable["r3"],
-            reliable["r4"],
-            s=10,
-            marker=".",
-            color="black",
-            label="strict junction grid",
-        )
-
-    ax.set_xlabel(r"$r_3$")
-    ax.set_ylabel(r"$r_4$")
-    ax.set_xlim(-0.82, 0.11)
-    ax.set_ylim(-0.21, 0.16)
-    ax.tick_params(direction="in", top=True, right=True)
-    ax.legend(frameon=False, loc="upper left", bbox_to_anchor=(1.01, 1.0))
-    fig.tight_layout()
-    fig.savefig(output_path.with_suffix(".png"), dpi=1200, bbox_inches="tight")
-    fig.savefig(output_path.with_suffix(".pdf"), bbox_inches="tight")
-    fig.savefig(output_path.with_suffix(".svg"), bbox_inches="tight")
-    plt.close(fig)
-
-
-def plot_mass_coordinate_validation(
-    predictions: pd.DataFrame,
-    output_path: Path,
-) -> None:
-    if predictions.empty:
-        return
-    fig, ax = plt.subplots(figsize=(12.0 / 2.54, 7.0 / 2.54))
-    markers = {
-        "generic_left_lower": "s",
-        "generic_right_upper": "^",
-    }
-    for branch, group in predictions.groupby("branch_hint"):
-        ax.scatter(
-            group["signed_mass"],
-            group["paper_phase_code"],
-            s=20,
-            marker=markers.get(branch, "o"),
-            facecolors="none",
-            edgecolors="black",
-            linewidths=0.7,
-            label=branch.replace("generic_", ""),
-        )
-    ax.axvline(0.0, linestyle="--", linewidth=0.8, color="black")
-    ax.set_xlabel("local signed mass coordinate")
-    ax.set_ylabel(r"$C_\uparrow$")
-    ax.set_yticks([-2, 2])
-    ax.tick_params(direction="in", top=True, right=True)
-    ax.legend(frameon=False)
-    fig.tight_layout()
-    fig.savefig(output_path.with_suffix(".png"), dpi=1200, bbox_inches="tight")
-    fig.savefig(output_path.with_suffix(".pdf"), bbox_inches="tight")
-    fig.savefig(output_path.with_suffix(".svg"), bbox_inches="tight")
-    plt.close(fig)
-
-
-def aggregate_step11(
-    *,
-    formal_scan_source: str | Path,
-    step10_source: str | Path,
-    output_dir: str | Path,
-    config: Step11Config,
-) -> dict[str, Any]:
-    config = config.normalized()
-    tables = load_step10_tables(step10_source)
-    background = validate_fixed_background(tables["points"])
-    bridge_payloads = collect_bridge_payloads(config)
-    points, fits, mass_atlas = refit_completed_branches(
-        tables["points"],
-        bridge_payloads,
-        config,
-    )
-
-    points.to_csv(
-        config.output_dir / "step11M_07_completed_certified_boundary_points.csv",
-        index=False,
-        encoding="utf-8-sig",
-    )
-    fits.to_csv(
-        config.output_dir / "step11M_08_fixed_slice_boundary_curve_fits.csv",
-        index=False,
-        encoding="utf-8-sig",
-    )
-    mass_atlas.to_csv(
-        config.output_dir / "step11M_09_fixed_slice_local_mass_atlas.csv",
-        index=False,
-        encoding="utf-8-sig",
-    )
-
-    definitions = []
-    for branch in sorted(points["branch_hint"].dropna().unique()):
-        definitions.append(
-            signed_mass_definition(fits, mass_atlas, str(branch))
-        )
-    definitions_df = pd.DataFrame(definitions)
-    definitions_df.to_csv(
-        config.output_dir / "step11M_10_local_signed_mass_definitions.csv",
-        index=False,
-        encoding="utf-8-sig",
-    )
-
-    formal_grid = load_formal_lower_grid(formal_scan_source)
-    prediction_frames = []
-    metric_rows = []
-    for definition in definitions:
-        predictions, metrics = validate_one_branch_mass(
-            formal_grid,
-            definition,
-            band_half_width=config.local_mass_band_half_width,
-            boundary_exclusion=config.boundary_exclusion_width,
-            spatial_folds=config.spatial_folds,
-        )
-        if not predictions.empty and "prediction" in predictions:
-            prediction_frames.append(predictions)
-        metric_rows.append(metrics)
-
-    predictions_df = (
-        pd.concat(prediction_frames, ignore_index=True)
-        if prediction_frames else pd.DataFrame()
-    )
-    metrics_df = pd.DataFrame(metric_rows)
-    predictions_df.to_csv(
-        config.output_dir / "step11M_11_spatial_holdout_predictions.csv",
-        index=False,
-        encoding="utf-8-sig",
-    )
-    metrics_df.to_csv(
-        config.output_dir / "step11M_12_spatial_holdout_mass_metrics.csv",
-        index=False,
-        encoding="utf-8-sig",
-    )
-
-    junction_path = (
-        config.output_dir / "step11M_03_right_junction_strict_grid.csv"
-    )
-    junction_grid = (
-        pd.read_csv(junction_path, low_memory=False)
-        if junction_path.is_file() else pd.DataFrame()
-    )
-    edge_cert_path = (
-        config.output_dir / "step11M_06_junction_edge_certificates.csv"
-    )
-    edge_certificates = (
-        pd.read_csv(edge_cert_path, low_memory=False)
-        if edge_cert_path.is_file() else pd.DataFrame()
-    )
-
-    plot_fixed_slice_phase_map(
-        formal_grid,
-        points,
-        fits,
-        junction_grid,
-        config.output_dir / "figures" / "step11M_fixed_slice_mechanism_map",
-    )
-    plot_mass_coordinate_validation(
-        predictions_df,
-        config.output_dir / "figures" / "step11M_local_mass_coordinate_validation",
-    )
-
-    background_json = {
-        name: float(value) for name, value in background.items()
-    }
-    (config.output_dir / "step11M_00_fixed_background.json").write_text(
-        json.dumps(background_json, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-    bridge_new = points[
-        points["point_id"].astype(str).str.startswith("left_bridge_target_")
+    insulating_case_ids = [
+        row["case_id"]
+        for row in audit_records
+        if row["classification"] == "spin_chern_insulator"
     ]
+    plateau_errors = {
+        case_id: abs(
+            float(hall_by_case[case_id]["mid_reference_sigma_up"])
+            - float(
+                next(
+                    row["expected_C_s"]
+                    for row in audit_records
+                    if row["case_id"] == case_id
+                )
+            )
+        )
+        for case_id in insulating_case_ids
+    }
     certificate = {
         "code_version": CODE_VERSION,
-        "research_design": "Lieb_aligned_fixed_reduced_plane",
-        "fixed_background_parameters": background_json,
-        "free_plane_parameters": ["r3", "r4"],
-        "n_step10_input_points": int(len(tables["points"])),
-        "n_new_certified_bridge_points": int(len(bridge_new)),
-        "n_completed_certified_points": int(len(points)),
-        "n_local_signed_mass_definitions": int(len(definitions_df)),
-        "all_background_parameters_remain_fixed": True,
-        "mass_coordinate_validation": metrics_df.to_dict("records"),
-        "junction_grid_completed": bool(len(junction_grid) > 0),
-        "n_junction_reliable_points": int(
-            junction_grid["paper_phase_code"].isin([-2, 0, 2]).sum()
-        ) if len(junction_grid) else 0,
-        "n_junction_edge_certificates": int(len(edge_certificates)),
-        "n_junction_edges_certified": int(
-            edge_certificates.get(
-                "edge_multiclosure_certificate_pass",
-                pd.Series(dtype=int),
-            ).fillna(0).astype(int).sum()
-        ) if len(edge_certificates) else 0,
-        "interpretation": {
-            "methodological_scope": (
-                "This is a representative fixed-background r3-r4 mechanism plane, "
-                "analogous to the fixed-parameter planes used in the Lieb analysis."
-            ),
-            "valid_claim": (
-                "The certified local signed masses organize the -2/+2 boundaries "
-                "within this reduced plane."
-            ),
-            "not_claimed": (
-                "No universal seven-dimensional phase boundary is claimed or required."
-            ),
-        },
+        "generated_utc": core.utc_now(),
+        "quick_mode": bool(quick),
+        "case_count": len(results),
+        "case_order": list(CASE_ORDER),
+        "all_chern_match": bool(
+            all(int(row["chern_matches_selection"]) == 1 for row in audit_records)
+        ),
+        "all_direct_gapped": bool(
+            all(int(row["is_direct_gapped"]) == 1 for row in audit_records)
+        ),
+        "global_insulator_count": int(
+            sum(int(row["is_global_insulator"]) for row in audit_records)
+        ),
+        "band_metal_cases": [
+            row["case_id"]
+            for row in audit_records
+            if row["classification"] == "spin_chern_band_metal"
+        ],
+        "insulating_midgap_hall_plateau_abs_errors": plateau_errors,
+        "insulating_hall_plateaus_pass": bool(
+            all(error < (0.12 if quick else 0.035) for error in plateau_errors.values())
+        ),
+        "mid_reference_charge_cancellation_pass": bool(
+            all(
+                abs(float(row["mid_reference_sigma_charge"])) < 5.0e-6
+                for row in hall_records
+            )
+        ),
+        "fes_interpretation": (
+            "The selected FES C_s=+1 state is direct-gapped but has a negative "
+            "indirect gap. It is therefore reported as a spin-Chern band metal; "
+            "its Fermi-level Hall value is not claimed as a quantized plateau."
+        ),
+        "supplementary_relation": (
+            "The Step18 nine-state topological/critical/Chern-changed triptychs "
+            "remain unchanged and are intended for supplementary material."
+        ),
+        "runtime_seconds": float(time.time() - started),
     }
-    (config.output_dir / "step11M_13_fixed_slice_certificate.json").write_text(
-        json.dumps(certificate, ensure_ascii=False, indent=2),
+    (output_dir / "step19_05_validation_certificate.json").write_text(
+        json.dumps(certificate, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
+    readme = (
+        "# Main-text four-topology package\n\n"
+        "The four individual `Fig_maintext_*_edge_and_hall` files are the "
+        "recommended main-text choices. Each combines the semi-infinite edge "
+        "spectral function and the matching spin-resolved Hall response. "
+        "`Fig_maintext_four_edge_spectra` and "
+        "`Fig_maintext_four_hall_conductivity` are optional 2x2 composites.\n\n"
+        "Cases: (a) Lieb C_s=+1; (b) FES C_s=+1; "
+        "(c) TTS C_s=+1; (d) TTS C_s=+2.\n\n"
+        "Important: the FES case is a direct-gapped spin-Chern band metal "
+        "because its indirect gap is negative. Its Hall response is therefore "
+        "not described as a quantized insulating plateau.\n"
+    )
+    (output_dir / "README.md").write_text(readme, encoding="utf-8")
+    if not certificate["all_chern_match"]:
+        raise RuntimeError("At least one main-text Chern number failed")
+    if not certificate["all_direct_gapped"]:
+        raise RuntimeError("At least one main-text case is not direct-gapped")
+    if not certificate["insulating_hall_plateaus_pass"]:
+        raise RuntimeError("An insulating Hall plateau did not converge")
+    if not certificate["mid_reference_charge_cancellation_pass"]:
+        raise RuntimeError("Time-reversal charge Hall cancellation failed")
+    print(
+        f"Done: {output_dir} ({certificate['runtime_seconds']:.1f} s)",
+        flush=True,
+    )
+    return certificate
 
-    formula_lines = [
-        "# TTS Step11M local signed masses",
-        "",
-        "Fixed background:",
-        *[
-            f"- `{name} = {background[name]:+.10g}`"
-            for name in FIXED5
-        ],
-        "",
-    ]
-    for definition in definitions:
-        formula_lines.extend([
-            f"## {definition['branch_hint']}",
-            "",
-            f"`M = {definition['formula']}`",
-            "",
-            (
-                f"Validated only for "
-                f"{definition['independent_parameter']} in "
-                f"[{definition['x_min']:+.6f}, {definition['x_max']:+.6f}]."
-            ),
-            "",
-        ])
-    (config.output_dir / "step11M_14_local_signed_mass_formulas.md").write_text(
-        "\n".join(formula_lines),
+
+def refresh_wide_edge_surfaces(output_dir: Path) -> dict[str, Any]:
+    """Calculate only the wide-energy surface spectra needed by edge figures."""
+    configure_step19_plot_style()
+    output_dir = Path(output_dir)
+    data_dir = output_dir / "data"
+    specs, modules = core.build_model_specs()
+    cases = select_main_cases(modules)
+    settings = core.build_settings(False)
+    refreshed: list[str] = []
+    for case in cases:
+        selected: core.SelectedState = case["selected"]
+        if selected.system not in ("lieb", "tts"):
+            continue
+        case_id = str(case["case_id"])
+        sample_dir = data_dir / case_id
+        metadata = json.loads(
+            (sample_dir / "parameters_and_reference.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        ef = float(metadata["energy_reference"])
+        hoppings = core.extract_hoppings(
+            specs[selected.system],
+            selected.params,
+            nfft=settings.fourier_n,
+        )
+        eta = 0.0072 if selected.system == "lieb" else 0.0045
+        print(
+            f"Wide edge surface {case_id}: E=[-1.5,1.5], "
+            f"nk={settings.surface_k_points}, nE=361, eta={eta:.4g}",
+            flush=True,
+        )
+        surface = core.calculate_surface(
+            specs[selected.system],
+            hoppings,
+            ef,
+            1.5,
+            settings.surface_k_points,
+            361,
+            eta,
+        )
+        np.savez_compressed(
+            sample_dir
+            / "wanniertools_style_surface_spectrum_wide_Eminus1p5_to_1p5.npz",
+            **surface,
+        )
+        refreshed.append(case_id)
+    certificate = replot_existing(output_dir)
+    certificate_path = output_dir / "step19_05_validation_certificate.json"
+    certificate["wide_edge_surface_refresh_utc"] = core.utc_now()
+    certificate["wide_edge_surface_cases"] = refreshed
+    certificate["wide_edge_surface_energy_range"] = [-1.5, 1.5]
+    certificate["edge_spin_color_policy"] = (
+        "C_up is red and C_down is blue for all edge-only figures."
+    )
+    certificate_path.write_text(
+        json.dumps(certificate, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
     return certificate
 
 
-# -----------------------------------------------------------------------------
-# Complete public workflow
-# -----------------------------------------------------------------------------
+def refresh_four_case_editable_svg(output_dir: Path) -> Path:
+    """Regenerate only the four-case SVG as an Inkscape-editable hybrid."""
+    configure_step19_plot_style()
+    output_dir = Path(output_dir)
+    figures_dir = output_dir / "figures"
+    data_dir = output_dir / "data"
+    audit_path = output_dir / "step19_01_maintext_case_summary.csv"
+    if not audit_path.is_file():
+        raise FileNotFoundError(audit_path)
+    specs, modules = core.build_model_specs()
+    cases = select_main_cases(modules)
+    settings = core.build_settings(False)
+    audit_df = pd.read_csv(audit_path)
+    results: list[dict[str, Any]] = []
+    for case in cases:
+        case_id = str(case["case_id"])
+        selected: core.SelectedState = case["selected"]
+        sample_dir = data_dir / case_id
+        metadata = json.loads(
+            (sample_dir / "parameters_and_reference.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        wide_surface_path = (
+            sample_dir
+            / "wanniertools_style_surface_spectrum_wide_Eminus1p5_to_1p5.npz"
+        )
+        surface_path = (
+            wide_surface_path
+            if wide_surface_path.is_file()
+            else sample_dir / "wanniertools_style_surface_spectrum.npz"
+        )
+        with np.load(surface_path, allow_pickle=False) as stored:
+            surface = {name: stored[name] for name in stored.files}
+        bulk_square, bulk_square_ticks, bulk_square_labels = (
+            calculate_square_bulk_bands(
+                specs[selected.system],
+                selected,
+                float(metadata["energy_reference"]),
+                settings.band_points_per_segment,
+            )
+        )
+        audit = audit_df[
+            audit_df["case_id"].astype(str) == case_id
+        ].iloc[0].to_dict()
+        results.append(
+            {
+                "case_id": case_id,
+                "selected": selected,
+                "audit": audit,
+                "window": float(metadata["plot_window"]),
+                "surface": surface,
+                "bulk_square": bulk_square,
+                "bulk_square_ticks": bulk_square_ticks,
+                "bulk_square_labels": bulk_square_labels,
+            }
+        )
+    svg_path = (
+        figures_dir / "Fig_bulk_edge_four_topological_cases.svg"
+    )
+    plot_bulk_edge_rows(
+        results,
+        specs,
+        svg_path.with_suffix(""),
+        settings.dpi,
+        primary_svg_editable=True,
+        svg_only=True,
+    )
+    print(f"Editable four-case SVG refreshed: {svg_path}", flush=True)
+    return svg_path
 
 
-def run_step11m(
-    *,
-    tts_archive: str | Path,
-    formal_scan_source: str | Path,
-    step10_source: str | Path,
-    output_dir: str | Path,
-    config: Step11Config | None = None,
-    run_bridge: bool = True,
-    run_junction_grid: bool = True,
-    run_junction_edges: bool = True,
-) -> dict[str, Any]:
-    if config is None:
-        config = Step11Config(output_dir=Path(output_dir))
-    config.output_dir = Path(output_dir)
-    config = config.normalized()
-
-    if run_bridge:
-        run_left_bridge_completion(
-            tts_archive=tts_archive,
-            step10_source=step10_source,
-            output_dir=output_dir,
-            config=config,
+def replot_existing(output_dir: Path) -> dict[str, Any]:
+    """Rebuild figures from saved numerical data without recalculation."""
+    configure_step19_plot_style()
+    output_dir = Path(output_dir)
+    figures_dir = output_dir / "figures"
+    data_dir = output_dir / "data"
+    audit_path = output_dir / "step19_01_maintext_case_summary.csv"
+    if not audit_path.is_file():
+        raise FileNotFoundError(audit_path)
+    specs, modules = core.build_model_specs()
+    cases = select_main_cases(modules)
+    settings = core.build_settings(False)
+    audit_df = pd.read_csv(audit_path)
+    results: list[dict[str, Any]] = []
+    for case in cases:
+        case_id = str(case["case_id"])
+        selected: core.SelectedState = case["selected"]
+        sample_dir = data_dir / case_id
+        metadata = json.loads(
+            (sample_dir / "parameters_and_reference.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        wide_surface_path = (
+            sample_dir
+            / "wanniertools_style_surface_spectrum_wide_Eminus1p5_to_1p5.npz"
+        )
+        surface_path = (
+            wide_surface_path
+            if wide_surface_path.is_file()
+            else sample_dir / "wanniertools_style_surface_spectrum.npz"
+        )
+        with np.load(surface_path, allow_pickle=False) as stored:
+            surface = {name: stored[name] for name in stored.files}
+        hall = pd.read_csv(sample_dir / "wanniertools_style_hall.csv")
+        bulk_square_path = (
+            sample_dir / "bulk_bands_display_path.csv"
+        )
+        bulk_square, bulk_square_ticks, bulk_square_labels = (
+            calculate_square_bulk_bands(
+                specs[selected.system],
+                selected,
+                float(metadata["energy_reference"]),
+                settings.band_points_per_segment,
+            )
+        )
+        bulk_square.to_csv(bulk_square_path, index=False)
+        audit = audit_df[
+            audit_df["case_id"].astype(str) == case_id
+        ].iloc[0].to_dict()
+        results.append(
+            {
+                "case_id": case_id,
+                "selected": selected,
+                "audit": audit,
+                "window": float(metadata["plot_window"]),
+                "surface": surface,
+                "hall": hall,
+                "bulk_square": bulk_square,
+                "bulk_square_ticks": bulk_square_ticks,
+                "bulk_square_labels": bulk_square_labels,
+            }
         )
 
-    junction_grid = pd.DataFrame()
-    if run_junction_grid:
-        junction_grid = run_junction_strict_grid(
-            tts_archive=tts_archive,
-            step10_source=step10_source,
-            output_dir=output_dir,
-            config=config,
+    dpi = settings.dpi
+    manifest: list[dict[str, str]] = []
+    for result in results:
+        case_id = result["case_id"]
+        files = plot_individual_pair(
+            result,
+            specs,
+            figures_dir / f"Fig_maintext_{case_id}_edge_and_hall",
+            dpi,
         )
-    else:
-        path = config.output_dir / "step11M_03_right_junction_strict_grid.csv"
-        if path.is_file():
-            junction_grid = pd.read_csv(path, low_memory=False)
-
-    if run_junction_edges and len(junction_grid):
-        run_junction_edge_certificates(
-            tts_archive=tts_archive,
-            step10_source=step10_source,
-            junction_grid=junction_grid,
-            output_dir=output_dir,
-            config=config,
+        for path in files:
+            manifest.append(
+                {
+                    "figure_role": "individual_spin_resolved_edge_and_hall",
+                    "case_id": case_id,
+                    "path": path,
+                }
+            )
+        edge_files = plot_edge_only_individual(
+            result,
+            specs,
+            figures_dir / f"Fig_edge_only_{case_id}_Cup_Cdown",
+            dpi,
         )
-
-    (config.output_dir / "step11M_run_config.json").write_text(
-        json.dumps(asdict(config), ensure_ascii=False, indent=2, default=str),
+        for path in edge_files:
+            manifest.append(
+                {
+                    "figure_role": "individual_edge_only_Cup_Cdown",
+                    "case_id": case_id,
+                    "path": path,
+                }
+            )
+        bulk_edge_files = plot_bulk_edge_individual(
+            result,
+            specs,
+            figures_dir / f"Fig_bulk_edge_pair_{case_id}",
+            dpi,
+        )
+        for path in bulk_edge_files:
+            manifest.append(
+                {
+                    "figure_role": "individual_bulk_edge_pair",
+                    "case_id": case_id,
+                    "path": path,
+                }
+            )
+    for path in plot_edge_only_three_systems(
+        results,
+        specs,
+        figures_dir / "Fig_edge_only_three_systems_Cup_Cdown",
+        dpi,
+    ):
+        manifest.append(
+            {
+                "figure_role": "three_system_edge_only_Cup_Cdown",
+                "case_id": "lieb_fes_tts_Cs_plus1",
+                "path": path,
+            }
+        )
+    cs1_results = [
+        result
+        for result in results
+        if int(result["selected"].expected_chern_up) == 1
+    ]
+    for role, row_results, stem_name in (
+        (
+            "three_system_bulk_edge_rows",
+            cs1_results,
+            "Fig_bulk_edge_three_systems_Cs_plus1",
+        ),
+        (
+            "four_case_bulk_edge_rows",
+            results,
+            "Fig_bulk_edge_four_topological_cases",
+        ),
+    ):
+        for path in plot_bulk_edge_rows(
+            row_results,
+            specs,
+            figures_dir / stem_name,
+            dpi,
+            primary_svg_editable=(
+                stem_name == "Fig_bulk_edge_four_topological_cases"
+            ),
+        ):
+            manifest.append(
+                {
+                    "figure_role": role,
+                    "case_id": "multiple",
+                    "path": path,
+                }
+            )
+    for role, files in (
+        (
+            "four_panel_spin_resolved_edge_composite",
+            plot_surface_four(
+                results,
+                specs,
+                figures_dir / "Fig_maintext_four_edge_spectra",
+                dpi,
+            ),
+        ),
+        (
+            "four_panel_spin_resolved_hall_composite",
+            plot_hall_four(
+                results,
+                specs,
+                figures_dir / "Fig_maintext_four_hall_conductivity",
+                dpi,
+            ),
+        ),
+    ):
+        for path in files:
+            manifest.append(
+                {"figure_role": role, "case_id": "all_four", "path": path}
+            )
+    pd.DataFrame(manifest).to_csv(
+        output_dir / "step19_04_figure_manifest.csv",
+        index=False,
+    )
+    certificate_path = output_dir / "step19_05_validation_certificate.json"
+    certificate = json.loads(certificate_path.read_text(encoding="utf-8"))
+    certificate["figure_revision_utc"] = core.utc_now()
+    certificate["figure_revision"] = (
+        "Bulk and edge spectra are paired case by case. All spin-up bulk "
+        "bands are solid red and all spin-down bulk bands are solid blue; "
+        "exactly degenerate red/blue curves use nested solid strokes so both "
+        "remain visible. Primary SVG files are complete Inkscape-compatible "
+        "single-layer figures, with companion *_editable.svg files retaining "
+        "vector text, axes, and bulk curves."
+    )
+    certificate_path.write_text(
+        json.dumps(certificate, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
-    return aggregate_step11(
-        formal_scan_source=formal_scan_source,
-        step10_source=step10_source,
-        output_dir=output_dir,
-        config=config,
+    print(
+        f"Replotted without numerical recalculation: {figures_dir}",
+        flush=True,
     )
+    return certificate
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=DEFAULT_OUTPUT,
+    )
+    parser.add_argument(
+        "--quick",
+        action="store_true",
+        help="Small numerical grids for pipeline testing only.",
+    )
+    parser.add_argument(
+        "--replot-only",
+        action="store_true",
+        help="Regenerate figures from saved Step19 data without recalculation.",
+    )
+    parser.add_argument(
+        "--refresh-wide-edge-only",
+        action="store_true",
+        help=(
+            "Calculate Lieb/TTS surface spectra on E in [-1.5,1.5] and "
+            "regenerate edge figures; Hall and bulk data are not recalculated."
+        ),
+    )
+    parser.add_argument(
+        "--editable-four-case-svg-only",
+        action="store_true",
+        help=(
+            "Regenerate only Fig_bulk_edge_four_topological_cases.svg with "
+            "editable vector axes, curves, text, legends, and colour bars."
+        ),
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    if args.editable_four_case_svg_only:
+        svg_path = refresh_four_case_editable_svg(args.output_dir)
+        print(
+            json.dumps(
+                {"editable_four_case_svg": str(svg_path)},
+                indent=2,
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+        return
+    if args.refresh_wide_edge_only:
+        certificate = refresh_wide_edge_surfaces(args.output_dir)
+    elif args.replot_only:
+        certificate = replot_existing(args.output_dir)
+    else:
+        certificate = run(args.output_dir, quick=bool(args.quick))
+    print(json.dumps(certificate, indent=2, ensure_ascii=False), flush=True)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,1 +1,1 @@
-pdf_tex_edits/999_source_code_appendix.tex
+gamma = 120°

@@ -1,4 +1,3 @@
-
 # v1.8
 my_model.display()
 

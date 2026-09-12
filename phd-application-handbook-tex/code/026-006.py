@@ -1,5 +1,3 @@
-
-
 kmesh_tol=0.00001
 !exclude_bands:1-2
 dis_win_min =-9.61

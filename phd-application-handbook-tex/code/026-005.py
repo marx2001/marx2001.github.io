@@ -1,4 +1,3 @@
-
 # oribitals sequences are adopted as in wannier90/manuals: p = [pz,px,pz], t2g = [dxz,dyz,dxy] and 
 # d = [dz2,dxz,dyz,dx2_y2,dxy], f = [fz3,fxz2,fyz2,fzx2_zy2,fxyz,fx3_3xy2,f3yx2_y3]
 # more often than not atoms in wannier is just a sub set of crystal cell atoms. you should point out the

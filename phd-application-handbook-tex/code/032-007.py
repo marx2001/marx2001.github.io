@@ -1,4 +1,3 @@
-
 # Wind the first k-space dimension
 mesh.loop(axis_idx=0, component_idx=0, winds_bz=True, closed=False)
 

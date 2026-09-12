@@ -1,357 +1,385 @@
-
-import re
 import csv
-import math
 import argparse
-from collections import defaultdict, namedtuple
-
-import numpy as np
-
-Edge = namedtuple("Edge", "pair shell dist absH re im Rx Ry Rz m n atom_m atom_n elem_m elem_n")
+from dataclasses import dataclass
+from collections import defaultdict
+from typing import Tuple, List, Dict, Optional
 
 
-# =========================
-# Parse wannier90.win
-# =========================
-def _extract_block(txt, block_name):
-    m = re.search(rf"begin\s+{block_name}(.*?)end\s+{block_name}", txt, re.S | re.I)
-    return None if not m else m.group(1).strip()
+@dataclass(frozen=True)
+class DirEdge:
+    # directed edge: u(cell_shift) -> v(cell_shift + R)
+    u_atom: int
+    v_atom: int
+    u_elem: str
+    v_elem: str
+    u_group: str
+    v_group: str
+    u_wf: int   # 1-based wf index
+    v_wf: int   # 1-based wf index
+    Rx: int
+    Ry: int
+    Rz: int
+    absH: float
+    dist: float
 
-def parse_win_lattice_and_atoms(win_path):
+
+def parse_edges_csv(path: str, prefer_group: bool = True) -> List[DirEdge]:
     """
-    Read unit_cell_cart and atoms_cart from wannier90.win.
-    Assumes Angstrom if unit not specified (your file matches this).
-    Returns:
-      A (3x3) with columns = a1,a2,a3 in Angstrom, so cart = A @ frac
-      atoms: list of dict {id, elem, r_cart(np.array shape(3))}
+    Read out_edges csv produced by NEW 1step (recommended) or old format.
+    Required columns (minimum):
+      dist_A, absH_eV, Rx,Ry,Rz, m,n, atom_m,atom_n, elem_m,elem_n
+    Optional (NEW, preferred):
+      group_m, group_n
+
+    If group_m/group_n exists and prefer_group=True, use them; otherwise fallback to elem.
     """
-    with open(win_path, "r", encoding="utf-8", errors="ignore") as f:
-        txt = f.read()
+    edges: List[DirEdge] = []
+    with open(path, "r", encoding="utf-8", errors="ignore", newline="") as f:
+        r = csv.DictReader(f)
+        required = ["dist_A", "absH_eV", "Rx", "Ry", "Rz",
+                    "m", "n", "atom_m", "atom_n", "elem_m", "elem_n"]
+        for k in required:
+            if k not in r.fieldnames:
+                raise RuntimeError(f"Missing column '{k}' in {path}. Found: {r.fieldnames}")
 
-    cell_block = _extract_block(txt, "unit_cell_cart")
-    if cell_block is None:
-        raise RuntimeError("Cannot find unit_cell_cart block in wannier90.win")
+        has_group = ("group_m" in r.fieldnames) and ("group_n" in r.fieldnames)
+        if prefer_group and (not has_group):
+            print("[WARN] group_m/group_n not found. Falling back to elem_m/elem_n filtering.")
 
-    lines = [ln.strip() for ln in cell_block.splitlines() if ln.strip()]
-    # Some files might include "Ang" or "Bohr" as first line; yours doesn't.
-    unit = None
-    if re.match(r"^(ang|angstrom|bohr)\b", lines[0], re.I):
-        unit = lines[0].lower()
-        vec_lines = lines[1:4]
-    else:
-        unit = "ang"
-        vec_lines = lines[0:3]
+        for row in r:
+            try:
+                dist = float(row["dist_A"])
+                absH = float(row["absH_eV"])
+                Rx, Ry, Rz = int(row["Rx"]), int(row["Ry"]), int(row["Rz"])
+                m, n = int(row["m"]), int(row["n"])
+                atom_m, atom_n = int(row["atom_m"]), int(row["atom_n"])
+                elem_m, elem_n = row["elem_m"].strip(), row["elem_n"].strip()
+            except Exception:
+                continue
 
-    if len(vec_lines) < 3:
-        raise RuntimeError("unit_cell_cart has < 3 lattice vectors")
+            if has_group:
+                gm = row["group_m"].strip()
+                gn = row["group_n"].strip()
+            else:
+                gm = elem_m
+                gn = elem_n
 
-    a1 = np.array([float(x) for x in vec_lines[0].split()[:3]], dtype=float)
-    a2 = np.array([float(x) for x in vec_lines[1].split()[:3]], dtype=float)
-    a3 = np.array([float(x) for x in vec_lines[2].split()[:3]], dtype=float)
+            # Add both directions to make path enumeration easier.
+            edges.append(DirEdge(atom_m, atom_n, elem_m, elem_n, gm, gn, m, n, Rx, Ry, Rz, absH, dist))
+            edges.append(DirEdge(atom_n, atom_m, elem_n, elem_m, gn, gm, n, m, -Rx, -Ry, -Rz, absH, dist))
 
-    if "bohr" in unit:
-        bohr_to_ang = 0.52917721092
-        a1 *= bohr_to_ang
-        a2 *= bohr_to_ang
-        a3 *= bohr_to_ang
-
-    # A columns are lattice vectors
-    A = np.stack([a1, a2, a3], axis=1)  # shape (3,3)
-
-    atoms_block = _extract_block(txt, "atoms_cart")
-    if atoms_block is None:
-        raise RuntimeError("Cannot find atoms_cart block in wannier90.win")
-
-    atoms = []
-    for idx, ln in enumerate([x for x in atoms_block.splitlines() if x.strip()], start=1):
-        parts = ln.split()
-        if len(parts) < 4:
-            continue
-        elem = parts[0]
-        r = np.array([float(parts[1]), float(parts[2]), float(parts[3])], dtype=float)
-        atoms.append({"id": idx, "elem": elem, "r": r})
-
-    if not atoms:
-        raise RuntimeError("atoms_cart parsed but got 0 atoms")
-
-    return A, atoms
+    return edges
 
 
-# =========================
-# Parse wannier90_centres.xyz
-# =========================
-def parse_centres_xyz(xyz_path):
+def load_onsite_from_hr(hr_path: str, num_wann: Optional[int] = None) -> Dict[int, float]:
     """
-    Parse wannier90_centres.xyz:
-    line1 = N
-    line2 = comment
-    then N lines: <label> x y z
-    Return centers list indexed 1..N: centers[wf] = np.array([x,y,z])
-    """
-    with open(xyz_path, "r", encoding="utf-8", errors="ignore") as f:
-        lines = [ln.strip() for ln in f if ln.strip()]
-
-    n = int(lines[0])
-    if len(lines) < 2 + n:
-        raise RuntimeError(f"centres.xyz incomplete: need {2+n} lines, got {len(lines)}")
-
-    centers = [None] * (n + 1)
-    for i in range(n):
-        parts = lines[2 + i].split()
-        if len(parts) < 4:
-            raise RuntimeError(f"Bad centres.xyz line: {lines[2+i]}")
-        centers[i + 1] = np.array([float(parts[1]), float(parts[2]), float(parts[3])], dtype=float)
-    return centers
-
-
-# =========================
-# Parse wannier90_hr.dat
-# =========================
-def parse_hr_dat(hr_path):
-    """
-    Yields (Rx, Ry, Rz, m, n, reH, imH)
+    Parse wannier90_hr.dat and extract onsite energies eps[m] = Re(H_mm(R=0)).
+    Returns dict: wf_index(1-based) -> eps_eV
     """
     with open(hr_path, "r", encoding="utf-8", errors="ignore") as f:
-        _ = f.readline()  # comment
-        num_wann = int(f.readline().strip())
-        nrpts = int(f.readline().strip())
+        lines = f.readlines()
 
-        # read degeneracy list
-        degen = []
-        while len(degen) < nrpts:
-            ln = f.readline()
-            if not ln:
-                raise RuntimeError("Unexpected EOF while reading degeneracy list")
-            ln = ln.strip()
-            if not ln:
-                continue
-            degen += [int(x) for x in ln.split()]
+    if len(lines) < 4:
+        raise RuntimeError(f"hr.dat too short: {hr_path}")
 
-        # data
-        for ln in f:
-            ln = ln.strip()
-            if not ln:
-                continue
-            parts = ln.split()
-            if len(parts) < 7:
-                continue
+    try:
+        nw = int(lines[1].split()[0])
+    except Exception:
+        raise RuntimeError("Failed to parse num_wann from hr.dat line2.")
+    if num_wann is not None and nw != num_wann:
+        print(f"[WARN] num_wann mismatch: hr={nw} vs --num_wann={num_wann}. Using hr value.")
+    num_wann = nw
+
+    try:
+        nrpts = int(lines[2].split()[0])
+    except Exception:
+        raise RuntimeError("Failed to parse nrpts from hr.dat line3.")
+
+    deg = []
+    idx = 3
+    while idx < len(lines) and len(deg) < nrpts:
+        parts = lines[idx].split()
+        for p in parts:
+            try:
+                deg.append(int(p))
+            except Exception:
+                pass
+        idx += 1
+    if len(deg) < nrpts:
+        raise RuntimeError("Failed to read full degeneracy list from hr.dat.")
+
+    eps: Dict[int, float] = {}
+    for j in range(idx, len(lines)):
+        parts = lines[j].split()
+        if len(parts) < 7:
+            continue
+        try:
             Rx, Ry, Rz = int(parts[0]), int(parts[1]), int(parts[2])
             m, n = int(parts[3]), int(parts[4])
-            reH, imH = float(parts[5]), float(parts[6])
-            yield Rx, Ry, Rz, m, n, reH, imH
+            re = float(parts[5])
+        except Exception:
+            continue
+
+        if Rx == 0 and Ry == 0 and Rz == 0 and m == n:
+            eps[m] = re
+
+    if len(eps) < num_wann:
+        print(f"[WARN] onsite found {len(eps)}/{num_wann}. Some WFs missing onsite (unusual).")
+    else:
+        print(f"[INFO] onsite found {len(eps)}/{num_wann}.")
+    return eps
 
 
-# =========================
-# WF grouping (edit ranges here)
-# =========================
-def wf_group(wf):
-    # Your current mapping:
-    if 1 <= wf <= 10:
-        return "Tc_d"
-    if 11 <= wf <= 20:
-        return "Ir_d"
-    if 21 <= wf <= 56:
-        return "Se_p"
-    if 57 <= wf <= 68:
-        return "Ge_p"
-    return "OTHER"
+def add_shift(s: Tuple[int, int, int], R: Tuple[int, int, int]) -> Tuple[int, int, int]:
+    return (s[0] + R[0], s[1] + R[1], s[2] + R[2])
 
 
-def pair_name(g1, g2):
-    # Use a fixed ordering to avoid the earlier "Se_p<->Tc_d" name surprise.
-    order = {"Tc_d": 1, "Ir_d": 2, "Se_p": 3, "Ge_p": 4, "OTHER": 99}
-    if order[g1] <= order[g2]:
-        return f"{g1}<->{g2}"
-    return f"{g2}<->{g1}"
+def abs_R_L1(R: Tuple[int, int, int]) -> int:
+    return abs(R[0]) + abs(R[1]) + abs(R[2])
 
 
-# =========================
-# Minimum-image mapping: WF -> nearest atom
-# =========================
-def cart_to_frac(A, r_cart):
-    # cart = A @ frac
-    return np.linalg.solve(A, r_cart)
-
-def frac_to_cart(A, f):
-    return A @ f
-
-def wrap_delta_frac(df):
-    # to [-0.5, 0.5)
-    return df - np.round(df)
-
-def map_wf_to_atoms(A, centers, atoms):
-    """
-    Returns:
-      wf_atom_id[wf] = atom index in atoms list (0-based)
-      wf_atom_elem[wf] = element string
-    Uses minimum-image distance in fractional space.
-    """
-    inv_needed = False  # we use solve each time; stable enough for 68 WF
-
-    atom_frac = []
-    for a in atoms:
-        atom_frac.append(cart_to_frac(A, a["r"]))
-    atom_frac = np.array(atom_frac)  # shape (Nat,3)
-
-    wf_atom_id = [None] * len(centers)
-    wf_atom_elem = [None] * len(centers)
-
-    for wf in range(1, len(centers)):
-        r = centers[wf]
-        f_w = cart_to_frac(A, r)
-
-        # compute minimum image distance to each atom
-        best_i = None
-        best_d = 1e30
-        for i, f_a in enumerate(atom_frac):
-            df = wrap_delta_frac(f_w - f_a)
-            dr = frac_to_cart(A, df)
-            d = float(np.linalg.norm(dr))
-            if d < best_d:
-                best_d = d
-                best_i = i
-
-        wf_atom_id[wf] = best_i
-        wf_atom_elem[wf] = atoms[best_i]["elem"]
-
-    return wf_atom_id, wf_atom_elem
+def keep_top_per_key(d: Dict[int, List[DirEdge]], topn: int):
+    for k in list(d.keys()):
+        lst = d[k]
+        lst.sort(key=lambda x: x.absH, reverse=True)
+        if len(lst) > topn:
+            d[k] = lst[:topn]
 
 
-# =========================
-# Main
-# =========================
+def delta_pair(eps: Dict[int, float], wf_a: int, wf_b: int, floor: float) -> float:
+    ea = eps.get(wf_a, None)
+    eb = eps.get(wf_b, None)
+    if ea is None or eb is None:
+        return float("nan")
+    d = abs(ea - eb)
+    return max(d, floor)
+
+
 def main():
-    ap = argparse.ArgumentParser(description="Step2 (interatomic): summarize hoppings by subspace pair + distance shell")
-    ap.add_argument("--win", required=True, help="wannier90.win")
-    ap.add_argument("--centres", required=True, help="wannier90_centres.xyz")
-    ap.add_argument("--hr", required=True, help="wannier90_hr.dat")
-    ap.add_argument("--tol", type=float, default=0.10, help="distance bin size (Ang), e.g. 0.05~0.15")
-    ap.add_argument("--min_absH", type=float, default=1e-4, help="min |H| kept (eV)")
-    ap.add_argument("--topk", type=int, default=30, help="topK edges per (pair,shell)")
-    ap.add_argument("--skip_same_atom_R0", action="store_true",
-                    help="skip terms where (atom_m==atom_n) AND (R==0). Recommended to remove onsite/local terms.")
-    ap.add_argument("--skip_diag_R0", action="store_true",
-                    help="skip diagonal terms (m==n) at R==0 (onsite). Usually redundant if skip_same_atom_R0 is on.")
-    ap.add_argument("--pairs", default="ALL", help="comma-separated allowed pairs like Tc_d<->Se_p, or ALL")
-    ap.add_argument("--out_summary", default="hopping_summary_by_shell.csv")
-    ap.add_argument("--out_edges", default="", help="optional: write filtered edges csv (empty=off)")
+    ap = argparse.ArgumentParser(
+        description="Rank Tc–Se–X–Se–Tc paths by (product |t|) / (product Δ) using onsite energies from hr.dat."
+    )
+    ap.add_argument("--edges", required=True, help="Input edges csv (NEW 1step out_edges is recommended)")
+    ap.add_argument("--hr", required=True, help="wannier90_hr.dat path for onsite extraction")
+    ap.add_argument("--out", default="top_paths_ratio.csv", help="Output ranked paths csv")
+
+    # NEW: use group labels (Tc_d / Se_p / Ir_d ...) if present
+    ap.add_argument("--prefer_group", action="store_true", help="Prefer group_m/group_n if present (recommended).")
+    ap.add_argument("--tc_group", default="Tc_d", help="Group label for Tc-centered d-like WFs (default: Tc_d)")
+    ap.add_argument("--se_group", default="Se_p", help="Group label for Se-centered p-like WFs (default: Se_p)")
+    ap.add_argument("--mediators", default="Ir_d",
+                    help="Comma-separated mediator group labels (e.g. Ir_d,Ge_p). If no group cols, use element symbols (Ir,Ge).")
+
+    ap.add_argument("--d_tcse", type=float, default=3.0, help="Max distance for Tc–Se edges (Ang)")
+    ap.add_argument("--d_sex", type=float, default=3.0, help="Max distance for Se–X edges (Ang)")
+    ap.add_argument("--min_absH", type=float, default=1e-3, help="Min |t| (eV) used for edges in path building")
+
+    ap.add_argument("--top_per_se_tc", type=int, default=60)
+    ap.add_argument("--top_per_se_x", type=int, default=120)
+    ap.add_argument("--top_per_x", type=int, default=120)
+    ap.add_argument("--top_paths", type=int, default=2000, help="How many top paths to output after ranking")
+
+    ap.add_argument("--require_same_tc_atom", action="store_true")
+    ap.add_argument("--max_netR_L1", type=int, default=6, help="Filter by |dRx|+|dRy|+|dRz| <= this (999 disables)")
+    ap.add_argument("--exclude_netR0", action="store_true", help="Drop net_dR=(0,0,0) loops (recommended for Tc–Tc exchange)")
+
+    ap.add_argument("--delta_mode", choices=["sequential", "pairwise"], default="sequential",
+                    help=("How to define Δ product:\n"
+                          "  sequential: Δ1=|ε(Se1)-ε(Tc)|, Δ2=|ε(X)-ε(Se1)|, Δ3=|ε(Se2)-ε(X)|\n"
+                          "  pairwise:   Δ1=|ε(Se1)-ε(Tc)|, Δ2=|ε(X)-ε(Tc)|,  Δ3=|ε(Se2)-ε(Tc)|\n"
+                          "Both are proxies; sequential is closer to step-by-step virtual hopping."))
+    ap.add_argument("--delta_floor", type=float, default=1e-3,
+                    help="Lower bound for each Δ (eV) to avoid division blow-up when ε nearly equal")
+
     args = ap.parse_args()
 
-    A, atoms = parse_win_lattice_and_atoms(args.win)
-    centers = parse_centres_xyz(args.centres)
+    mediators = [x.strip() for x in args.mediators.split(",") if x.strip()]
+    if not mediators:
+        raise RuntimeError("No mediators specified.")
 
-    wf_atom_id, wf_atom_elem = map_wf_to_atoms(A, centers, atoms)
+    eps = load_onsite_from_hr(args.hr)
 
-    # Allowed pairs
-    allowed_pairs = None
-    if args.pairs.strip().upper() != "ALL":
-        allowed_pairs = set([p.strip() for p in args.pairs.split(",") if p.strip()])
+    # IMPORTANT: prefer_group=True only makes sense if group_m/group_n exist.
+    all_dir = parse_edges_csv(args.edges, prefer_group=args.prefer_group)
 
-    # stats
-    cnt = defaultdict(int)
-    sumsq = defaultdict(float)
-    maxv = defaultdict(float)
-    top_edges = defaultdict(list)
-    filtered_edges = []
+    # Decide whether we are filtering by group or elem:
+    # If group columns existed, DirEdge.u_group != DirEdge.u_elem in general; else group==elem.
+    use_group = True if args.prefer_group else False
 
-    # Precompute lattice vectors for translation
-    a1 = A[:, 0]
-    a2 = A[:, 1]
-    a3 = A[:, 2]
+    # Helper accessors
+    def Utag(e: DirEdge) -> str:
+        return e.u_group if use_group else e.u_elem
 
-    def R_to_T(Rx, Ry, Rz):
-        return Rx * a1 + Ry * a2 + Rz * a3
+    def Vtag(e: DirEdge) -> str:
+        return e.v_group if use_group else e.v_elem
 
-    for Rx, Ry, Rz, m, n, reH, imH in parse_hr_dat(args.hr):
-        absH = math.hypot(reH, imH)
-        if absH < args.min_absH:
+    tc_tag = args.tc_group if use_group else "Tc"
+    se_tag = args.se_group if use_group else "Se"
+
+    # Build node lists
+    tc_atoms = sorted({e.u_atom for e in all_dir if Utag(e) == tc_tag} |
+                      {e.v_atom for e in all_dir if Vtag(e) == tc_tag})
+    se_atoms = sorted({e.u_atom for e in all_dir if Utag(e) == se_tag} |
+                      {e.v_atom for e in all_dir if Vtag(e) == se_tag})
+
+    if not tc_atoms:
+        raise RuntimeError(f"No Tc nodes found under tag '{tc_tag}'. Check --prefer_group/--tc_group.")
+    if not se_atoms:
+        raise RuntimeError(f"No Se nodes found under tag '{se_tag}'. Check --prefer_group/--se_group.")
+
+    print(f"[INFO] use_group={use_group}")
+    print(f"[INFO] Tc tag: {tc_tag}, Tc atoms: {tc_atoms}")
+    print(f"[INFO] Se tag: {se_tag}, Se atoms: {se_atoms}")
+    for M in mediators:
+        med_atoms = sorted({e.u_atom for e in all_dir if Utag(e) == M} |
+                           {e.v_atom for e in all_dir if Vtag(e) == M})
+        print(f"[INFO] mediator '{M}' atoms: {med_atoms}")
+
+    # Build filtered edge pools
+    tc_to_se = defaultdict(list)  # Tc atom -> edges Tc->Se
+    se_to_tc = defaultdict(list)  # Se atom -> edges Se->Tc
+    se_to_x = {M: defaultdict(list) for M in mediators}  # Se atom -> edges Se->M
+    x_to_se = {M: defaultdict(list) for M in mediators}  # M atom  -> edges M->Se
+
+    for e in all_dir:
+        if e.absH < args.min_absH:
             continue
 
-        gm = wf_group(m)
-        gn = wf_group(n)
-        if gm == "OTHER" or gn == "OTHER":
+        u = Utag(e)
+        v = Vtag(e)
+
+        if u == tc_tag and v == se_tag and e.dist <= args.d_tcse:
+            tc_to_se[e.u_atom].append(e)
+            continue
+        if u == se_tag and v == tc_tag and e.dist <= args.d_tcse:
+            se_to_tc[e.u_atom].append(e)
             continue
 
-        pair = pair_name(gm, gn)
-        if allowed_pairs is not None and pair not in allowed_pairs:
-            continue
+        if e.dist <= args.d_sex:
+            for M in mediators:
+                if u == se_tag and v == M:
+                    se_to_x[M][e.u_atom].append(e)
+                elif u == M and v == se_tag:
+                    x_to_se[M][e.u_atom].append(e)
 
-        atom_m = wf_atom_id[m]
-        atom_n = wf_atom_id[n]
-        elem_m = wf_atom_elem[m]
-        elem_n = wf_atom_elem[n]
+    keep_top_per_key(tc_to_se, topn=max(args.top_per_se_tc, 30))
+    keep_top_per_key(se_to_tc, topn=max(args.top_per_se_tc, 30))
+    for M in mediators:
+        keep_top_per_key(se_to_x[M], topn=max(args.top_per_se_x, 50))
+        keep_top_per_key(x_to_se[M], topn=max(args.top_per_x, 50))
 
-        # Skip onsite/local terms if requested
-        if (Rx, Ry, Rz) == (0, 0, 0):
-            if args.skip_diag_R0 and (m == n):
-                continue
-            if args.skip_same_atom_R0 and (atom_m == atom_n):
-                continue
+    paths = []
 
-        # distance between WF centers considering translation R
-        T = R_to_T(Rx, Ry, Rz)
-        dr = (centers[n] + T) - centers[m]
-        dist = float(np.linalg.norm(dr))
+    def compute_denoms(tc_wf, se1_wf, x_wf, se2_wf) -> Tuple[float, float, float, float]:
+        floor = args.delta_floor
+        if args.delta_mode == "sequential":
+            d1 = delta_pair(eps, se1_wf, tc_wf, floor)
+            d2 = delta_pair(eps, x_wf,  se1_wf, floor)
+            d3 = delta_pair(eps, se2_wf, x_wf,  floor)
+        else:
+            d1 = delta_pair(eps, se1_wf, tc_wf, floor)
+            d2 = delta_pair(eps, x_wf,   tc_wf, floor)
+            d3 = delta_pair(eps, se2_wf, tc_wf, floor)
 
-        # bin to shell
-        shell = round(dist / args.tol) * args.tol
-        key = (pair, shell)
+        if any([d != d for d in (d1, d2, d3)]):  # NaN
+            return float("nan"), d1, d2, d3
+        return d1 * d2 * d3, d1, d2, d3
 
-        cnt[key] += 1
-        sumsq[key] += absH * absH
-        if absH > maxv[key]:
-            maxv[key] = absH
+    for tc0 in tc_atoms:
+        shift0 = (0, 0, 0)
 
-        e = Edge(pair, shell, dist, absH, reH, imH, Rx, Ry, Rz, m, n, atom_m, atom_n, elem_m, elem_n)
+        for e1 in tc_to_se.get(tc0, []):  # Tc->Se1
+            se1 = e1.v_atom
+            shift_se1 = add_shift(shift0, (e1.Rx, e1.Ry, e1.Rz))
 
-        lst = top_edges[key]
-        lst.append(e)
-        lst.sort(key=lambda x: x.absH, reverse=True)
-        if len(lst) > args.topk:
-            lst[:] = lst[:args.topk]
+            for M in mediators:
+                for e2 in se_to_x[M].get(se1, []):  # Se1->X
+                    x = e2.v_atom
+                    shift_x = add_shift(shift_se1, (e2.Rx, e2.Ry, e2.Rz))
 
-        if args.out_edges:
-            filtered_edges.append(e)
+                    for e3 in x_to_se[M].get(x, []):  # X->Se2
+                        se2 = e3.v_atom
+                        shift_se2 = add_shift(shift_x, (e3.Rx, e3.Ry, e3.Rz))
 
-    # write summary
-    with open(args.out_summary, "w", newline="", encoding="utf-8") as f:
+                        for e4 in se_to_tc.get(se2, []):  # Se2->Tc1
+                            tc1 = e4.v_atom
+                            shift_tc1 = add_shift(shift_se2, (e4.Rx, e4.Ry, e4.Rz))
+
+                            if args.require_same_tc_atom and (tc1 != tc0):
+                                continue
+
+                            netR = shift_tc1
+                            if args.exclude_netR0 and netR == (0, 0, 0):
+                                continue
+                            if args.max_netR_L1 < 999 and abs_R_L1(netR) > args.max_netR_L1:
+                                continue
+
+                            N = e1.absH * e2.absH * e3.absH * e4.absH
+                            D, d1, d2, d3 = compute_denoms(e1.u_wf, e1.v_wf, e2.v_wf, e3.v_wf)
+                            if D != D:
+                                continue
+
+                            score = N / D
+
+                            sig = (
+                                M,
+                                tc0, se1, x, se2, tc1,
+                                netR[0], netR[1], netR[2],
+                                (e1.u_wf, e1.v_wf, e1.Rx, e1.Ry, e1.Rz),
+                                (e2.u_wf, e2.v_wf, e2.Rx, e2.Ry, e2.Rz),
+                                (e3.u_wf, e3.v_wf, e3.Rx, e3.Ry, e3.Rz),
+                                (e4.u_wf, e4.v_wf, e4.Rx, e4.Ry, e4.Rz),
+                            )
+
+                            paths.append((score, N, D, d1, d2, d3, sig, M,
+                                          tc0, se1, x, se2, tc1, netR, e1, e2, e3, e4))
+
+    if not paths:
+        raise RuntimeError("No paths found. Try lowering --min_absH or loosening distance windows "
+                           "or check tc/se/mediator tags.")
+
+    best = {}
+    for item in paths:
+        score = item[0]
+        sig = item[6]
+        if sig not in best or score > best[sig][0]:
+            best[sig] = item
+    uniq = list(best.values())
+    print(f"[INFO] paths raw={len(paths)}, unique={len(uniq)} (by signature)")
+
+    uniq.sort(key=lambda x: x[0], reverse=True)
+    uniq = uniq[:args.top_paths]
+
+    with open(args.out, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow([
-            "pair", "shell_A", "count", "max_absH_eV", "rms_absH_eV",
-            f"top{args.topk}_edges(m,n,atom_m,atom_n,elem_m,elem_n,Rx,Ry,Rz,absH,dist)"
+            "mediator",
+            "score_num_over_denom", "N_prod_absH", "D_prod_delta",
+            "delta1", "delta2", "delta3",
+            "Tc0_atom", "Se1_atom", "X_atom", "Se2_atom", "Tc1_atom",
+            "net_dRx", "net_dRy", "net_dRz",
+            "t1_absH", "d1_A", "wf1_u", "wf1_v", "R1x", "R1y", "R1z",
+            "t2_absH", "d2_A", "wf2_u", "wf2_v", "R2x", "R2y", "R2z",
+            "t3_absH", "d3_A", "wf3_u", "wf3_v", "R3x", "R3y", "R3z",
+            "t4_absH", "d4_A", "wf4_u", "wf4_v", "R4x", "R4y", "R4z",
         ])
-        for (pair, shell) in sorted(cnt.keys(), key=lambda x: (x[0], x[1])):
-            c = cnt[(pair, shell)]
-            rms = math.sqrt(sumsq[(pair, shell)] / c) if c else 0.0
-            tops = top_edges[(pair, shell)]
-            tops_str = "; ".join([
-                f"{e.m}-{e.n}|a{e.atom_m+1}-a{e.atom_n+1}|{e.elem_m}-{e.elem_n}"
-                f"@({e.Rx},{e.Ry},{e.Rz})|{e.absH:.6g}|d={e.dist:.3f}"
-                for e in tops
-            ])
-            w.writerow([pair, f"{shell:.3f}", c, f"{maxv[(pair, shell)]:.6g}", f"{rms:.6g}", tops_str])
 
-    # optional edges
-    if args.out_edges:
-        with open(args.out_edges, "w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
+        for score, N, D, d1, d2, d3, sig, M, tc0, se1, x, se2, tc1, netR, e1, e2, e3, e4 in uniq:
             w.writerow([
-                "pair", "shell_A", "dist_A", "absH_eV", "re", "im",
-                "Rx", "Ry", "Rz", "m", "n",
-                "atom_m", "atom_n", "elem_m", "elem_n"
+                M,
+                f"{score:.10g}", f"{N:.10g}", f"{D:.10g}",
+                f"{d1:.10g}", f"{d2:.10g}", f"{d3:.10g}",
+                tc0, se1, x, se2, tc1,
+                netR[0], netR[1], netR[2],
+                f"{e1.absH:.10g}", f"{e1.dist:.6f}", e1.u_wf, e1.v_wf, e1.Rx, e1.Ry, e1.Rz,
+                f"{e2.absH:.10g}", f"{e2.dist:.6f}", e2.u_wf, e2.v_wf, e2.Rx, e2.Ry, e2.Rz,
+                f"{e3.absH:.10g}", f"{e3.dist:.6f}", e3.u_wf, e3.v_wf, e3.Rx, e3.Ry, e3.Rz,
+                f"{e4.absH:.10g}", f"{e4.dist:.6f}", e4.u_wf, e4.v_wf, e4.Rx, e4.Ry, e4.Rz,
             ])
-            for e in filtered_edges:
-                w.writerow([
-                    e.pair, f"{e.shell:.3f}", f"{e.dist:.6f}", f"{e.absH:.8g}",
-                    f"{e.re:.8g}", f"{e.im:.8g}",
-                    e.Rx, e.Ry, e.Rz, e.m, e.n,
-                    e.atom_m+1, e.atom_n+1, e.elem_m, e.elem_n
-                ])
 
-    print("Done.")
-    print("Summary:", args.out_summary)
-    if args.out_edges:
-        print("Edges:", args.out_edges)
+    print(f"[DONE] wrote ranked unique paths to: {args.out}")
+    print(f"[INFO] delta_mode={args.delta_mode}, delta_floor={args.delta_floor} eV")
+    print(f"[INFO] prefer_group={args.prefer_group}, tc_group={args.tc_group}, se_group={args.se_group}, mediators={mediators}")
 
 
 if __name__ == "__main__":

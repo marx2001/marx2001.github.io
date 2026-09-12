@@ -1,4 +1,3 @@
-
 Reading vasprun.xml file from
     `/public/home/cssong/song/1mrx/17_AL_stack/26_Nb2OSe2_better/U=1.5/monolayer/new_wannier/1_k=11_wannier/1_static_ncl/未选择详细的轨道划分/2_bandsoc/vasprun.xml` 
 for DOS analysis...

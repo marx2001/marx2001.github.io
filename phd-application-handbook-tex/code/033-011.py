@@ -1,4 +1,3 @@
-
 H_k = my_model.hamiltonian(k_pts)
 
 print("Hamiltonian shape:", H_k.shape)

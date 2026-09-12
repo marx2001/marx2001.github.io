@@ -1,1 +1,1 @@
-pdf_tex_edits/*.tex
+File → New

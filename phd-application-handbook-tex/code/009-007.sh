@@ -1,4 +1,3 @@
-
 &TB_FILE
 Hrfile = 'wannier90_hr.dat'  ! 紧束缚模型文件
 Package = 'VASP'             ! 使用VASP软件包

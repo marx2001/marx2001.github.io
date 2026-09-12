@@ -1,4 +1,3 @@
-
 wannier_plot = .true.
 wannier_plot_supercell=3
 wannier_plot_format = cube

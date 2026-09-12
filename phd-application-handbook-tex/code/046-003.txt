@@ -1,18 +1,2 @@
-1_硕士期间的成果汇总/
-├── .vscode/
-│   ├── settings.json
-│   └── tasks.json
-│
-├── main.tex
-├── build.py
-├── pdf_order.txt
-│
-├── _tmp_md/
-├── converted/
-├── pdf_tex_edits/
-├── _pdf_images/
-├── _extracted_code/
-├── output/
-│   └── Ruixiao_Ma_Research_Portfolio.pdf
-│
-└── .build_cache.json
+必须选择 No. 189, P -6 2 m
+不要选成 P -6 m 2

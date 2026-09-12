@@ -1,5 +1,3 @@
-
-
 SYSTEM = Bi
 ISTART =      0 
 LCHARG = .T.

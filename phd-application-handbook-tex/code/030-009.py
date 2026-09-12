@@ -1,4 +1,3 @@
-
 k_mesh = tb.k_uniform_mesh([20, 20])
 
 # Single value (scalar)

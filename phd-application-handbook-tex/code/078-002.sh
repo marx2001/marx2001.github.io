@@ -1,3 +1,1 @@
-
-ISMEAR=0
-ICHARG=11
+wannier90.x -pp wannier90.1

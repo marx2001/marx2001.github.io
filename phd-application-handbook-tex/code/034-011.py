@@ -1,4 +1,3 @@
-
 mesh.build_grid(
     shape=(31, 21),
     gamma_centered=True,

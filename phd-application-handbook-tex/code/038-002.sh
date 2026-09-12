@@ -1,4 +1,3 @@
-
 ☑ Add CMake to the system PATH for all users
 
 ☑ C++ build tools

@@ -1,4 +1,3 @@
-
 lat_vecs = [[1, 0], [0, 1]]
 orb_vecs = [[0, 0], [1 / 2, 1 / 2]]
 lat = Lattice(lat_vecs=lat_vecs, orb_vecs=orb_vecs, periodic_dirs=...)

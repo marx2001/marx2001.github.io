@@ -1,1292 +1,1198 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-TTS Step 04 — Chern 扇区定向扩充、拓扑—平庸边界扫描与闭隙谷追踪
-
-研究目标
---------
-1. 从 TTS Step 03 的严格结果中分别选择 C_up = -2, -1, +1, +2
-   （以及数据中实际存在的其他非零整数扇区）的代表性拓扑锚点；
-2. 围绕每个 Chern 扇区进行局部 Sobol 定向扩充，确认拓扑区域不是孤立点，
-   并为后续多分类和解析机制积累分扇区样本；
-3. 为每个主锚点寻找参数空间中最近的严格平庸绝缘体；
-4. 沿单位参数球面上的最短路径（slerp）扫描拓扑点—平庸点之间的相变；
-5. 稀疏但严格地复核路径上的 Chern 数，并自动识别 Chern 改变区间；
-6. 对直接带隙最小处联合优化 (lambda, kx, ky)，定位真正的闭隙谷；
-7. 判断 |C|=1 是否主要由 Gamma/M 高对称谷驱动，|C|=2 是否主要由
-   C4/D4 对称相关的普通动量谷共同驱动。
-
-重要原则
---------
-- 复用冻结的 Step 01 Hamiltonian、周期规范和非阿贝尔 spin-Chern 标签器；
-- 复用 Step 03 的严格多网格标签逻辑；
-- 全部物理计算串行，不使用 ProcessPoolExecutor，兼容 Windows/Jupyter；
-- 路径密集扫描只计算能隙，Chern 仅在自适应选中的点严格复核；
-- 本步骤输出的是机制证据和相边界数据，不把机器学习预测当成拓扑结论。
-"""
-
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
-from pathlib import Path
-from typing import Any, Dict, Iterable, Sequence
+"""
+TTS Step13M — adaptive Wilson-loop certification of the narrow C_up=+2 sector
+================================================================================
+
+This workflow is deliberately local.  It does not rescan the seven-dimensional
+parameter space.  It takes the two Step12M closures on the unresolved r3=0.060
+edge and independently certifies the very narrow intermediate spin-up Chern
+sector with non-Abelian Wilson loops of the occupied spin-up subspace.
+
+Target sequence
+---------------
+    C_up = -2  -- generic four-valley charge +4 -->  +2
+               -- Sigma' two-valley charge -2 -->    0
+
+The Wilson-loop sign convention is calibrated against the independently strict
+Step12M pre-closure control C_up=-2.  The post-closure C_up=0 control is then an
+out-of-sample validation of that calibration.
+"""
+
 import argparse
-import io
 import json
 import math
-import time
-import warnings
+import sys
 import zipfile
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any, Callable, Iterable
 
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 import numpy as np
 import pandas as pd
-from scipy.optimize import minimize
-from scipy.stats import qmc
+from scipy.optimize import linear_sum_assignment, minimize
 
-try:
-    import TTS_step01_model_and_label_audit_v2 as core
-except ImportError as exc:  # pragma: no cover
-    raise ImportError(
-        "未找到 TTS_step01_model_and_label_audit_v2.py。\n"
-        "请把 Step 01 v2 的 py 文件与本脚本放在同一目录。"
-    ) from exc
-
-try:
-    import TTS_step03_global_sobol_hierarchical_topology_ML as step3
-except ImportError:
-    try:
-        import TTS_step03_global_sobol_hierarchical_topology_ML_final as step3
-    except ImportError:
-        try:
-            import TTS_step03_global_sobol_hierarchical_topology_ML_fixed as step3
-        except ImportError as exc:  # pragma: no cover
-            raise ImportError(
-                "未找到 Step 03 配套 py 文件。支持以下文件名：\n"
-                "  TTS_step03_global_sobol_hierarchical_topology_ML.py\n"
-                "  TTS_step03_global_sobol_hierarchical_topology_ML_final.py\n"
-                "  TTS_step03_global_sobol_hierarchical_topology_ML_fixed.py"
-            ) from exc
-
-EXPECTED_STEP01_VERSION = "TTS_STEP01_V2_20260713"
-EXPECTED_STEP03_VERSION = "TTS_STEP03_V1_20260713"
-if getattr(core, "CODE_VERSION", None) != EXPECTED_STEP01_VERSION:
-    raise RuntimeError(
-        f"Step 01 核心版本不一致：expected={EXPECTED_STEP01_VERSION}, "
-        f"loaded={getattr(core, 'CODE_VERSION', None)}"
-    )
-if getattr(step3, "CODE_VERSION", None) != EXPECTED_STEP03_VERSION:
-    raise RuntimeError(
-        f"Step 03 核心版本不一致：expected={EXPECTED_STEP03_VERSION}, "
-        f"loaded={getattr(step3, 'CODE_VERSION', None)}"
-    )
-
-np.set_printoptions(precision=10, suppress=True)
-
-CODE_VERSION = "TTS_STEP04_V1_20260713"
-WORKFLOW_STEP = "step04"
-SYSTEM_TAG = "tts8_bns127391"
-TASK_TAG = "chern_sector_boundary_valley_tracking"
-REDUCED7 = core.REDUCED7.copy()
+import TTS_step12M_junction_multiclosure_repair as step12
+import TTS_step11M_lieb_aligned_fixed_slice as step11
 
 
-# =============================================================================
-# Configuration
-# =============================================================================
+CODE_VERSION = "TTS_STEP13M_ADAPTIVE_WILSON_INTERMEDIATE_CHERN_V1_20260724"
+TARGET_EDGE_ID = "edge_03_03__03_04"
+TWO_PI = 2.0 * math.pi
+
+PHASE_COLORS = {
+    -2: "#3B6FB6",
+    -1: "#7FB6D6",
+     0: "#B8B8B8",
+     1: "#F2B36D",
+     2: "#C84A3A",
+}
+
 
 @dataclass
-class Step04Config:
-    output_dir: Path = Path("outputs_tts_step04_chern_sector_boundary_valley_tracking")
-    step3_input: Path | None = None
+class Step13Config:
+    output_dir: Path
 
-    # Representative anchors selected independently in each nonzero Chern sector.
-    target_sectors: tuple[int, ...] | None = (-2, -1, 1, 2)
-    n_anchors_per_sector: int = 2
-    anchor_candidate_pool: int = 24
-    path_anchors_per_sector: int = 1
-    trivial_partner_modes: tuple[str, ...] = ("nearest", "same_t_sign")
+    # Fractions inside the interval between the two Step12M closures.
+    middle_fractions: tuple[float, ...] = (0.25, 0.40, 0.50, 0.65, 0.80)
+    minimum_middle_certified_points: int = 3
 
-    # Local sector-directed Sobol augmentation on the normalized parameter sphere.
-    local_angular_radii: tuple[float, ...] = (0.05, 0.10)
-    local_sobol_power_per_radius: int = 4  # 16 samples/radius/anchor
-    local_seed: int = 20260714
-
-    # Physics verification for local samples and sparse path Chern points.
-    local_gap_nk: int = 41
-    initial_chern_grids: tuple[int, ...] = (21, 31)
-    initial_chern_shifts: tuple[tuple[float, float], ...] = ((0.0, 0.0), (0.5, 0.5))
-    strict_gap_grids: tuple[int, ...] = (51, 71)
-    strict_gap_shifts: tuple[tuple[float, float], ...] = (
-        (0.0, 0.0), (0.5, 0.0), (0.0, 0.5), (0.5, 0.5)
+    # Three independent Wilson-loop discretizations.  Pairwise entries are used
+    # together: (nkx[i], initial_nky[i], shift[i]).
+    wilson_nkx: tuple[int, ...] = (401, 601, 801)
+    wilson_initial_nky: tuple[int, ...] = (81, 101, 121)
+    wilson_shifts: tuple[tuple[float, float], ...] = (
+        (0.00, 0.00),
+        (0.50, 0.37),
+        (0.25, 0.73),
     )
-    strict_chern_grids: tuple[int, ...] = (31, 41, 51)
-    strict_chern_shifts: tuple[tuple[float, float], ...] = ((0.0, 0.0), (0.5, 0.5))
-    gap_tol: float = 1.0e-3
-    direct_gap_skip_chern: float = 3.0e-3
-    chern_integer_tol: float = 0.08
-    min_link_tol: float = 1.0e-7
-    sum_rule_tol: float = 0.15
+    adaptive_phase_step: float = 0.32 * math.pi
+    adaptive_max_points: int = 801
+    adaptive_max_rounds: int = 8
+    integer_residual_tolerance: float = 0.08
+    minimum_overlap_singular_value: float = 1.0e-4
 
-    # Dense path gap scan and adaptive sparse Chern audit.
-    path_n_lambda: int = 121
-    path_gap_nk: int = 35
-    path_chern_stride: int = 10
-    path_extra_gap_minima: int = 6
-    max_chern_points_per_path: int = 25
-    max_transitions_per_path: int = 4
+    # Independent occupied-subspace gap audit at every probe.
+    gap_grid_n: int = 101
+    gap_local_starts: int = 16
+    minimum_positive_spin_gap: float = 1.0e-8
 
-    # Continuous critical valley refinement.
-    critical_k_symmetry_tol: float = 0.10
-    critical_optimizer_starts: int = 6
-    critical_optimizer_maxiter: int = 350
+    quick: bool = False
+    force_recalculate: bool = False
+    random_seed: int = 20260724
 
-    # Workflow controls.
-    checkpoint_every: int = 8
-    force_recalculate_local: bool = False
-    force_recalculate_paths: bool = False
-    force_recalculate_chern: bool = False
-
-    def normalized(self) -> "Step04Config":
-        self.output_dir = Path(self.output_dir)
+    def normalized(self) -> "Step13Config":
+        self.output_dir = Path(self.output_dir).expanduser().resolve()
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        (self.output_dir / "figures").mkdir(parents=True, exist_ok=True)
-        if self.step3_input is not None:
-            self.step3_input = Path(self.step3_input)
-        if self.n_anchors_per_sector < 1:
-            raise ValueError("n_anchors_per_sector must be >= 1")
-        if self.path_anchors_per_sector < 1:
-            raise ValueError("path_anchors_per_sector must be >= 1")
-        if self.local_sobol_power_per_radius < 0:
-            raise ValueError("local_sobol_power_per_radius must be >= 0")
-        if self.path_n_lambda < 11:
-            raise ValueError("path_n_lambda must be >= 11")
-        if self.path_gap_nk < 9:
-            raise ValueError("path_gap_nk must be >= 9")
-        if self.checkpoint_every < 1:
-            raise ValueError("checkpoint_every must be >= 1")
+        for sub in ["figures", "wilson_checkpoints", "wilson_traces", "_physics_core"]:
+            (self.output_dir / sub).mkdir(exist_ok=True)
+        if len(self.wilson_nkx) != len(self.wilson_initial_nky):
+            raise ValueError("wilson_nkx and wilson_initial_nky must have equal length")
+        if len(self.wilson_shifts) != len(self.wilson_nkx):
+            raise ValueError("wilson_shifts must match the number of Wilson attempts")
+        if not self.middle_fractions:
+            raise ValueError("middle_fractions cannot be empty")
+        if any(not (0.0 < x < 1.0) for x in self.middle_fractions):
+            raise ValueError("middle_fractions must lie strictly inside (0,1)")
+        if self.minimum_middle_certified_points < 1:
+            raise ValueError("minimum_middle_certified_points must be positive")
+        if self.quick:
+            self.wilson_nkx = (201, 301)
+            self.wilson_initial_nky = (61, 81)
+            self.wilson_shifts = ((0.0, 0.0), (0.5, 0.37))
+            self.adaptive_max_points = min(self.adaptive_max_points, 401)
+            self.gap_grid_n = min(self.gap_grid_n, 61)
+            self.gap_local_starts = min(self.gap_local_starts, 8)
         return self
 
-    @property
-    def n_local_per_radius(self) -> int:
-        return 2 ** int(self.local_sobol_power_per_radius)
-
 
 # =============================================================================
-# Safe I/O and Step 03 input discovery
+# Safe I/O
 # =============================================================================
 
-def atomic_write_csv(df: pd.DataFrame, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    df.to_csv(tmp, index=False, encoding="utf-8-sig")
-    tmp.replace(path)
+
+def _select_member(zf: zipfile.ZipFile, token: str, suffix: str | None = None) -> str:
+    matches = []
+    for name in zf.namelist():
+        if token not in Path(name).name and token not in name:
+            continue
+        if suffix and not name.lower().endswith(suffix.lower()):
+            continue
+        matches.append(name)
+    if not matches:
+        raise FileNotFoundError(f"No archive member containing {token!r}")
+    return sorted(matches, key=lambda n: (len(Path(n).parts), len(n)))[0]
 
 
-def atomic_write_json(obj: dict, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(obj, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
-    tmp.replace(path)
-
-
-def _find_default_step3_input() -> Path:
-    candidates = [
-        Path.cwd() / "outputs_tts_step03_global_sobol_hierarchical_topology_ml.zip",
-        Path.cwd().parent / "outputs_tts_step03_global_sobol_hierarchical_topology_ml.zip",
-        Path("/mnt/data") / "outputs_tts_step03_global_sobol_hierarchical_topology_ml.zip",
-        Path.cwd() / "outputs_tts_step03_global_sobol_hierarchical_topology_ml",
-        Path.cwd().parent / "outputs_tts_step03_global_sobol_hierarchical_topology_ml",
-        Path("/mnt/data") / "outputs_tts_step03_global_sobol_hierarchical_topology_ml",
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    raise FileNotFoundError(
-        "未找到 Step 03 结果。请把结果 ZIP 放在当前目录，或在配置中设置 step3_input。"
-    )
-
-
-def _read_unique_csv_from_zip(zip_path: Path, pattern: str) -> tuple[pd.DataFrame, str]:
-    with zipfile.ZipFile(zip_path) as zf:
-        matches = [
-            name for name in zf.namelist()
-            if pattern in Path(name).name and name.lower().endswith(".csv")
-        ]
-        if len(matches) != 1:
-            raise FileNotFoundError(
-                f"ZIP 中匹配 {pattern!r} 的 CSV 数量为 {len(matches)}: {matches}"
-            )
-        member = matches[0]
-        with zf.open(member) as fh:
-            return pd.read_csv(fh, low_memory=False), f"{zip_path}!/{member}"
-
-
-def _read_unique_csv_from_directory(root: Path, pattern: str) -> tuple[pd.DataFrame, str]:
-    matches = [p for p in root.rglob("*.csv") if pattern in p.name]
-    if len(matches) != 1:
-        raise FileNotFoundError(
-            f"目录中匹配 {pattern!r} 的 CSV 数量为 {len(matches)}: {matches}"
-        )
-    return pd.read_csv(matches[0], low_memory=False), str(matches[0])
-
-
-def load_step3_physics(config: Step04Config) -> tuple[pd.DataFrame, str]:
-    source = config.step3_input or _find_default_step3_input()
-    source = Path(source)
-    pattern = "step03_02_physics_labels_final__"
+def read_csv_token(source: str | Path, token: str) -> pd.DataFrame:
+    source = Path(source).expanduser().resolve()
     if source.is_file() and source.suffix.lower() == ".zip":
-        return _read_unique_csv_from_zip(source, pattern)
+        with zipfile.ZipFile(source) as zf:
+            member = _select_member(zf, token, ".csv")
+            with zf.open(member) as stream:
+                try:
+                    return pd.read_csv(stream, low_memory=False)
+                except pd.errors.EmptyDataError:
+                    return pd.DataFrame()
     if source.is_dir():
-        return _read_unique_csv_from_directory(source, pattern)
-    raise FileNotFoundError(f"无效的 Step 03 输入：{source}")
+        matches = sorted(source.rglob(f"*{token}*"))
+        if not matches:
+            raise FileNotFoundError(token)
+        try:
+            return pd.read_csv(matches[0], low_memory=False)
+        except pd.errors.EmptyDataError:
+            return pd.DataFrame()
+    raise FileNotFoundError(source)
 
 
-# =============================================================================
-# Parameter geometry on the normalized seven-dimensional sphere
-# =============================================================================
-
-def row_vector(row: pd.Series | dict) -> np.ndarray:
-    return np.array([float(row[name]) for name in REDUCED7], dtype=float)
-
-
-def normalize_vector(vector: Sequence[float]) -> np.ndarray:
-    v = np.asarray(vector, dtype=float)
-    norm = float(np.linalg.norm(v))
-    if not np.isfinite(norm) or norm < 1.0e-14:
-        raise ValueError("Cannot normalize zero/nonfinite parameter vector")
-    return v / norm
-
-
-def vector_to_reduced(vector: Sequence[float]) -> dict[str, float]:
-    v = normalize_vector(vector)
-    return {name: float(value) for name, value in zip(REDUCED7, v)}
+def read_json_token(source: str | Path, token: str) -> dict[str, Any]:
+    source = Path(source).expanduser().resolve()
+    if source.is_file() and source.suffix.lower() == ".zip":
+        with zipfile.ZipFile(source) as zf:
+            member = _select_member(zf, token, ".json")
+            with zf.open(member) as stream:
+                return json.load(stream)
+    if source.is_dir():
+        matches = sorted(source.rglob(f"*{token}*"))
+        if not matches:
+            raise FileNotFoundError(token)
+        return json.loads(matches[0].read_text(encoding="utf-8"))
+    raise FileNotFoundError(source)
 
 
-def angular_distance(a: Sequence[float], b: Sequence[float]) -> float:
-    aa = normalize_vector(a)
-    bb = normalize_vector(b)
-    return float(np.arccos(np.clip(float(np.dot(aa, bb)), -1.0, 1.0)))
+def _json_default(value: Any) -> Any:
+    if isinstance(value, (np.bool_,)):
+        return bool(value)
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    if isinstance(value, (np.floating,)):
+        return float(value)
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, Path):
+        return str(value)
+    raise TypeError(type(value).__name__)
 
 
-def slerp(a: Sequence[float], b: Sequence[float], lam: float) -> np.ndarray:
-    aa = normalize_vector(a)
-    bb = normalize_vector(b)
-    dot = float(np.clip(np.dot(aa, bb), -1.0, 1.0))
-    omega = float(np.arccos(dot))
-    lam = float(lam)
-    if omega < 1.0e-10:
-        return aa.copy()
-    if abs(math.pi - omega) < 1.0e-7:
-        # Nearly antipodal: normalized linear interpolation is the least arbitrary fallback.
-        mixed = (1.0 - lam) * aa + lam * bb
-        if np.linalg.norm(mixed) < 1.0e-12:
-            mixed = aa.copy()
-            mixed[0] += 1.0e-6
-        return normalize_vector(mixed)
-    return normalize_vector(
-        math.sin((1.0 - lam) * omega) / math.sin(omega) * aa
-        + math.sin(lam * omega) / math.sin(omega) * bb
+def atomic_json(payload: dict[str, Any], path: Path) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, default=_json_default),
+        encoding="utf-8",
     )
+    tmp.replace(path)
 
 
-# =============================================================================
-# Anchor and nearest-trivial selection
-# =============================================================================
+def atomic_csv(frame: pd.DataFrame, path: Path) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    frame.to_csv(tmp, index=False, encoding="utf-8-sig")
+    tmp.replace(path)
 
-def _strict_topological(physics: pd.DataFrame) -> pd.DataFrame:
-    mask = physics["phase_label"].eq("spin_chern_TI_candidate")
-    if "strict_chern_verified" in physics:
-        mask &= physics["strict_chern_verified"].fillna(0).astype(int).eq(1)
-    if "strict_gap_verified" in physics:
-        mask &= physics["strict_gap_verified"].fillna(0).astype(int).eq(1)
-    return physics.loc[mask].copy()
-
-
-def _strict_trivial(physics: pd.DataFrame) -> pd.DataFrame:
-    mask = physics["phase_label"].eq("trivial_insulator")
-    if "is_strict_insulator" in physics:
-        mask &= physics["is_strict_insulator"].fillna(0).astype(int).eq(1)
-    return physics.loc[mask].copy()
-
-
-def select_sector_anchors(physics: pd.DataFrame, config: Step04Config) -> pd.DataFrame:
-    topo = _strict_topological(physics)
-    if topo.empty:
-        raise RuntimeError("Step 03 中没有严格 spin-Chern TI 候选。")
-    topo["chern_up_int"] = topo["chern_up_int"].astype(int)
-
-    available = sorted(int(x) for x in topo["chern_up_int"].unique() if int(x) != 0)
-    requested = available if config.target_sectors is None else [
-        int(x) for x in config.target_sectors if int(x) in available
-    ]
-    missing = [] if config.target_sectors is None else [
-        int(x) for x in config.target_sectors if int(x) not in available
-    ]
-    if missing:
-        warnings.warn(f"Step 03 中未找到这些 Chern 扇区，将跳过：{missing}")
-
-    selected_rows: list[dict] = []
-    for sector in requested:
-        group = topo[topo["chern_up_int"].astype(int) == sector].copy()
-        group = group.sort_values("indirect_gap", ascending=False).head(config.anchor_candidate_pool)
-        if group.empty:
-            continue
-
-        chosen_indices: list[int] = [int(group.index[0])]
-        while len(chosen_indices) < min(config.n_anchors_per_sector, len(group)):
-            best_idx = None
-            best_score = -np.inf
-            for idx, row in group.iterrows():
-                idx_i = int(idx)
-                if idx_i in chosen_indices:
-                    continue
-                candidate = row_vector(row)
-                min_dist = min(
-                    angular_distance(candidate, row_vector(physics.loc[j]))
-                    for j in chosen_indices
-                )
-                # Gap is a weak tie-breaker; diversity is primary.
-                score = min_dist + 1.0e-3 * float(row["indirect_gap"])
-                if score > best_score:
-                    best_score = score
-                    best_idx = idx_i
-            if best_idx is None:
-                break
-            chosen_indices.append(best_idx)
-
-        for rank, idx in enumerate(chosen_indices, start=1):
-            row = physics.loc[idx].to_dict()
-            row.update({
-                "anchor_id": f"Cup{sector:+d}_anchor{rank:02d}",
-                "anchor_sector": int(sector),
-                "anchor_rank": int(rank),
-                "is_primary_path_anchor": int(rank <= config.path_anchors_per_sector),
-            })
-            selected_rows.append(row)
-
-    anchors = pd.DataFrame(selected_rows)
-    if anchors.empty:
-        raise RuntimeError("没有可用的分扇区拓扑锚点。")
-    return anchors.reset_index(drop=True)
-
-
-def select_trivial_partners(
-    physics: pd.DataFrame,
-    anchors: pd.DataFrame,
-    config: Step04Config,
-) -> pd.DataFrame:
-    trivial = _strict_trivial(physics).copy()
-    if trivial.empty:
-        raise RuntimeError("Step 03 中没有严格平庸绝缘体。")
-
-    rows: list[dict] = []
-    for _, anchor in anchors[anchors["is_primary_path_anchor"].astype(int) == 1].iterrows():
-        av = row_vector(anchor)
-        anchor_t_sign = int(np.sign(float(anchor["t1"]) * float(anchor["t2"])))
-        used_sample_ids: set[str] = set()
-
-        for mode in config.trivial_partner_modes:
-            candidates = trivial
-            if mode == "same_t_sign":
-                t_sign = np.sign(candidates["t1"].astype(float) * candidates["t2"].astype(float)).astype(int)
-                candidates = candidates[t_sign == anchor_t_sign]
-            elif mode != "nearest":
-                raise ValueError(f"Unknown trivial partner mode: {mode}")
-
-            if candidates.empty:
-                continue
-            scored: list[tuple[float, int]] = []
-            for idx, candidate in candidates.iterrows():
-                sid = str(candidate["sample_id"])
-                if sid in used_sample_ids:
-                    continue
-                scored.append((angular_distance(av, row_vector(candidate)), int(idx)))
-            if not scored:
-                continue
-            dist, idx = min(scored, key=lambda item: item[0])
-            partner = physics.loc[idx]
-            used_sample_ids.add(str(partner["sample_id"]))
-            rows.append({
-                "path_id": f"{anchor['anchor_id']}__{mode}",
-                "anchor_id": str(anchor["anchor_id"]),
-                "anchor_sample_id": str(anchor["sample_id"]),
-                "anchor_sector": int(anchor["anchor_sector"]),
-                "partner_mode": mode,
-                "trivial_sample_id": str(partner["sample_id"]),
-                "angular_distance": float(dist),
-                "euclidean_distance": float(np.linalg.norm(normalize_vector(av) - normalize_vector(row_vector(partner)))),
-                "anchor_t_product": float(anchor["t1"] * anchor["t2"]),
-                "trivial_t_product": float(partner["t1"] * partner["t2"]),
-                **{f"anchor_{name}": float(anchor[name]) for name in REDUCED7},
-                **{f"trivial_{name}": float(partner[name]) for name in REDUCED7},
-                "anchor_indirect_gap": float(anchor["indirect_gap"]),
-                "trivial_indirect_gap": float(partner["indirect_gap"]),
-            })
-    partners = pd.DataFrame(rows)
-    if partners.empty:
-        raise RuntimeError("无法构造拓扑—平庸路径配对。")
-    return partners
-
-
-# =============================================================================
-# Local Sobol augmentation and strict physics labels
-# =============================================================================
-
-def generate_local_sobol(anchors: pd.DataFrame, config: Step04Config) -> pd.DataFrame:
-    rows: list[dict] = []
-    sample_counter = 0
-    for anchor_pos, (_, anchor) in enumerate(anchors.iterrows()):
-        a = normalize_vector(row_vector(anchor))
-        for radius_pos, radius in enumerate(config.local_angular_radii):
-            engine = qmc.Sobol(
-                d=len(REDUCED7),
-                scramble=True,
-                seed=int(config.local_seed + 1009 * anchor_pos + 97 * radius_pos),
-            )
-            cube = 2.0 * engine.random_base2(config.local_sobol_power_per_radius) - 1.0
-            for local_idx, raw in enumerate(cube):
-                tangent = raw - float(np.dot(raw, a)) * a
-                tangent_norm = float(np.linalg.norm(tangent))
-                if tangent_norm < 1.0e-12:
-                    tangent = np.roll(a, 1) - float(np.dot(np.roll(a, 1), a)) * a
-                    tangent_norm = float(np.linalg.norm(tangent))
-                tangent /= tangent_norm
-                radial_fraction = max(0.10, min(1.0, float(np.linalg.norm(raw) / math.sqrt(len(REDUCED7)))))
-                angle = float(radius) * radial_fraction
-                candidate = normalize_vector(math.cos(angle) * a + math.sin(angle) * tangent)
-                reduced = vector_to_reduced(candidate)
-                rows.append({
-                    "sample_id": f"local_{sample_counter:06d}",
-                    "sample_source": "sector_local_sobol",
-                    "is_control": 0,
-                    "is_ml_eligible": 1,
-                    "parent_anchor_id": str(anchor["anchor_id"]),
-                    "parent_sample_id": str(anchor["sample_id"]),
-                    "parent_chern_up": int(anchor["anchor_sector"]),
-                    "local_radius_max": float(radius),
-                    "local_angle_actual": float(angle),
-                    "local_index": int(local_idx),
-                    **reduced,
-                })
-                sample_counter += 1
-    return pd.DataFrame(rows)
-
-
-def make_physics_config(config: Step04Config) -> step3.Step03Config:
-    return step3.Step03Config(
-        output_dir=config.output_dir / "_step03_core_unused",
-        train_sobol_power=2,
-        external_sobol_power=0,
-        gap_nk=config.local_gap_nk,
-        initial_chern_grids=config.initial_chern_grids,
-        initial_chern_shifts=config.initial_chern_shifts,
-        strict_gap_grids=config.strict_gap_grids,
-        strict_gap_shifts=config.strict_gap_shifts,
-        strict_chern_grids=config.strict_chern_grids,
-        strict_chern_shifts=config.strict_chern_shifts,
-        direct_gap_skip_chern=config.direct_gap_skip_chern,
-        gap_tol=config.gap_tol,
-        chern_integer_tol=config.chern_integer_tol,
-        min_link_tol=config.min_link_tol,
-        sum_rule_tol=config.sum_rule_tol,
-        checkpoint_every=config.checkpoint_every,
-        ml_n_jobs=1,
-    )
-
-
-def run_local_physics(
-    local_params: pd.DataFrame,
-    config: Step04Config,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    out = config.output_dir
-    final_path = out / "step04_02_local_physics_labels_final.csv"
-    checkpoint_path = out / "step04_02_local_physics_labels_checkpoint.csv"
-    attempts_path = out / "step04_02_local_chern_attempts.csv"
-    strict_gap_path = out / "step04_02_local_strict_gap_checks.csv"
-
-    if final_path.exists() and not config.force_recalculate_local:
-        final = pd.read_csv(final_path, low_memory=False)
-        if set(final["sample_id"].astype(str)) == set(local_params["sample_id"].astype(str)):
-            attempts = pd.read_csv(attempts_path, low_memory=False) if attempts_path.exists() else pd.DataFrame()
-            gaps = pd.read_csv(strict_gap_path, low_memory=False) if strict_gap_path.exists() else pd.DataFrame()
-            return final, attempts, gaps
-
-    if checkpoint_path.exists() and not config.force_recalculate_local:
-        final_rows = pd.read_csv(checkpoint_path, low_memory=False).to_dict("records")
-        done_ids = {str(row["sample_id"]) for row in final_rows}
-    else:
-        final_rows, done_ids = [], set()
-    attempts_rows = (
-        pd.read_csv(attempts_path, low_memory=False).to_dict("records")
-        if attempts_path.exists() and not config.force_recalculate_local else []
-    )
-    strict_gap_rows = (
-        pd.read_csv(strict_gap_path, low_memory=False).to_dict("records")
-        if strict_gap_path.exists() and not config.force_recalculate_local else []
-    )
-
-    pconfig = make_physics_config(config)
-    started = time.time()
-    processed = 0
-    metadata_cols = [
-        "parent_anchor_id", "parent_sample_id", "parent_chern_up",
-        "local_radius_max", "local_angle_actual", "local_index",
-    ]
-    for _, row in local_params.iterrows():
-        sid = str(row["sample_id"])
-        if sid in done_ids:
-            continue
-        result, attempts, gaps = step3.evaluate_sample_physics(row, pconfig)
-        for col in metadata_cols:
-            result[col] = row[col]
-        final_rows.append(result)
-        for attempt in attempts:
-            attempt.update({col: row[col] for col in metadata_cols})
-        for gap in gaps:
-            gap.update({col: row[col] for col in metadata_cols})
-        attempts_rows.extend(attempts)
-        strict_gap_rows.extend(gaps)
-        processed += 1
-
-        if processed % config.checkpoint_every == 0:
-            atomic_write_csv(pd.DataFrame(final_rows), checkpoint_path)
-            atomic_write_csv(pd.DataFrame(attempts_rows), attempts_path)
-            atomic_write_csv(pd.DataFrame(strict_gap_rows), strict_gap_path)
-            print(f"Local physics: {len(final_rows)}/{len(local_params)} | elapsed {time.time()-started:.1f} s")
-
-    final = pd.DataFrame(final_rows)
-    attempts = pd.DataFrame(attempts_rows)
-    gaps = pd.DataFrame(strict_gap_rows)
-    atomic_write_csv(final, final_path)
-    atomic_write_csv(attempts, attempts_path)
-    atomic_write_csv(gaps, strict_gap_path)
-    return final, attempts, gaps
-
-
-def summarize_local(local: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    phase_counts = (
-        local.groupby(["parent_chern_up", "parent_anchor_id", "local_radius_max", "phase_label"], dropna=False)
-        .size().reset_index(name="count")
-    )
-    summary_rows: list[dict] = []
-    for keys, group in local.groupby(["parent_chern_up", "parent_anchor_id", "local_radius_max"]):
-        sector, anchor_id, radius = keys
-        same_sector = (
-            group["phase_label"].eq("spin_chern_TI_candidate")
-            & group["chern_up_int"].fillna(999).astype(int).eq(int(sector))
-        )
-        summary_rows.append({
-            "parent_chern_up": int(sector),
-            "parent_anchor_id": str(anchor_id),
-            "local_radius_max": float(radius),
-            "n_samples": int(len(group)),
-            "n_same_sector_TI": int(same_sector.sum()),
-            "same_sector_retention_fraction": float(same_sector.mean()),
-            "n_other_TI_sector": int((group["phase_label"].eq("spin_chern_TI_candidate") & ~same_sector).sum()),
-            "n_trivial_insulator": int(group["phase_label"].eq("trivial_insulator").sum()),
-            "n_band_metal": int(group["phase_label"].eq("spin_chern_band_metal").sum()),
-            "n_boundary_or_closing": int(group["phase_label"].isin([
-                "noninsulating_or_gap_closing", "boundary_or_chern_unreliable"
-            ]).sum()),
-            "best_indirect_gap_same_sector": float(group.loc[same_sector, "indirect_gap"].max()) if same_sector.any() else np.nan,
-        })
-    return phase_counts, pd.DataFrame(summary_rows)
-
-
-# =============================================================================
-# Dense path gap scan
-# =============================================================================
-
-def fast_gap_scan(params: Dict[str, float], nk: int) -> dict[str, float]:
-    kxs, kys = core.bz_grid(int(nk), (0.0, 0.0))
-    min_direct = np.inf
-    max_valence = -np.inf
-    min_conduction = np.inf
-    direct_k = (np.nan, np.nan)
-    vbm_k = (np.nan, np.nan)
-    cbm_k = (np.nan, np.nan)
-
-    for kx in kxs:
-        for ky in kys:
-            eig = core.eigvals_full(float(kx), float(ky), params)
-            direct = float(eig[4] - eig[3])
-            if direct < min_direct:
-                min_direct = direct
-                direct_k = (float(kx), float(ky))
-            if float(eig[3]) > max_valence:
-                max_valence = float(eig[3])
-                vbm_k = (float(kx), float(ky))
-            if float(eig[4]) < min_conduction:
-                min_conduction = float(eig[4])
-                cbm_k = (float(kx), float(ky))
-    return {
-        "min_direct_gap": float(min_direct),
-        "indirect_gap": float(min_conduction - max_valence),
-        "direct_gap_kx": direct_k[0],
-        "direct_gap_ky": direct_k[1],
-        "vbm": float(max_valence),
-        "vbm_kx": vbm_k[0],
-        "vbm_ky": vbm_k[1],
-        "cbm": float(min_conduction),
-        "cbm_kx": cbm_k[0],
-        "cbm_ky": cbm_k[1],
-    }
-
-
-def generate_path_parameters(partners: pd.DataFrame, config: Step04Config) -> pd.DataFrame:
-    rows: list[dict] = []
-    lambdas = np.linspace(0.0, 1.0, config.path_n_lambda)
-    for _, pair in partners.iterrows():
-        a = np.array([float(pair[f"anchor_{name}"]) for name in REDUCED7])
-        b = np.array([float(pair[f"trivial_{name}"]) for name in REDUCED7])
-        for index, lam in enumerate(lambdas):
-            reduced = vector_to_reduced(slerp(a, b, float(lam)))
-            rows.append({
-                "path_point_id": f"{pair['path_id']}__p{index:04d}",
-                "path_id": str(pair["path_id"]),
-                "path_index": int(index),
-                "lambda": float(lam),
-                "anchor_sector": int(pair["anchor_sector"]),
-                "partner_mode": str(pair["partner_mode"]),
-                "anchor_sample_id": str(pair["anchor_sample_id"]),
-                "trivial_sample_id": str(pair["trivial_sample_id"]),
-                **reduced,
-            })
-    return pd.DataFrame(rows)
-
-
-def run_path_gap_scans(path_params: pd.DataFrame, config: Step04Config) -> pd.DataFrame:
-    output = config.output_dir / "step04_04_path_dense_gap_scan.csv"
-    checkpoint = config.output_dir / "step04_04_path_dense_gap_scan_checkpoint.csv"
-    if output.exists() and not config.force_recalculate_paths:
-        df = pd.read_csv(output, low_memory=False)
-        if set(df["path_point_id"].astype(str)) == set(path_params["path_point_id"].astype(str)):
-            return df
-
-    if checkpoint.exists() and not config.force_recalculate_paths:
-        rows = pd.read_csv(checkpoint, low_memory=False).to_dict("records")
-        done = {str(row["path_point_id"]) for row in rows}
-    else:
-        rows, done = [], set()
-
-    started = time.time()
-    processed = 0
-    for _, row in path_params.iterrows():
-        point_id = str(row["path_point_id"])
-        if point_id in done:
-            continue
-        reduced = {name: float(row[name]) for name in REDUCED7}
-        params = core.raw8_from_reduced7(reduced, e0=0.0)
-        scan = fast_gap_scan(params, config.path_gap_nk)
-        rows.append({**row.to_dict(), **scan, "path_gap_nk": int(config.path_gap_nk)})
-        processed += 1
-        if processed % max(config.checkpoint_every, 10) == 0:
-            atomic_write_csv(pd.DataFrame(rows), checkpoint)
-            print(f"Path gap: {len(rows)}/{len(path_params)} | elapsed {time.time()-started:.1f} s")
-
-    result = pd.DataFrame(rows).sort_values(["path_id", "path_index"]).reset_index(drop=True)
-    atomic_write_csv(result, output)
-    return result
-
-
-def select_adaptive_chern_points(path_gap: pd.DataFrame, config: Step04Config) -> pd.DataFrame:
-    selected_rows: list[pd.Series] = []
-    for path_id, group in path_gap.groupby("path_id", sort=False):
-        group = group.sort_values("path_index").reset_index(drop=True)
-        n = len(group)
-        indices: set[int] = set(range(0, n, max(1, config.path_chern_stride)))
-        indices.update({0, n - 1})
-
-        # Global and secondary smallest gap points.
-        smallest = group.nsmallest(min(config.path_extra_gap_minima, n), "min_direct_gap").index
-        for idx in smallest:
-            for offset in (-1, 0, 1):
-                if 0 <= int(idx) + offset < n:
-                    indices.add(int(idx) + offset)
-
-        # All local minima of the discrete path gap.
-        gaps = group["min_direct_gap"].to_numpy(float)
-        for idx in range(1, n - 1):
-            if gaps[idx] <= gaps[idx - 1] and gaps[idx] <= gaps[idx + 1]:
-                indices.update({idx - 1, idx, idx + 1})
-
-        if len(indices) > config.max_chern_points_per_path:
-            mandatory = {0, n - 1, int(np.argmin(gaps))}
-            remaining = sorted(indices - mandatory, key=lambda i: gaps[i])
-            keep = mandatory | set(remaining[: max(0, config.max_chern_points_per_path - len(mandatory))])
-            indices = keep
-
-        for idx in sorted(indices):
-            row = group.iloc[idx].copy()
-            row["sample_id"] = str(row["path_point_id"])
-            row["sample_source"] = "adaptive_path_chern"
-            row["is_control"] = 1  # force strict Chern verification for every selected point
-            row["is_ml_eligible"] = 0
-            selected_rows.append(row)
-    return pd.DataFrame(selected_rows)
-
-
-def run_path_chern_audit(
-    selected: pd.DataFrame,
-    config: Step04Config,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    final_path = config.output_dir / "step04_04_path_adaptive_chern_labels.csv"
-    attempts_path = config.output_dir / "step04_04_path_chern_attempts.csv"
-    gaps_path = config.output_dir / "step04_04_path_strict_gap_checks.csv"
-    checkpoint = config.output_dir / "step04_04_path_adaptive_chern_checkpoint.csv"
-
-    if final_path.exists() and not config.force_recalculate_chern:
-        final = pd.read_csv(final_path, low_memory=False)
-        if set(final["sample_id"].astype(str)) == set(selected["sample_id"].astype(str)):
-            attempts = pd.read_csv(attempts_path, low_memory=False) if attempts_path.exists() else pd.DataFrame()
-            gaps = pd.read_csv(gaps_path, low_memory=False) if gaps_path.exists() else pd.DataFrame()
-            return final, attempts, gaps
-
-    if checkpoint.exists() and not config.force_recalculate_chern:
-        rows = pd.read_csv(checkpoint, low_memory=False).to_dict("records")
-        done = {str(row["sample_id"]) for row in rows}
-    else:
-        rows, done = [], set()
-    attempts_rows = (
-        pd.read_csv(attempts_path, low_memory=False).to_dict("records")
-        if attempts_path.exists() and not config.force_recalculate_chern else []
-    )
-    gap_rows = (
-        pd.read_csv(gaps_path, low_memory=False).to_dict("records")
-        if gaps_path.exists() and not config.force_recalculate_chern else []
-    )
-
-    pconfig = make_physics_config(config)
-    started = time.time()
-    processed = 0
-    metadata = [
-        "path_id", "path_point_id", "path_index", "lambda", "anchor_sector",
-        "partner_mode", "anchor_sample_id", "trivial_sample_id",
-    ]
-    for _, row in selected.iterrows():
-        sid = str(row["sample_id"])
-        if sid in done:
-            continue
-        result, attempts, gaps = step3.evaluate_sample_physics(row, pconfig)
-        for col in metadata:
-            result[col] = row[col]
-        for attempt in attempts:
-            attempt.update({col: row[col] for col in metadata})
-        for gap in gaps:
-            gap.update({col: row[col] for col in metadata})
-        rows.append(result)
-        attempts_rows.extend(attempts)
-        gap_rows.extend(gaps)
-        processed += 1
-        if processed % config.checkpoint_every == 0:
-            atomic_write_csv(pd.DataFrame(rows), checkpoint)
-            atomic_write_csv(pd.DataFrame(attempts_rows), attempts_path)
-            atomic_write_csv(pd.DataFrame(gap_rows), gaps_path)
-            print(f"Path Chern: {len(rows)}/{len(selected)} | elapsed {time.time()-started:.1f} s")
-
-    final = pd.DataFrame(rows).sort_values(["path_id", "lambda"]).reset_index(drop=True)
-    attempts = pd.DataFrame(attempts_rows)
-    gaps = pd.DataFrame(gap_rows)
-    atomic_write_csv(final, final_path)
-    atomic_write_csv(attempts, attempts_path)
-    atomic_write_csv(gaps, gaps_path)
-    return final, attempts, gaps
-
-
-# =============================================================================
-# Transition brackets and continuous critical-valley refinement
-# =============================================================================
 
 def wrap_k(value: float) -> float:
-    return float((value + math.pi) % (2.0 * math.pi) - math.pi)
+    return float((float(value) + math.pi) % TWO_PI - math.pi)
 
 
-def torus_delta(a: float, b: float) -> float:
-    return wrap_k(float(a) - float(b))
+def principal_angle(value: complex) -> float:
+    return float(np.angle(value))
 
 
-def torus_distance(k: tuple[float, float], q: tuple[float, float]) -> float:
-    return float(math.hypot(torus_delta(k[0], q[0]), torus_delta(k[1], q[1])))
+# =============================================================================
+# Step12M reconstruction
+# =============================================================================
 
 
-def classify_k_region(kx: float, ky: float, tol: float) -> dict[str, Any]:
-    k = (wrap_k(kx), wrap_k(ky))
-    high_symmetry = {
-        "Gamma": [(0.0, 0.0)],
-        "X": [(math.pi, 0.0), (-math.pi, 0.0)],
-        "Y": [(0.0, math.pi), (0.0, -math.pi)],
-        "M": [
-            (math.pi, math.pi), (math.pi, -math.pi),
-            (-math.pi, math.pi), (-math.pi, -math.pi),
-        ],
+def load_step12_inputs(step12_source: str | Path) -> dict[str, Any]:
+    final_certificate = read_json_token(step12_source, "step12M_18_final_mechanism_certificate.json")
+    edge = read_csv_token(step12_source, "step12M_01_target_edge_definition.csv").iloc[0].copy()
+    closures = read_csv_token(step12_source, "step12M_06_critical_closure_parameters.csv")
+    segment_labels = read_csv_token(step12_source, "step12M_05_strict_segment_chern_labels.csv")
+    group_certificates = read_csv_token(step12_source, "step12M_13_closure_group_certificates.csv")
+    berry = read_csv_token(step12_source, "step12M_12_berry_charge_consensus.csv")
+    grid = read_csv_token(step12_source, "step12M_15_refined_junction_strict_grid.csv")
+    gap_track = read_csv_token(step12_source, "step12M_04_target_edge_gap_tracks.csv")
+
+    if str(edge.get("edge_id")) != TARGET_EDGE_ID:
+        raise ValueError(f"Unexpected target edge: {edge.get('edge_id')}")
+    background = {
+        name: float(final_certificate["fixed_background_parameters"][name])
+        for name in ["m_e", "t1", "t2", "r1", "r2"]
     }
-    distances = {
-        name: min(torus_distance(k, point) for point in points)
-        for name, points in high_symmetry.items()
-    }
-    nearest_name = min(distances, key=distances.get)
-    if distances[nearest_name] <= tol:
-        region = nearest_name
-        is_high = 1
+
+    if "closure_group_id" in closures.columns:
+        grouped = closures.groupby("closure_group_id", sort=False)["critical_lambda"].mean()
+        closure_lambdas = sorted(float(x) for x in grouped.to_list())
     else:
-        diag_plus = abs(torus_delta(k[0], k[1]))
-        diag_minus = abs(torus_delta(k[0], -k[1]))
-        axis_x = abs(wrap_k(k[1]))
-        axis_y = abs(wrap_k(k[0]))
-        if diag_plus <= tol:
-            region = "generic_Sigma_kx_eq_ky"
-        elif diag_minus <= tol:
-            region = "generic_SigmaPrime_kx_eq_minus_ky"
-        elif axis_x <= tol or abs(abs(k[1]) - math.pi) <= tol:
-            region = "generic_horizontal"
-        elif axis_y <= tol or abs(abs(k[0]) - math.pi) <= tol:
-            region = "generic_vertical"
-        else:
-            region = "generic"
-        is_high = 0
+        closure_lambdas = sorted(float(x) for x in closures["critical_lambda"].to_list())
+    if len(closure_lambdas) != 2:
+        raise RuntimeError(f"Step13M requires exactly two Step12M closure groups, found {closure_lambdas}")
+
     return {
-        "critical_k_region": region,
-        "critical_is_high_symmetry": int(is_high),
-        "nearest_high_symmetry": nearest_name,
-        "distance_to_nearest_high_symmetry": float(distances[nearest_name]),
-        "distance_to_Sigma": float(abs(torus_delta(k[0], k[1]))),
-        "distance_to_SigmaPrime": float(abs(torus_delta(k[0], -k[1]))),
+        "final_certificate": final_certificate,
+        "edge": edge,
+        "closures": closures,
+        "segment_labels": segment_labels,
+        "group_certificates": group_certificates,
+        "berry": berry,
+        "grid": grid,
+        "gap_track": gap_track,
+        "background": background,
+        "closure_lambdas": closure_lambdas,
     }
 
 
-def _unique_k_points(points: Iterable[tuple[float, float]], tol: float = 1.0e-7) -> list[tuple[float, float]]:
-    unique: list[tuple[float, float]] = []
-    for point in points:
-        p = (wrap_k(point[0]), wrap_k(point[1]))
-        if not any(torus_distance(p, q) <= tol for q in unique):
-            unique.append(p)
-    return unique
+def build_probe_table(inputs: dict[str, Any], config: Step13Config) -> pd.DataFrame:
+    lam1, lam2 = inputs["closure_lambdas"]
+    segments = inputs["segment_labels"].sort_values("segment_index")
+    pre_rows = segments[segments["segment_index"].astype(int).eq(0)]
+    post_rows = segments[segments["segment_index"].astype(int).eq(2)]
+    pre_lambda = float(pre_rows.iloc[0]["probe_lambda"]) if not pre_rows.empty else 0.5 * lam1
+    post_lambda = float(post_rows.iloc[0]["probe_lambda"]) if not post_rows.empty else 0.5 * (lam2 + 1.0)
 
-
-def c4_orbit(kx: float, ky: float) -> list[tuple[float, float]]:
-    return _unique_k_points([
-        (kx, ky), (-ky, kx), (-kx, -ky), (ky, -kx),
-    ])
-
-
-def d4_orbit(kx: float, ky: float) -> list[tuple[float, float]]:
-    base = c4_orbit(kx, ky)
-    mirrors = [(x, -y) for x, y in base]
-    return _unique_k_points(base + mirrors)
-
-
-def detect_transition_brackets(path_chern: pd.DataFrame, path_gap: pd.DataFrame, config: Step04Config) -> pd.DataFrame:
-    rows: list[dict] = []
-    for path_id, gap_group in path_gap.groupby("path_id", sort=False):
-        ch = path_chern[path_chern["path_id"].astype(str) == str(path_id)].copy()
-        ch = ch.dropna(subset=["chern_up_int"]).sort_values("lambda")
-        valid = ch[ch["chern_exact_consensus"].fillna(0).astype(int) == 1]
-        transition_count = 0
-        if len(valid) >= 2:
-            valid_rows = list(valid.to_dict("records"))
-            for left, right in zip(valid_rows[:-1], valid_rows[1:]):
-                c_left = int(left["chern_up_int"])
-                c_right = int(right["chern_up_int"])
-                if c_left == c_right:
-                    continue
-                rows.append({
-                    "path_id": str(path_id),
-                    "transition_id": f"{path_id}__transition{transition_count:02d}",
-                    "lambda_left": float(left["lambda"]),
-                    "lambda_right": float(right["lambda"]),
-                    "chern_left": c_left,
-                    "chern_right": c_right,
-                    "delta_chern_up": int(c_right - c_left),
-                    "bracket_source": "strict_chern_change",
-                })
-                transition_count += 1
-                if transition_count >= config.max_transitions_per_path:
-                    break
-
-        if transition_count == 0:
-            group = gap_group.sort_values("lambda").reset_index(drop=True)
-            idx = int(group["min_direct_gap"].astype(float).idxmin())
-            # idx above is original index; convert to positional index.
-            pos = int(np.argmin(group["min_direct_gap"].to_numpy(float)))
-            left_pos = max(0, pos - 1)
-            right_pos = min(len(group) - 1, pos + 1)
-            rows.append({
-                "path_id": str(path_id),
-                "transition_id": f"{path_id}__gap_minimum00",
-                "lambda_left": float(group.iloc[left_pos]["lambda"]),
-                "lambda_right": float(group.iloc[right_pos]["lambda"]),
-                "chern_left": np.nan,
-                "chern_right": np.nan,
-                "delta_chern_up": np.nan,
-                "bracket_source": "dense_gap_minimum_fallback",
-            })
+    rows = [
+        {
+            "probe_id": "control_pre_minus2",
+            "probe_role": "pre_control",
+            "lambda": pre_lambda,
+            "expected_chern_up": -2,
+            "middle_fraction": np.nan,
+        }
+    ]
+    for index, fraction in enumerate(config.middle_fractions):
+        rows.append(
+            {
+                "probe_id": f"middle_{index+1:02d}",
+                "probe_role": "intermediate",
+                "lambda": lam1 + float(fraction) * (lam2 - lam1),
+                "expected_chern_up": 2,
+                "middle_fraction": float(fraction),
+            }
+        )
+    rows.append(
+        {
+            "probe_id": "control_post_zero",
+            "probe_role": "post_control",
+            "lambda": post_lambda,
+            "expected_chern_up": 0,
+            "middle_fraction": np.nan,
+        }
+    )
+    edge = inputs["edge"]
+    for row in rows:
+        lam = float(row["lambda"])
+        row["r3"] = float(edge["r3_0"] + lam * (edge["r3_1"] - edge["r3_0"]))
+        row["r4"] = float(edge["r4_0"] + lam * (edge["r4_1"] - edge["r4_0"]))
     return pd.DataFrame(rows)
 
 
-def direct_gap_at(kx: float, ky: float, reduced: dict[str, float]) -> float:
-    params = core.raw8_from_reduced7(reduced, e0=0.0)
-    eig = core.eigvals_full(wrap_k(kx), wrap_k(ky), params)
-    return float(max(0.0, eig[4] - eig[3]))
+def closure_ky_anchors(inputs: dict[str, Any]) -> list[float]:
+    valleys = read_csv_token_from_optional(inputs, "step12M_07_critical_valley_orbits.csv")
+    anchors: list[float] = []
+    if valleys.empty:
+        return anchors
+    ky_column = "critical_ky" if "critical_ky" in valleys.columns else ("ky" if "ky" in valleys.columns else None)
+    if ky_column is None:
+        return anchors
+    selected = valleys.copy()
+    if "spin" in selected.columns:
+        selected = selected[selected["spin"].astype(str).eq("up")]
+    if "is_active_valley" in selected.columns:
+        selected = selected[selected["is_active_valley"].astype(int).eq(1)]
+    for value in selected[ky_column].dropna().to_numpy(float):
+        for offset in (0.0, -0.08, -0.04, -0.02, 0.02, 0.04, 0.08):
+            anchors.append(wrap_k(float(value) + offset))
+    return sorted(set(round(x, 12) for x in anchors))
 
 
-def refine_one_transition(
-    bracket: pd.Series,
-    pair: pd.Series,
-    path_gap: pd.DataFrame,
-    config: Step04Config,
+def read_csv_token_from_optional(inputs: dict[str, Any], token: str) -> pd.DataFrame:
+    source = inputs.get("_step12_source")
+    if source is None:
+        return pd.DataFrame()
+    try:
+        return read_csv_token(source, token)
+    except FileNotFoundError:
+        return pd.DataFrame()
+
+
+# =============================================================================
+# Physical core and occupied-subspace gap audit
+# =============================================================================
+
+
+def configure_physics(tts_archive: str | Path, config: Step13Config):
+    step12_config = step12.Step12Config(
+        output_dir=config.output_dir / "_physics_core",
+        quick=bool(config.quick),
+        force_recalculate=False,
+        random_seed=int(config.random_seed),
+    ).normalized()
+    core, step4, step5, step3, strict_config, search_config = step12.configure_physics(
+        tts_archive,
+        step12_config,
+    )
+    return core, step4, step5, step3, strict_config, search_config
+
+
+def spin_hamiltonian(core, raw: dict[str, float], kx: float, ky: float) -> np.ndarray:
+    matrix = np.asarray(core.h_spin_block_periodic(float(kx), float(ky), raw, "up"), dtype=complex)
+    if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
+        raise ValueError(f"Invalid spin Hamiltonian shape {matrix.shape}")
+    return 0.5 * (matrix + matrix.conj().T)
+
+
+def occupied_frame(core, raw: dict[str, float], kx: float, ky: float) -> tuple[np.ndarray, np.ndarray]:
+    values, vectors = np.linalg.eigh(spin_hamiltonian(core, raw, kx, ky))
+    n_occ = int(core.N_OCC_SPIN)
+    if not (0 < n_occ < len(values)):
+        raise ValueError(f"Invalid N_OCC_SPIN={n_occ} for dimension {len(values)}")
+    return values, vectors[:, :n_occ]
+
+
+def spin_internal_gap(core, raw: dict[str, float], kx: float, ky: float) -> float:
+    values = np.linalg.eigvalsh(spin_hamiltonian(core, raw, kx, ky))
+    n_occ = int(core.N_OCC_SPIN)
+    return float(values[n_occ] - values[n_occ - 1])
+
+
+def audit_global_spin_gap(
+    core,
+    raw: dict[str, float],
+    *,
+    grid_n: int,
+    local_starts: int,
 ) -> dict[str, Any]:
-    path_id = str(bracket["path_id"])
-    a = np.array([float(pair[f"anchor_{name}"]) for name in REDUCED7])
-    b = np.array([float(pair[f"trivial_{name}"]) for name in REDUCED7])
-    lam_lo = float(min(bracket["lambda_left"], bracket["lambda_right"]))
-    lam_hi = float(max(bracket["lambda_left"], bracket["lambda_right"]))
-    if lam_hi - lam_lo < 1.0e-7:
-        lam_lo = max(0.0, lam_lo - 1.0 / max(10, config.path_n_lambda - 1))
-        lam_hi = min(1.0, lam_hi + 1.0 / max(10, config.path_n_lambda - 1))
+    grid_n = int(grid_n)
+    ks = np.linspace(-math.pi, math.pi, grid_n, endpoint=False)
+    candidates: list[tuple[float, float, float]] = []
+    for kx in ks:
+        for ky in ks:
+            gap = spin_internal_gap(core, raw, float(kx), float(ky))
+            candidates.append((gap, float(kx), float(ky)))
+    candidates.sort(key=lambda item: item[0])
 
-    local = path_gap[
-        (path_gap["path_id"].astype(str) == path_id)
-        & (path_gap["lambda"].astype(float) >= lam_lo - 1.0e-12)
-        & (path_gap["lambda"].astype(float) <= lam_hi + 1.0e-12)
-    ].copy()
-    if local.empty:
-        local = path_gap[path_gap["path_id"].astype(str) == path_id].nsmallest(
-            config.critical_optimizer_starts, "min_direct_gap"
-        )
-    else:
-        local = local.nsmallest(config.critical_optimizer_starts, "min_direct_gap")
-
-    starts: list[np.ndarray] = []
-    for _, row in local.iterrows():
-        starts.append(np.array([
-            float(np.clip(row["lambda"], lam_lo, lam_hi)),
-            float(row["direct_gap_kx"]), float(row["direct_gap_ky"]),
-        ]))
-    if not starts:
-        starts = [np.array([(lam_lo + lam_hi) / 2.0, 0.0, 0.0])]
+    best = {"gap": float(candidates[0][0]), "kx": candidates[0][1], "ky": candidates[0][2]}
+    unique_starts: list[tuple[float, float]] = []
+    for _, kx, ky in candidates:
+        if all(math.hypot(wrap_k(kx-a), wrap_k(ky-b)) > 0.05 for a, b in unique_starts):
+            unique_starts.append((kx, ky))
+        if len(unique_starts) >= int(local_starts):
+            break
 
     def objective(x: np.ndarray) -> float:
-        lam, kx, ky = float(x[0]), float(x[1]), float(x[2])
-        reduced = vector_to_reduced(slerp(a, b, lam))
-        return direct_gap_at(kx, ky, reduced)
+        gap = spin_internal_gap(core, raw, wrap_k(float(x[0])), wrap_k(float(x[1])))
+        return float(gap * gap)
 
-    best = None
-    for start in starts:
+    for start in unique_starts:
         result = minimize(
             objective,
-            x0=start,
-            method="L-BFGS-B",
-            bounds=[(lam_lo, lam_hi), (-math.pi, math.pi), (-math.pi, math.pi)],
-            options={"maxiter": int(config.critical_optimizer_maxiter), "ftol": 1.0e-14},
+            np.asarray(start, dtype=float),
+            method="Powell",
+            bounds=[(-math.pi, math.pi), (-math.pi, math.pi)],
+            options={"xtol": 1.0e-11, "ftol": 1.0e-22, "maxiter": 1200},
         )
-        if best is None or float(result.fun) < float(best.fun):
-            best = result
-    assert best is not None
-
-    lam = float(best.x[0])
-    kx, ky = wrap_k(float(best.x[1])), wrap_k(float(best.x[2]))
-    reduced = vector_to_reduced(slerp(a, b, lam))
-    c4 = c4_orbit(kx, ky)
-    d4 = d4_orbit(kx, ky)
-    c4_gaps = [direct_gap_at(x, y, reduced) for x, y in c4]
-    d4_gaps = [direct_gap_at(x, y, reduced) for x, y in d4]
+        kx, ky = wrap_k(result.x[0]), wrap_k(result.x[1])
+        gap = spin_internal_gap(core, raw, kx, ky)
+        if gap < best["gap"]:
+            best = {"gap": float(gap), "kx": float(kx), "ky": float(ky)}
 
     return {
-        **bracket.to_dict(),
-        "anchor_sector": int(pair["anchor_sector"]),
-        "partner_mode": str(pair["partner_mode"]),
-        "critical_lambda": lam,
-        "critical_direct_gap": float(best.fun),
-        "critical_kx": kx,
-        "critical_ky": ky,
-        "optimizer_success": int(bool(best.success)),
-        "optimizer_status": int(best.status),
-        "optimizer_message": str(best.message),
-        "optimizer_nfev": int(best.nfev),
-        "c4_orbit_size": int(len(c4)),
-        "d4_orbit_size": int(len(d4)),
-        "c4_gap_min": float(min(c4_gaps)),
-        "c4_gap_max": float(max(c4_gaps)),
-        "c4_gap_spread": float(max(c4_gaps) - min(c4_gaps)),
-        "d4_gap_min": float(min(d4_gaps)),
-        "d4_gap_max": float(max(d4_gaps)),
-        "d4_gap_spread": float(max(d4_gaps) - min(d4_gaps)),
-        **classify_k_region(kx, ky, config.critical_k_symmetry_tol),
-        **{name: reduced[name] for name in REDUCED7},
+        "spin_internal_gap": float(best["gap"]),
+        "gap_kx": float(best["kx"]),
+        "gap_ky": float(best["ky"]),
+        "gap_grid_n": int(grid_n),
+        "gap_local_starts": int(len(unique_starts)),
     }
 
 
-def refine_critical_valleys(
-    brackets: pd.DataFrame,
-    partners: pd.DataFrame,
-    path_gap: pd.DataFrame,
-    config: Step04Config,
+# =============================================================================
+# Non-Abelian Wilson loop
+# =============================================================================
+
+
+def polar_unitary(matrix: np.ndarray) -> tuple[np.ndarray, float]:
+    u, singular, vh = np.linalg.svd(matrix, full_matrices=False)
+    return u @ vh, float(np.min(singular))
+
+
+def wilson_loop_at_ky(
+    h_fn: Callable[[float, float], np.ndarray],
+    n_occ: int,
+    ky: float,
+    *,
+    nkx: int,
+    shift_x: float,
+) -> dict[str, Any]:
+    kxs = -math.pi + TWO_PI * (np.arange(int(nkx), dtype=float) + float(shift_x)) / int(nkx)
+    frames: list[np.ndarray] = []
+    direct_gaps: list[float] = []
+    for kx in kxs:
+        matrix = h_fn(float(kx), float(ky))
+        values, vectors = np.linalg.eigh(0.5 * (matrix + matrix.conj().T))
+        frames.append(vectors[:, :n_occ])
+        direct_gaps.append(float(values[n_occ] - values[n_occ - 1]))
+
+    wilson = np.eye(n_occ, dtype=complex)
+    min_singular = 1.0
+    for index in range(len(frames)):
+        overlap = frames[index].conj().T @ frames[(index + 1) % len(frames)]
+        link, singular = polar_unitary(overlap)
+        min_singular = min(min_singular, singular)
+        wilson = wilson @ link
+
+    eigenvalues = np.linalg.eigvals(wilson)
+    eigenphases = np.sort(np.angle(eigenvalues))
+    determinant = np.linalg.det(wilson)
+    determinant /= abs(determinant) if abs(determinant) else 1.0
+    return {
+        "ky": float(ky),
+        "determinant": complex(determinant),
+        "det_phase": float(np.angle(determinant)),
+        "eigenphases": np.asarray(eigenphases, dtype=float),
+        "min_overlap_singular": float(min_singular),
+        "min_kx_direct_gap": float(np.min(direct_gaps)),
+    }
+
+
+def track_phase_branches(phase_rows: list[np.ndarray]) -> np.ndarray:
+    if not phase_rows:
+        return np.empty((0, 0), dtype=float)
+    tracked = [np.sort(np.asarray(phase_rows[0], dtype=float))]
+    for raw in phase_rows[1:]:
+        raw = np.asarray(raw, dtype=float)
+        previous = tracked[-1]
+        previous_wrapped = (previous + math.pi) % TWO_PI - math.pi
+        cost = np.abs(np.angle(np.exp(1j * (raw[None, :] - previous_wrapped[:, None]))))
+        row_ind, col_ind = linear_sum_assignment(cost)
+        ordered = np.empty_like(raw)
+        ordered[row_ind] = raw[col_ind]
+        delta = np.angle(np.exp(1j * (ordered - previous_wrapped)))
+        tracked.append(previous + delta)
+    return np.asarray(tracked, dtype=float)
+
+
+def adaptive_wilson_winding(
+    h_fn: Callable[[float, float], np.ndarray],
+    n_occ: int,
+    *,
+    nkx: int,
+    initial_nky: int,
+    shift_x: float,
+    shift_y: float,
+    phase_step: float,
+    max_points: int,
+    max_rounds: int,
+    ky_anchors: Iterable[float] = (),
+) -> tuple[dict[str, Any], pd.DataFrame]:
+    start = -math.pi + TWO_PI * float(shift_y) / int(initial_nky)
+    coords = list(start + TWO_PI * np.arange(int(initial_nky), dtype=float) / int(initial_nky))
+    for anchor in ky_anchors:
+        value = float(anchor)
+        while value < start:
+            value += TWO_PI
+        while value >= start + TWO_PI:
+            value -= TWO_PI
+        coords.append(value)
+    coords = sorted(set(round(float(x), 14) for x in coords))
+
+    cache: dict[float, dict[str, Any]] = {}
+
+    def evaluate(coord: float) -> dict[str, Any]:
+        key = round(float(coord), 14)
+        if key not in cache:
+            cache[key] = wilson_loop_at_ky(
+                h_fn,
+                n_occ,
+                wrap_k(float(coord)),
+                nkx=int(nkx),
+                shift_x=float(shift_x),
+            )
+            cache[key]["ky_coordinate"] = float(coord)
+        return cache[key]
+
+    refinement_rounds = 0
+    for round_index in range(int(max_rounds) + 1):
+        coords = sorted(coords)
+        rows = [evaluate(x) for x in coords]
+        new_points: list[float] = []
+        for index, left in enumerate(coords):
+            right = coords[index + 1] if index + 1 < len(coords) else coords[0] + TWO_PI
+            left_row = rows[index]
+            right_row = rows[index + 1] if index + 1 < len(rows) else rows[0]
+            increment = principal_angle(right_row["determinant"] * np.conj(left_row["determinant"]))
+            if abs(increment) > float(phase_step):
+                new_points.append(0.5 * (left + right))
+        if not new_points or len(coords) >= int(max_points) or round_index == int(max_rounds):
+            refinement_rounds = round_index
+            break
+        remaining = int(max_points) - len(coords)
+        coords.extend(new_points[:remaining])
+        coords = sorted(set(round(float(x), 14) for x in coords))
+        refinement_rounds = round_index + 1
+
+    coords = sorted(coords)
+    rows = [evaluate(x) for x in coords]
+    determinants = np.asarray([row["determinant"] for row in rows], dtype=complex)
+    increments = []
+    for index in range(len(rows)):
+        next_index = (index + 1) % len(rows)
+        increments.append(principal_angle(determinants[next_index] * np.conj(determinants[index])))
+    winding_float = float(np.sum(increments) / TWO_PI)
+    winding_int = int(np.rint(winding_float))
+    integer_residual = float(abs(winding_float - winding_int))
+
+    det_unwrapped = [float(rows[0]["det_phase"])]
+    for index in range(1, len(rows)):
+        det_unwrapped.append(det_unwrapped[-1] + principal_angle(determinants[index] * np.conj(determinants[index - 1])))
+    branch_array = track_phase_branches([row["eigenphases"] for row in rows])
+
+    trace_rows: list[dict[str, Any]] = []
+    for index, row in enumerate(rows):
+        item = {
+            "ky_coordinate": float(coords[index]),
+            "ky_wrapped": float(wrap_k(coords[index])),
+            "det_phase": float(row["det_phase"]),
+            "det_phase_unwrapped": float(det_unwrapped[index]),
+            "min_overlap_singular": float(row["min_overlap_singular"]),
+            "min_kx_direct_gap": float(row["min_kx_direct_gap"]),
+        }
+        for branch in range(branch_array.shape[1]):
+            item[f"wilson_phase_branch_{branch}"] = float(branch_array[index, branch])
+        trace_rows.append(item)
+
+    # Add a closing point for plotting the full winding.
+    closing = dict(trace_rows[0])
+    closing["ky_coordinate"] = float(coords[0] + TWO_PI)
+    closing["ky_wrapped"] = float(trace_rows[0]["ky_wrapped"])
+    closing["det_phase_unwrapped"] = float(det_unwrapped[0] + TWO_PI * winding_float)
+    trace_rows.append(closing)
+
+    summary = {
+        "raw_winding_float": winding_float,
+        "raw_winding_int": winding_int,
+        "integer_residual": integer_residual,
+        "n_ky_points_final": int(len(coords)),
+        "adaptive_refinement_rounds": int(refinement_rounds),
+        "max_abs_phase_increment": float(np.max(np.abs(increments))),
+        "min_overlap_singular": float(min(row["min_overlap_singular"] for row in rows)),
+        "min_kx_direct_gap": float(min(row["min_kx_direct_gap"] for row in rows)),
+    }
+    return summary, pd.DataFrame(trace_rows)
+
+
+# =============================================================================
+# Probe execution and consensus
+# =============================================================================
+
+
+def run_wilson_attempts(
+    *,
+    core,
+    step5,
+    pair: pd.Series,
+    probes: pd.DataFrame,
+    ky_anchors: list[float],
+    config: Step13Config,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    attempt_rows: list[dict[str, Any]] = []
+    trace_frames: list[pd.DataFrame] = []
+    gap_rows: list[dict[str, Any]] = []
+
+    for _, probe in probes.iterrows():
+        probe_id = str(probe["probe_id"])
+        probe_role = str(probe["probe_role"])
+        probe_lambda = float(probe["lambda"])
+        probe_r3 = float(probe["r3"])
+        probe_r4 = float(probe["r4"])
+        probe_expected = int(probe["expected_chern_up"])
+        raw = step5.raw_on_path(pair, probe_lambda)
+        gap_checkpoint = config.output_dir / "wilson_checkpoints" / f"{probe_id}_gap.json"
+        if gap_checkpoint.is_file() and not config.force_recalculate:
+            gap = json.loads(gap_checkpoint.read_text(encoding="utf-8"))
+        else:
+            gap = audit_global_spin_gap(
+                core,
+                raw,
+                grid_n=int(config.gap_grid_n),
+                local_starts=int(config.gap_local_starts),
+            )
+            atomic_json(gap, gap_checkpoint)
+        gap_rows.append({
+            "probe_id": probe_id,
+            "probe_role": probe_role,
+            "lambda": probe_lambda,
+            "r3": probe_r3,
+            "r4": probe_r4,
+            "expected_chern_up": probe_expected,
+            **gap,
+        })
+
+        h_fn = lambda kx, ky, raw=raw: spin_hamiltonian(core, raw, kx, ky)
+        for attempt_index, (nkx, nky, shift) in enumerate(
+            zip(config.wilson_nkx, config.wilson_initial_nky, config.wilson_shifts)
+        ):
+            checkpoint = config.output_dir / "wilson_checkpoints" / f"{probe_id}_attempt{attempt_index:02d}.json"
+            trace_path = config.output_dir / "wilson_traces" / f"{probe_id}_attempt{attempt_index:02d}.csv"
+            if checkpoint.is_file() and trace_path.is_file() and not config.force_recalculate:
+                summary = json.loads(checkpoint.read_text(encoding="utf-8"))
+                trace = pd.read_csv(trace_path, low_memory=False)
+            else:
+                summary, trace = adaptive_wilson_winding(
+                    h_fn,
+                    int(core.N_OCC_SPIN),
+                    nkx=int(nkx),
+                    initial_nky=int(nky),
+                    shift_x=float(shift[0]),
+                    shift_y=float(shift[1]),
+                    phase_step=float(config.adaptive_phase_step),
+                    max_points=int(config.adaptive_max_points),
+                    max_rounds=int(config.adaptive_max_rounds),
+                    ky_anchors=ky_anchors,
+                )
+                atomic_json(summary, checkpoint)
+                atomic_csv(trace, trace_path)
+            row = {
+                "probe_id": probe_id,
+                "probe_role": probe_role,
+                "lambda": probe_lambda,
+                "r3": probe_r3,
+                "r4": probe_r4,
+                "expected_chern_up": probe_expected,
+                "attempt_index": int(attempt_index),
+                "nkx": int(nkx),
+                "initial_nky": int(nky),
+                "shift_x": float(shift[0]),
+                "shift_y": float(shift[1]),
+                **summary,
+            }
+            attempt_rows.append(row)
+            trace = trace.copy()
+            trace.insert(0, "attempt_index", int(attempt_index))
+            trace.insert(0, "probe_id", probe_id)
+            trace_frames.append(trace)
+
+    return pd.DataFrame(attempt_rows), pd.concat(trace_frames, ignore_index=True), pd.DataFrame(gap_rows)
+
+
+def determine_orientation(attempts: pd.DataFrame, config: Step13Config) -> dict[str, Any]:
+    control = attempts[attempts["probe_id"].astype(str).eq("control_pre_minus2")].copy()
+    valid = control[
+        control["integer_residual"].astype(float).le(float(config.integer_residual_tolerance))
+        & control["min_overlap_singular"].astype(float).ge(float(config.minimum_overlap_singular_value))
+        & control["max_abs_phase_increment"].astype(float).le(1.05 * float(config.adaptive_phase_step))
+    ]
+    raw_values = valid["raw_winding_int"].astype(int).to_list()
+    if not raw_values or len(set(raw_values)) != 1 or abs(raw_values[0]) != 2:
+        return {
+            "orientation_calibrated": 0,
+            "orientation_factor": np.nan,
+            "raw_control_values": raw_values,
+            "reason": "pre-control Wilson winding did not have a unique |C|=2 consensus",
+        }
+    factor = int(-2 // raw_values[0])
+    return {
+        "orientation_calibrated": 1,
+        "orientation_factor": factor,
+        "raw_control_values": raw_values,
+        "reason": "calibrated against independently strict Step12M C_up=-2 control",
+    }
+
+
+def build_probe_consensus(
+    attempts: pd.DataFrame,
+    gaps: pd.DataFrame,
+    orientation: dict[str, Any],
+    config: Step13Config,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    attempts = attempts.copy()
+    factor = orientation.get("orientation_factor")
+    if orientation.get("orientation_calibrated"):
+        attempts["oriented_chern_up"] = attempts["raw_winding_int"].astype(int) * int(factor)
+    else:
+        attempts["oriented_chern_up"] = np.nan
+    attempts["attempt_reliable"] = (
+        attempts["integer_residual"].astype(float).le(float(config.integer_residual_tolerance))
+        & attempts["min_overlap_singular"].astype(float).ge(float(config.minimum_overlap_singular_value))
+        & attempts["max_abs_phase_increment"].astype(float).le(1.05 * float(config.adaptive_phase_step))
+    ).astype(int)
+
+    gap_map = gaps.set_index("probe_id").to_dict("index")
+    rows: list[dict[str, Any]] = []
+    for probe_id, group in attempts.groupby("probe_id", sort=False):
+        reliable = group[group["attempt_reliable"].astype(int).eq(1)]
+        values = reliable["oriented_chern_up"].dropna().astype(int).to_list()
+        consensus = bool(values) and len(set(values)) == 1
+        consensus_value = int(values[0]) if consensus else None
+        expected = int(group.iloc[0]["expected_chern_up"])
+        gap = gap_map[str(probe_id)]
+        positive_gap = float(gap["spin_internal_gap"]) > float(config.minimum_positive_spin_gap)
+        rows.append({
+            "probe_id": str(probe_id),
+            "probe_role": str(group.iloc[0]["probe_role"]),
+            "lambda": float(group.iloc[0]["lambda"]),
+            "r3": float(group.iloc[0]["r3"]),
+            "r4": float(group.iloc[0]["r4"]),
+            "expected_chern_up": expected,
+            "wilson_attempt_count": int(len(group)),
+            "wilson_reliable_attempt_count": int(len(reliable)),
+            "wilson_unique_oriented_integer_count": int(len(set(values))),
+            "wilson_chern_up_consensus": np.nan if consensus_value is None else consensus_value,
+            "wilson_consensus": int(consensus),
+            "spin_internal_gap": float(gap["spin_internal_gap"]),
+            "positive_spin_gap": int(positive_gap),
+            "expected_value_match": int(consensus and consensus_value == expected),
+            "probe_certificate_pass": int(consensus and consensus_value == expected and positive_gap),
+            "minimum_overlap_singular": float(group["min_overlap_singular"].min()),
+            "maximum_integer_residual": float(group["integer_residual"].max()),
+            "maximum_phase_increment": float(group["max_abs_phase_increment"].max()),
+        })
+    return attempts, pd.DataFrame(rows)
+
+
+# =============================================================================
+# Certificate update
+# =============================================================================
+
+
+def update_closure_certificates(
+    original: pd.DataFrame,
+    probe_consensus: pd.DataFrame,
 ) -> pd.DataFrame:
-    rows: list[dict] = []
-    partner_map = {str(row["path_id"]): row for _, row in partners.iterrows()}
-    started = time.time()
-    for count, (_, bracket) in enumerate(brackets.iterrows(), start=1):
-        pair = partner_map[str(bracket["path_id"])]
-        rows.append(refine_one_transition(bracket, pair, path_gap, config))
-        print(f"Critical valley: {count}/{len(brackets)} | elapsed {time.time()-started:.1f} s")
-    return pd.DataFrame(rows)
+    frame = original.sort_values("mean_critical_lambda").reset_index(drop=True).copy()
+    middle = probe_consensus[probe_consensus["probe_role"].astype(str).eq("intermediate")]
+    middle_pass = int((middle["probe_certificate_pass"].astype(int) == 1).sum()) >= 1
+    pre_pass = bool(
+        probe_consensus.loc[
+            probe_consensus["probe_id"].astype(str).eq("control_pre_minus2"),
+            "probe_certificate_pass",
+        ].astype(int).eq(1).all()
+    )
+    post_pass = bool(
+        probe_consensus.loc[
+            probe_consensus["probe_id"].astype(str).eq("control_post_zero"),
+            "probe_certificate_pass",
+        ].astype(int).eq(1).all()
+    )
+    if len(frame) >= 2 and pre_pass and middle_pass and post_pass:
+        assignments = [(-2, 2), (2, 0)]
+        for index, (left, right) in enumerate(assignments):
+            frame.loc[index, "left_chern_up"] = left
+            frame.loc[index, "right_chern_up"] = right
+            frame.loc[index, "observed_delta_chern_up"] = right - left
+            charge = int(frame.loc[index, "berry_charge_sum_up"])
+            match = int(charge == right - left)
+            frame.loc[index, "signed_charge_matches"] = match
+            frame.loc[index, "closure_group_certificate_pass"] = int(
+                match
+                and int(frame.loc[index, "all_berry_charges_consensus"]) == 1
+                and int(frame.loc[index, "all_kp_jacobians_rank3"]) == 1
+            )
+    return frame
+
+
+def build_final_certificate(
+    *,
+    inputs: dict[str, Any],
+    probes: pd.DataFrame,
+    attempts: pd.DataFrame,
+    probe_consensus: pd.DataFrame,
+    orientation: dict[str, Any],
+    updated_groups: pd.DataFrame,
+    config: Step13Config,
+) -> dict[str, Any]:
+    middle = probe_consensus[probe_consensus["probe_role"].astype(str).eq("intermediate")]
+    n_middle_pass = int(middle["probe_certificate_pass"].astype(int).sum())
+    no_middle_contradiction = not bool(
+        ((middle["wilson_consensus"].astype(int) == 1)
+         & (middle["wilson_chern_up_consensus"].fillna(999).astype(int) != 2)).any()
+    )
+    pre_pass = bool(
+        probe_consensus.loc[
+            probe_consensus["probe_id"].astype(str).eq("control_pre_minus2"),
+            "probe_certificate_pass",
+        ].astype(int).eq(1).all()
+    )
+    post_pass = bool(
+        probe_consensus.loc[
+            probe_consensus["probe_id"].astype(str).eq("control_post_zero"),
+            "probe_certificate_pass",
+        ].astype(int).eq(1).all()
+    )
+    intermediate_pass = (
+        n_middle_pass >= int(config.minimum_middle_certified_points)
+        and no_middle_contradiction
+    )
+    groups_pass = bool(len(updated_groups) == 2 and updated_groups["closure_group_certificate_pass"].astype(int).eq(1).all())
+
+    original = inputs["final_certificate"]
+    target = original["target_edge_certificate"]
+    charge_total = int(target["berry_charge_sum_over_all_groups"])
+    charge_match = bool(target["signed_total_charge_matches_grid_delta"])
+    complete = bool(
+        orientation.get("orientation_calibrated")
+        and pre_pass
+        and post_pass
+        and intermediate_pass
+        and groups_pass
+        and charge_total == 2
+        and charge_match
+    )
+
+    return {
+        "code_version": CODE_VERSION,
+        "research_design": "adaptive_non_abelian_wilson_loop_intermediate_sector_certification",
+        "fixed_background_parameters": inputs["background"],
+        "target_edge_id": TARGET_EDGE_ID,
+        "closure_lambdas": inputs["closure_lambdas"],
+        "orientation_calibration": orientation,
+        "control_pre_minus2_pass": int(pre_pass),
+        "control_post_zero_pass": int(post_pass),
+        "n_intermediate_probe_points": int(len(middle)),
+        "n_intermediate_points_certified_as_plus2": n_middle_pass,
+        "minimum_required_intermediate_points": int(config.minimum_middle_certified_points),
+        "no_reliable_middle_contradiction": int(no_middle_contradiction),
+        "intermediate_Cup_plus2_certified": int(intermediate_pass),
+        "updated_strict_segment_chern_sequence": [-2, 2, 0] if intermediate_pass else [-2, None, 0],
+        "generic_four_valley_charge": 4,
+        "SigmaPrime_two_valley_charge": -2,
+        "berry_charge_sum_over_all_groups": charge_total,
+        "signed_total_charge_matches_endpoint_delta": int(charge_match),
+        "all_updated_closure_groups_certified": int(groups_pass),
+        "target_sequence_minus2_to_plus2_to_zero": int(intermediate_pass and groups_pass),
+        "edge_multiclosure_certificate_pass": int(complete),
+        "step13M_research_complete": bool(complete),
+        "valid_claim_if_pass": (
+            "Along the fixed-background r3=0.060 junction path, adaptive non-Abelian Wilson loops "
+            "independently certify a narrow C_up=+2 sector between a generic four-valley +4 closure "
+            "and a Sigma' two-valley -2 closure, completing the strict sequence -2 -> +2 -> 0."
+        ),
+        "not_claimed": (
+            "This certification is local to the fixed-background target path. It does not fill the entire "
+            "two-dimensional uncertain band with C_up=+2 and does not define a universal seven-dimensional rule."
+        ),
+        "probe_summary": probe_consensus.to_dict("records"),
+    }
 
 
 # =============================================================================
-# Mechanism summaries and figures
+# Figures
 # =============================================================================
 
-def mechanism_summary(critical: pd.DataFrame) -> pd.DataFrame:
-    if critical.empty:
-        return pd.DataFrame()
-    work = critical.copy()
-    work["abs_anchor_sector"] = work["anchor_sector"].abs().astype(int)
-    return (
-        work.groupby(["abs_anchor_sector", "critical_k_region", "critical_is_high_symmetry"], dropna=False)
-        .agg(
-            n_transitions=("transition_id", "size"),
-            median_critical_gap=("critical_direct_gap", "median"),
-            min_critical_gap=("critical_direct_gap", "min"),
-            median_c4_orbit_size=("c4_orbit_size", "median"),
-            median_d4_orbit_size=("d4_orbit_size", "median"),
-            median_c4_gap_spread=("c4_gap_spread", "median"),
-        )
-        .reset_index()
-    )
 
-
-def plot_local_retention(summary: pd.DataFrame, path: Path) -> None:
-    if summary.empty:
-        return
-    pivot = summary.pivot_table(
-        index="parent_anchor_id",
-        columns="local_radius_max",
-        values="same_sector_retention_fraction",
-        aggfunc="mean",
-    )
-    ax = pivot.plot(kind="bar", figsize=(11, 5))
-    ax.set_ylabel("Same-sector TI retention fraction")
-    ax.set_xlabel("Parent anchor")
-    ax.set_ylim(0.0, 1.05)
-    ax.set_title("TTS Step 04: local Chern-sector stability")
-    plt.tight_layout()
-    plt.savefig(path, dpi=180)
-    plt.close()
-
-
-def plot_paths(path_gap: pd.DataFrame, critical: pd.DataFrame, figure_dir: Path) -> None:
-    for path_id, group in path_gap.groupby("path_id", sort=False):
-        group = group.sort_values("lambda")
-        fig, ax = plt.subplots(figsize=(7.5, 4.8))
-        ax.plot(group["lambda"], group["min_direct_gap"], label="direct gap")
-        ax.plot(group["lambda"], group["indirect_gap"], label="indirect gap")
-        ax.axhline(0.0, linewidth=1.0)
-        subset = critical[critical["path_id"].astype(str) == str(path_id)]
-        for _, row in subset.iterrows():
-            ax.axvline(float(row["critical_lambda"]), linestyle="--", alpha=0.7)
-        ax.set_xlabel("Spherical path coordinate λ")
-        ax.set_ylabel("Gap")
-        ax.set_title(str(path_id))
-        ax.legend()
-        plt.tight_layout()
-        safe = "".join(ch if ch.isalnum() or ch in "_-" else "_" for ch in str(path_id))
-        plt.savefig(figure_dir / f"step04_path_{safe}.png", dpi=180)
-        plt.close(fig)
-
-
-def plot_critical_k(critical: pd.DataFrame, path: Path) -> None:
-    if critical.empty:
-        return
-    fig, ax = plt.subplots(figsize=(6.5, 6.0))
-    for sector, group in critical.groupby("anchor_sector"):
-        ax.scatter(group["critical_kx"], group["critical_ky"], label=f"C_up={int(sector):+d}")
-    ax.set_xlim(-math.pi, math.pi)
-    ax.set_ylim(-math.pi, math.pi)
-    ax.set_xticks([-math.pi, 0.0, math.pi], ["-π", "0", "π"])
-    ax.set_yticks([-math.pi, 0.0, math.pi], ["-π", "0", "π"])
-    ax.set_xlabel("kx")
-    ax.set_ylabel("ky")
-    ax.set_title("Refined gap-closing valleys")
-    ax.legend()
-    ax.set_aspect("equal", adjustable="box")
-    plt.tight_layout()
-    plt.savefig(path, dpi=180)
+def save_figure(fig: plt.Figure, output_base: Path) -> None:
+    fig.savefig(output_base.with_suffix(".png"), dpi=600, bbox_inches="tight")
+    fig.savefig(output_base.with_suffix(".pdf"), bbox_inches="tight")
+    fig.savefig(output_base.with_suffix(".svg"), bbox_inches="tight")
     plt.close(fig)
+
+
+def plot_wilson_flows(
+    traces: pd.DataFrame,
+    consensus: pd.DataFrame,
+    orientation: dict[str, Any],
+    output_dir: Path,
+) -> None:
+    selected_ids = ["control_pre_minus2", "middle_03", "control_post_zero"]
+    available = [pid for pid in selected_ids if pid in set(traces["probe_id"].astype(str))]
+    if not available:
+        return
+    factor = int(orientation.get("orientation_factor", 1)) if orientation.get("orientation_calibrated") else 1
+    fig, axes = plt.subplots(1, len(available), figsize=(4.4 * len(available), 3.8), squeeze=False)
+    for ax, probe_id in zip(axes[0], available):
+        group = traces[traces["probe_id"].astype(str).eq(probe_id)]
+        best_attempt = int(group["attempt_index"].max())
+        curve = group[group["attempt_index"].astype(int).eq(best_attempt)].sort_values("ky_coordinate")
+        x = (curve["ky_coordinate"].to_numpy(float) - curve["ky_coordinate"].min()) / TWO_PI
+        y = factor * (curve["det_phase_unwrapped"].to_numpy(float) - curve["det_phase_unwrapped"].iloc[0]) / TWO_PI
+        ax.plot(x, y, linewidth=1.6)
+        row = consensus[consensus["probe_id"].astype(str).eq(probe_id)].iloc[0]
+        value = row["wilson_chern_up_consensus"]
+        title_value = "unresolved" if pd.isna(value) else f"C↑ = {int(value):+d}"
+        ax.set_title(f"{probe_id}\n{title_value}")
+        ax.set_xlabel(r"$k_y$ cycle")
+        ax.grid(alpha=0.25)
+    axes[0][0].set_ylabel(r"oriented $\Delta\arg\det W_x/2\pi$")
+    fig.suptitle("Adaptive occupied-subspace Wilson-loop winding")
+    fig.tight_layout()
+    save_figure(fig, output_dir / "figures" / "step13M_wilson_determinant_winding")
+
+
+def plot_probe_consensus(
+    attempts: pd.DataFrame,
+    consensus: pd.DataFrame,
+    closure_lambdas: list[float],
+    output_dir: Path,
+) -> None:
+    fig, ax = plt.subplots(figsize=(7.6, 4.4))
+    reliable = attempts[attempts["attempt_reliable"].astype(int).eq(1)]
+    for attempt_index, group in reliable.groupby("attempt_index"):
+        ax.scatter(
+            group["lambda"], group["oriented_chern_up"],
+            s=42, alpha=0.65, label=f"Wilson discretization {int(attempt_index)+1}",
+        )
+    passed = consensus[consensus["probe_certificate_pass"].astype(int).eq(1)]
+    ax.scatter(
+        passed["lambda"], passed["wilson_chern_up_consensus"],
+        marker="o", facecolors="none", edgecolors="black", s=110, linewidths=1.4,
+        label="certified probe",
+    )
+    lam1, lam2 = closure_lambdas
+    ax.axvline(lam1, linestyle="--", linewidth=1.2)
+    ax.axvline(lam2, linestyle="--", linewidth=1.2)
+    ax.plot([0, lam1, lam1, lam2, lam2, 1], [-2, -2, 2, 2, 0, 0], linewidth=1.2, alpha=0.7, label="target sequence")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(-2.6, 2.6)
+    ax.set_yticks([-2, -1, 0, 1, 2])
+    ax.set_xlabel(r"path coordinate $\lambda$")
+    ax.set_ylabel(r"spin-up Chern number $C_\uparrow$")
+    ax.set_title("Direct Wilson-loop certification of the narrow intermediate sector")
+    ax.grid(alpha=0.25)
+    ax.legend(frameon=False, fontsize=8, ncol=2)
+    fig.tight_layout()
+    save_figure(fig, output_dir / "figures" / "step13M_intermediate_wilson_consensus")
+
+
+def plot_target_path_final(
+    gap_track: pd.DataFrame,
+    consensus: pd.DataFrame,
+    closure_lambdas: list[float],
+    output_dir: Path,
+) -> None:
+    lam1, lam2 = closure_lambdas
+    fig, axes = plt.subplots(2, 1, figsize=(7.5, 6.4), sharex=True, gridspec_kw={"height_ratios": [1.2, 1.0]})
+    ax = axes[0]
+    ax.semilogy(gap_track["lambda"], np.maximum(gap_track["tracked_min_gap"], 1e-16), linewidth=1.4)
+    ax.axvline(lam1, linestyle="--", linewidth=1.2)
+    ax.axvline(lam2, linestyle="--", linewidth=1.2)
+    ax.set_ylabel("tracked spin-up internal gap")
+    ax.set_title("Resolved multi-closure path and directly certified Chern sequence")
+    ax.grid(alpha=0.25)
+
+    ax = axes[1]
+    ax.plot([0, lam1, lam1, lam2, lam2, 1], [-2, -2, 2, 2, 0, 0], linewidth=2.0)
+    for _, row in consensus.iterrows():
+        if int(row["probe_certificate_pass"]) == 1:
+            c = int(row["wilson_chern_up_consensus"])
+            ax.scatter(float(row["lambda"]), c, s=65, color=PHASE_COLORS[c], edgecolor="black", linewidth=0.6, zorder=5)
+        else:
+            ax.scatter(float(row["lambda"]), 0, marker="x", s=55, color="black", zorder=5)
+    ax.axvline(lam1, linestyle="--", linewidth=1.2)
+    ax.axvline(lam2, linestyle="--", linewidth=1.2)
+    ax.text(lam1, 2.35, "generic four-valley\ncharge +4", ha="center", va="bottom", fontsize=8)
+    ax.text(lam2, 2.35, r"$\Sigma'$ two-valley" + "\ncharge -2", ha="center", va="bottom", fontsize=8)
+    ax.set_xlabel(r"path coordinate $\lambda$")
+    ax.set_ylabel(r"$C_\uparrow$")
+    ax.set_ylim(-2.7, 2.8)
+    ax.set_yticks([-2, 0, 2])
+    ax.grid(alpha=0.25)
+    fig.tight_layout()
+    save_figure(fig, output_dir / "figures" / "step13M_final_target_path_atlas")
+
+
+def plot_junction_zoom(
+    grid: pd.DataFrame,
+    consensus: pd.DataFrame,
+    edge: pd.Series,
+    closure_lambdas: list[float],
+    output_dir: Path,
+) -> None:
+    fig, ax = plt.subplots(figsize=(6.6, 5.7))
+    reliable = grid[grid["paper_phase_code"].isin([-2, -1, 0, 1, 2])]
+    unreliable = grid[~grid["paper_phase_code"].isin([-2, -1, 0, 1, 2])]
+    for phase, group in reliable.groupby("paper_phase_code"):
+        phase = int(phase)
+        ax.scatter(group["r3"], group["r4"], s=31, color=PHASE_COLORS[phase], label=rf"strict $C_\uparrow={phase:+d}$")
+    if not unreliable.empty:
+        ax.scatter(unreliable["r3"], unreliable["r4"], marker="x", s=26, color="black", alpha=0.55, label="uniform-grid boundary/unreliable")
+
+    r3 = float(edge["r3_0"])
+    r4_start, r4_end = float(edge["r4_0"]), float(edge["r4_1"])
+    lam1, lam2 = closure_lambdas
+    r4_1 = r4_start + lam1 * (r4_end-r4_start)
+    r4_2 = r4_start + lam2 * (r4_end-r4_start)
+    ax.plot([r3, r3], [r4_start, r4_1], color=PHASE_COLORS[-2], linewidth=3.0)
+    ax.plot([r3, r3], [r4_1, r4_2], color=PHASE_COLORS[2], linewidth=3.0)
+    ax.plot([r3, r3], [r4_2, r4_end], color=PHASE_COLORS[0], linewidth=3.0)
+    ax.scatter([r3, r3], [r4_1, r4_2], marker="*", s=150, color="black", zorder=7, label="certified closure")
+
+    passed = consensus[consensus["probe_certificate_pass"].astype(int).eq(1)]
+    for _, row in passed.iterrows():
+        c = int(row["wilson_chern_up_consensus"])
+        ax.scatter(float(row["r3"]), float(row["r4"]), s=80, color=PHASE_COLORS[c], edgecolor="black", linewidth=0.8, zorder=8)
+
+    ax.set_xlabel(r"$r_3$")
+    ax.set_ylabel(r"$r_4$")
+    ax.set_title("Right-junction zoom with path-resolved Wilson certification")
+    ax.grid(alpha=0.20)
+    handles, labels = ax.get_legend_handles_labels()
+    dedup = dict(zip(labels, handles))
+    ax.legend(dedup.values(), dedup.keys(), frameon=False, fontsize=8, loc="best")
+    fig.tight_layout()
+    save_figure(fig, output_dir / "figures" / "step13M_right_junction_wilson_certified")
 
 
 # =============================================================================
 # Main workflow
 # =============================================================================
 
-def run_step04(config: Step04Config | None = None) -> Dict[str, Any]:
-    config = (config or Step04Config()).normalized()
-    started = time.time()
 
-    print("[1/8] Load Step 03 strict physics labels")
-    physics, physics_source = load_step3_physics(config)
-    required = {"sample_id", "phase_label", "chern_up_int", "indirect_gap", *REDUCED7}
-    missing = sorted(required - set(physics.columns))
-    if missing:
-        raise KeyError(f"Step 03 physics CSV 缺少列：{missing}")
+def run_step13m(
+    *,
+    tts_archive: str | Path,
+    step12_source: str | Path,
+    output_dir: str | Path | None = None,
+    config: Step13Config | None = None,
+    run_physics: bool = True,
+    run_plots: bool = True,
+) -> dict[str, Any]:
+    if config is None:
+        if output_dir is None:
+            output_dir = Path.cwd() / "outputs_tts_step13M_adaptive_wilson_intermediate_chern"
+        config = Step13Config(output_dir=Path(output_dir))
+    elif output_dir is not None:
+        config.output_dir = Path(output_dir)
+    config = config.normalized()
 
-    print("[2/8] Select sector anchors and nearest trivial partners")
-    anchors = select_sector_anchors(physics, config)
-    partners = select_trivial_partners(physics, anchors, config)
-    atomic_write_csv(anchors, config.output_dir / "step04_01_selected_chern_sector_anchors.csv")
-    atomic_write_csv(partners, config.output_dir / "step04_01_nearest_trivial_path_partners.csv")
-
-    print("[3/8] Generate sector-directed local Sobol samples")
-    local_params = generate_local_sobol(anchors, config)
-    atomic_write_csv(local_params, config.output_dir / "step04_02_local_sobol_parameters.csv")
-
-    print("[4/8] Strict local physics labels")
-    local_physics, local_attempts, local_strict_gaps = run_local_physics(local_params, config)
-    local_phase_counts, local_summary = summarize_local(local_physics)
-    atomic_write_csv(local_phase_counts, config.output_dir / "step04_03_local_phase_counts.csv")
-    atomic_write_csv(local_summary, config.output_dir / "step04_03_local_sector_stability_summary.csv")
-
-    print("[5/8] Dense topology-to-trivial path gap scans")
-    path_params = generate_path_parameters(partners, config)
-    atomic_write_csv(path_params, config.output_dir / "step04_04_path_parameters.csv")
-    path_gap = run_path_gap_scans(path_params, config)
-
-    print("[6/8] Adaptive strict Chern audit on path")
-    selected_chern = select_adaptive_chern_points(path_gap, config)
-    atomic_write_csv(selected_chern, config.output_dir / "step04_04_path_selected_chern_points.csv")
-    path_chern, path_attempts, path_strict_gaps = run_path_chern_audit(selected_chern, config)
-
-    print("[7/8] Detect transition brackets and refine critical valleys")
-    brackets = detect_transition_brackets(path_chern, path_gap, config)
-    atomic_write_csv(brackets, config.output_dir / "step04_05_transition_brackets.csv")
-    critical = refine_critical_valleys(brackets, partners, path_gap, config)
-    atomic_write_csv(critical, config.output_dir / "step04_05_refined_critical_valleys.csv")
-    mech = mechanism_summary(critical)
-    atomic_write_csv(mech, config.output_dir / "step04_05_mechanism_summary.csv")
-
-    print("[8/8] Figures and run summary")
-    plot_local_retention(local_summary, config.output_dir / "figures" / "step04_local_sector_retention.png")
-    plot_paths(path_gap, critical, config.output_dir / "figures")
-    plot_critical_k(critical, config.output_dir / "figures" / "step04_refined_critical_valleys.png")
-
-    sector_counts = {
-        str(int(k)): int(v)
-        for k, v in anchors["anchor_sector"].value_counts().sort_index().items()
-    }
-    local_same = int((
-        local_physics["phase_label"].eq("spin_chern_TI_candidate")
-        & local_physics["chern_up_int"].fillna(999).astype(int).eq(
-            local_physics["parent_chern_up"].astype(int)
-        )
-    ).sum())
-    summary = {
+    print("[1/5] Load Step12M evidence and define Wilson probes")
+    inputs = load_step12_inputs(step12_source)
+    inputs["_step12_source"] = str(Path(step12_source).expanduser().resolve())
+    probes = build_probe_table(inputs, config)
+    atomic_csv(probes, config.output_dir / "step13M_01_probe_definitions.csv")
+    audit = {
         "code_version": CODE_VERSION,
-        "step01_version": core.CODE_VERSION,
-        "step03_version": step3.CODE_VERSION,
-        "step3_physics_source": physics_source,
-        "n_step3_rows": int(len(physics)),
-        "anchor_counts_by_sector": sector_counts,
-        "n_anchors": int(len(anchors)),
-        "n_path_pairs": int(len(partners)),
-        "n_local_samples": int(len(local_physics)),
-        "n_local_same_sector_TI": local_same,
-        "local_same_sector_TI_fraction": float(local_same / len(local_physics)) if len(local_physics) else np.nan,
-        "n_dense_path_points": int(len(path_gap)),
-        "n_adaptive_chern_points": int(len(path_chern)),
-        "n_transition_brackets": int(len(brackets)),
-        "n_refined_critical_valleys": int(len(critical)),
-        "critical_region_counts": {
-            str(k): int(v) for k, v in critical["critical_k_region"].value_counts().items()
-        } if not critical.empty else {},
-        "elapsed_seconds": float(time.time() - started),
-        "configuration": asdict(config),
+        "tts_archive": str(Path(tts_archive).expanduser().resolve()),
+        "step12_source": str(Path(step12_source).expanduser().resolve()),
+        "fixed_background_parameters": inputs["background"],
+        "target_edge": inputs["edge"].to_dict(),
+        "closure_lambdas": inputs["closure_lambdas"],
+        "config": asdict(config),
     }
-    atomic_write_json(summary, config.output_dir / "step04_06_run_summary.json")
-    print(json.dumps(summary, indent=2, ensure_ascii=False, default=str))
+    atomic_json(audit, config.output_dir / "step13M_00_input_audit.json")
 
+    if not run_physics:
+        return {"code_version": CODE_VERSION, "physics_run": False, "probe_count": len(probes)}
+
+    print("[2/5] Configure frozen TTS Hamiltonian and audit occupied-subspace gaps")
+    core, step4, step5, step3, strict_config, search_config = configure_physics(tts_archive, config)
+    pair = step11.build_pair_from_edge(inputs["edge"], inputs["background"])
+    ky_anchors = closure_ky_anchors(inputs)
+
+    print("[3/5] Adaptive non-Abelian Wilson loops")
+    attempts, traces, gaps = run_wilson_attempts(
+        core=core,
+        step5=step5,
+        pair=pair,
+        probes=probes,
+        ky_anchors=ky_anchors,
+        config=config,
+    )
+    atomic_csv(gaps, config.output_dir / "step13M_02_spin_gap_audit.csv")
+    atomic_csv(attempts, config.output_dir / "step13M_03_wilson_attempts_raw.csv")
+    atomic_csv(traces, config.output_dir / "step13M_05_wilson_phase_traces.csv")
+
+    orientation = determine_orientation(attempts, config)
+    attempts_oriented, consensus = build_probe_consensus(attempts, gaps, orientation, config)
+    atomic_csv(attempts_oriented, config.output_dir / "step13M_03_wilson_attempts.csv")
+    atomic_csv(consensus, config.output_dir / "step13M_04_wilson_probe_consensus.csv")
+    atomic_json(orientation, config.output_dir / "step13M_04b_orientation_calibration.json")
+
+    print("[4/5] Update closure-group and final mechanism certificates")
+    updated_groups = update_closure_certificates(inputs["group_certificates"], consensus)
+    atomic_csv(updated_groups, config.output_dir / "step13M_07_updated_closure_group_certificates.csv")
+    certificate = build_final_certificate(
+        inputs=inputs,
+        probes=probes,
+        attempts=attempts_oriented,
+        probe_consensus=consensus,
+        orientation=orientation,
+        updated_groups=updated_groups,
+        config=config,
+    )
+    atomic_json(certificate, config.output_dir / "step13M_08_final_intermediate_chern_certificate.json")
+
+    summary = pd.DataFrame([
+        {
+            "updated_segment_0_chern": -2,
+            "updated_segment_1_chern": 2 if certificate["intermediate_Cup_plus2_certified"] else np.nan,
+            "updated_segment_2_chern": 0,
+            "generic_four_valley_charge": 4,
+            "SigmaPrime_two_valley_charge": -2,
+            "total_charge": 2,
+            "edge_multiclosure_certificate_pass": certificate["edge_multiclosure_certificate_pass"],
+        }
+    ])
+    atomic_csv(summary, config.output_dir / "step13M_06_updated_strict_segment_sequence.csv")
+
+    print("[5/5] Publication figures")
+    if run_plots:
+        plot_wilson_flows(traces, consensus, orientation, config.output_dir)
+        plot_probe_consensus(attempts_oriented, consensus, inputs["closure_lambdas"], config.output_dir)
+        plot_target_path_final(inputs["gap_track"], consensus, inputs["closure_lambdas"], config.output_dir)
+        plot_junction_zoom(inputs["grid"], consensus, inputs["edge"], inputs["closure_lambdas"], config.output_dir)
+
+    print(json.dumps(certificate, ensure_ascii=False, indent=2, default=_json_default))
+    return certificate
+
+
+# =============================================================================
+# Synthetic validation of the Wilson engine
+# =============================================================================
+
+
+def _qwz_hamiltonian(mass: float) -> Callable[[float, float], np.ndarray]:
+    sx = np.array([[0, 1], [1, 0]], dtype=complex)
+    sy = np.array([[0, -1j], [1j, 0]], dtype=complex)
+    sz = np.array([[1, 0], [0, -1]], dtype=complex)
+    def h(kx: float, ky: float) -> np.ndarray:
+        return math.sin(kx)*sx + math.sin(ky)*sy + (mass + math.cos(kx) + math.cos(ky))*sz
+    return h
+
+
+def synthetic_wilson_validation() -> dict[str, Any]:
+    topological, _ = adaptive_wilson_winding(
+        _qwz_hamiltonian(-1.0), 1,
+        nkx=121, initial_nky=61, shift_x=0.0, shift_y=0.0,
+        phase_step=0.35*math.pi, max_points=301, max_rounds=6,
+    )
+    trivial, _ = adaptive_wilson_winding(
+        _qwz_hamiltonian(3.0), 1,
+        nkx=121, initial_nky=61, shift_x=0.0, shift_y=0.0,
+        phase_step=0.35*math.pi, max_points=301, max_rounds=6,
+    )
     return {
-        "summary": summary,
-        "physics_step3": physics,
-        "anchors": anchors,
-        "partners": partners,
-        "local_parameters": local_params,
-        "local_physics": local_physics,
-        "local_chern_attempts": local_attempts,
-        "local_strict_gap_checks": local_strict_gaps,
-        "local_phase_counts": local_phase_counts,
-        "local_stability_summary": local_summary,
-        "path_parameters": path_params,
-        "path_gap": path_gap,
-        "path_chern": path_chern,
-        "path_chern_attempts": path_attempts,
-        "path_strict_gap_checks": path_strict_gaps,
-        "transition_brackets": brackets,
-        "critical_valleys": critical,
-        "mechanism_summary": mech,
+        "topological_abs_winding": abs(int(topological["raw_winding_int"])),
+        "trivial_winding": int(trivial["raw_winding_int"]),
+        "synthetic_validation_pass": bool(abs(int(topological["raw_winding_int"])) == 1 and int(trivial["raw_winding_int"]) == 0),
+        "topological_summary": topological,
+        "trivial_summary": trivial,
     }
 
 
-# =============================================================================
-# CLI
-# =============================================================================
-
-def build_arg_parser() -> argparse.ArgumentParser:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output-dir", type=Path, default=Step04Config.output_dir)
-    parser.add_argument("--step3-input", type=Path, default=None)
-    parser.add_argument("--anchors-per-sector", type=int, default=2)
-    parser.add_argument("--local-power", type=int, default=4)
-    parser.add_argument("--path-n-lambda", type=int, default=121)
-    parser.add_argument("--path-gap-nk", type=int, default=35)
-    parser.add_argument("--smoke-test", action="store_true")
-    parser.add_argument("--force", action="store_true")
+    parser.add_argument("--tts-archive", required=True, type=Path)
+    parser.add_argument("--step12-source", required=True, type=Path)
+    parser.add_argument("--output-dir", type=Path, default=Path("outputs_tts_step13M_adaptive_wilson_intermediate_chern"))
+    parser.add_argument("--quick", action="store_true")
+    parser.add_argument("--force-recalculate", action="store_true")
+    parser.add_argument("--no-plots", action="store_true")
     return parser
 
 
-def config_from_args(args: argparse.Namespace) -> Step04Config:
-    if args.smoke_test:
-        return Step04Config(
-            output_dir=Path(args.output_dir),
-            step3_input=args.step3_input,
-            target_sectors=(-2, -1, 1, 2),
-            n_anchors_per_sector=1,
-            path_anchors_per_sector=1,
-            trivial_partner_modes=("nearest",),
-            local_angular_radii=(0.06,),
-            local_sobol_power_per_radius=1,
-            local_gap_nk=17,
-            initial_chern_grids=(15, 17),
-            strict_gap_grids=(17, 21),
-            strict_gap_shifts=((0.0, 0.0), (0.5, 0.5)),
-            strict_chern_grids=(17, 21),
-            path_n_lambda=21,
-            path_gap_nk=15,
-            path_chern_stride=7,
-            path_extra_gap_minima=2,
-            max_chern_points_per_path=7,
-            critical_optimizer_starts=2,
-            critical_optimizer_maxiter=80,
-            checkpoint_every=2,
-            force_recalculate_local=args.force,
-            force_recalculate_paths=args.force,
-            force_recalculate_chern=args.force,
-        )
-    return Step04Config(
-        output_dir=Path(args.output_dir),
-        step3_input=args.step3_input,
-        n_anchors_per_sector=int(args.anchors_per_sector),
-        local_sobol_power_per_radius=int(args.local_power),
-        path_n_lambda=int(args.path_n_lambda),
-        path_gap_nk=int(args.path_gap_nk),
-        force_recalculate_local=args.force,
-        force_recalculate_paths=args.force,
-        force_recalculate_chern=args.force,
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    config = Step13Config(
+        output_dir=args.output_dir,
+        quick=bool(args.quick),
+        force_recalculate=bool(args.force_recalculate),
     )
-
-
-def main() -> int:
-    args = build_arg_parser().parse_args()
-    config = config_from_args(args)
-    run_step04(config)
+    run_step13m(
+        tts_archive=args.tts_archive,
+        step12_source=args.step12_source,
+        config=config,
+        run_plots=not args.no_plots,
+    )
     return 0
 
 

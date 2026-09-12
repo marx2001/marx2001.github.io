@@ -1,4 +1,3 @@
-
 num_wann  = 30
 !num_bands = 15
 

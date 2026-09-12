@@ -1,4 +1,3 @@
-
 Calculated Energy Range: -1000.0, 1000.0 with Fermi level -1.062223
 There are at most 64 states and at least 64 states in [-1000.0, 1000.0].
 

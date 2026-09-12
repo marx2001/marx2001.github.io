@@ -1,75 +1,112 @@
 #!/usr/bin/env python
 import os
+import subprocess
 import re
-from ase.io import read, write
 
-# 获取当前目录下的所有文件夹
-folders = [f for f in os.listdir('.') if os.path.isdir(f)]
+# 材料列表
+materials = [
+    "VScGe2S6", "VGaGe2S6", "VCdGe2Te6", "CrScGe2Se6", "CrGaGe2S6",
+    "MnVGe2S6", "MnNiGe2Te6", "MnAgGe2Se6", "MnAgGe2Te6", "MnCuGe2Se6",
+    "MnGaGe2Se6", "MnHgGe2Te6", "MnIrGe2S6", "MnIrGe2Se6", "MnScGe2Se6",
+    "MnCoGe2Te6", "FeZnGe2S6", "FeZnGe2Se6", "CoVGe2S6", "CoVGe2Se6",
+    "CoVGe2Te6", "CoMoGe2Se6", "CoMoGe2Te6", "CoRuGe2Te6", "NbCdGe2Te6",
+    "MoAgGe2S6", "MoAgGe2Te6", "MoCdGe2Se6", "MoHgGe2S6", "MoPbGe2Se6",
+    "MoSnGe2Te6", "MoBiGe2Se6", "TcAgGe2S6", "TcCdGe2S6", "ReScGe2Se6"
+]
 
-# 元素符号正则表达式模式
-element_pattern = re.compile(r'[A-Z][a-z]*')
+# 存储结果
+results = {}
 
-# 处理每个文件夹
-for folder in folders:
-    # 从文件夹名称中提取元素符号
-    folder_elements = element_pattern.findall(folder)
+# 检查4_DMI文件夹是否存在
+if not os.path.exists("4_DMI"):
+    print("错误: 4_DMI文件夹不存在")
+    exit(1)
+
+# 切换到4_DMI文件夹
+os.chdir("4_DMI")
+print(f"当前工作目录: {os.getcwd()}")
+
+for material in materials:
+    print(f"\n正在处理材料: {material}")
     
-    if not folder_elements:
-        print(f"跳过文件夹 '{folder}'：未提取到元素符号")
+    # 检查材料文件夹是否存在
+    if not os.path.exists(material):
+        print(f"警告: 文件夹 {material} 不存在，跳过")
+        results[material] = "文件夹不存在"
         continue
+        
+    # 进入材料文件夹
+    os.chdir(material)
+    print(f"  进入文件夹: {os.getcwd()}")
     
-    print(f"处理文件夹 '{folder}'，提取的元素: {folder_elements}")
-    
-    # 构建POSCAR文件路径
-    poscar_path = os.path.join(folder, 'POSCAR')
-    
-    if not os.path.exists(poscar_path):
-        print(f"  警告: 文件夹中未找到POSCAR文件")
-        continue
-    
-    # 读取POSCAR文件
-    atoms = read(poscar_path, format='vasp')
-    
-    # 获取当前POSCAR中的元素符号
-    current_symbols = atoms.get_chemical_symbols()
-    
-    # 获取当前POSCAR中所有唯一的元素（按出现顺序）
-    current_unique_elements = []
-    for symbol in current_symbols:
-        if symbol not in current_unique_elements:
-            current_unique_elements.append(symbol)
-    
-    # 创建一个映射：将当前元素映射到文件夹名称中的元素（从左到右）
-    element_mapping = {}
-    for i, elem in enumerate(folder_elements):
-        if i < len(current_unique_elements):
-            element_mapping[current_unique_elements[i]] = elem
-    
-    # 应用映射到所有原子
-    final_symbols = [
-        element_mapping.get(symbol, symbol) 
-        for symbol in current_symbols
-    ]
-    
-    # 设置新的化学符号
-    atoms.set_chemical_symbols(final_symbols)
-    
-    # 备份原文件
-    backup_path = os.path.join(folder, 'POSCAR.bak')
-    os.rename(poscar_path, backup_path)
-    print(f"  已备份原文件为: {backup_path}")
-    
-    # 保存新文件
-    write(poscar_path, atoms, format='vasp', direct=True, vasp5=True)
-    print(f"  已更新文件: {poscar_path}")
-    
-    # 获取最终的元素顺序
-    final_unique_elements = []
-    for symbol in final_symbols:
-        if symbol not in final_unique_elements:
-            final_unique_elements.append(symbol)
-    
-    print(f"  最终元素顺序: {final_unique_elements}")
-    print()
+    # 在材料文件夹中运行qvasp -e命令
+    try:
+        # 运行qvasp -e命令获取所有能量信息
+        result = subprocess.run(["qvasp", "-e"], capture_output=True, text=True, check=True)
+        output = result.stdout.strip()
+        print(f"  qvasp -e输出:\n{output}")
+        
+        # 从输出中提取cw和acw的能量值
+        cw_energy = None
+        acw_energy = None
+        
+        # 使用正则表达式匹配总结部分
+        lines = output.split('\n')
+        for line in lines:
+            # 匹配cw行的能量值
+            if 'folder:  cw' in line:
+                match = re.search(r'energy:\s*([-]?\d+\.\d+)', line)
+                if match:
+                    cw_energy = float(match.group(1))
+                    print(f"  提取到cw能量: {cw_energy} eV")
+            
+            # 匹配acw行的能量值
+            elif 'folder:  acw' in line:
+                match = re.search(r'energy:\s*([-]?\d+\.\d+)', line)
+                if match:
+                    acw_energy = float(match.group(1))
+                    print(f"  提取到acw能量: {acw_energy} eV")
+        
+        # 计算最终结果 - 先乘1000再除以12
+        if cw_energy is not None and acw_energy is not None:
+            calculation = (cw_energy - acw_energy) * 1000 / 12
+            results[material] = calculation
+            print(f"  计算结果: {calculation:.6f} meV")
+        else:
+            error_msg = ""
+            if cw_energy is None:
+                error_msg += "cw能量获取失败 "
+            if acw_energy is None:
+                error_msg += "acw能量获取失败"
+            print(f"  警告: {error_msg}")
+            results[material] = error_msg
+            
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        print(f"  运行qvasp -e命令时出错: {e}")
+        results[material] = f"命令执行错误: {e}"
+    except ValueError as e:
+        print(f"  转换能量值时出错: {e}")
+        results[material] = f"数据转换错误: {e}"
+        
+    # 返回4_DMI文件夹
+    os.chdir("..")
+    print(f"  返回目录: {os.getcwd()}")
 
-print("所有文件夹处理完成！")
+# 输出所有结果
+print("\n\n最终结果:")
+for material, value in results.items():
+    if isinstance(value, float):
+        print(f"{material}: {value:.6f} meV")
+    else:
+        print(f"{material}: {value}")
+
+# 将结果保存到文件
+with open("DMI_results.txt", "w") as f:
+    f.write("材料\tDMI能量(meV)\n")
+    for material, value in results.items():
+        if isinstance(value, float):
+            f.write(f"{material}\t{value:.6f}\n")
+        else:
+            f.write(f"{material}\t{value}\n")
+
+print("\n所有材料处理完毕！结果已保存到DMI_results.txt")

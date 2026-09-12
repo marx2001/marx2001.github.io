@@ -358,6 +358,8 @@
 \newcommand{\institute}[1]{\gdef\@institute{#1}}
 \newcommand{\version}[1]{\gdef\@version{#1}}
 \newcommand{\extrainfo}[1]{\gdef\@extrainfo{#1}}
+\newcommand{\wechat}[1]{\gdef\@wechat{#1}}
+\newcommand{\coveremail}[1]{\gdef\@coveremail{#1}}
 
 \RequirePackage{mwe}
 \newcommand{\logo}[1]{\gdef\@logo{#1}}
@@ -1320,6 +1322,8 @@
       \ifcsname @institute\endcsname \institutename \cnormal\@institute\\ \fi
       % \ifcsname @date\endcsname  \@date\\\fi
       \ifx\@date\empty\else\datename\cnormal\@date \\ \fi
+      \ifcsname @wechat\endcsname \citshape 微信：\cnormal{\fontspec{Times New Roman}\@wechat}\\ \fi
+      \ifcsname @coveremail\endcsname \citshape 邮箱：\cnormal\href{mailto:\@coveremail}{\textcolor{gray}{{\fontspec{Times New Roman}\@coveremail}}}\\ \fi
       \ifcsname @version\endcsname \cnormal\versionname\@version\\ \fi
       \ifcsname @bioinfo\endcsname \cnormal\@bioinfo\\ \fi
     \end{tabular}}

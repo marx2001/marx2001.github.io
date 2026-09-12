@@ -1,4 +1,3 @@
-
 usage: plot_fatbands.py [-h] [-b VASPRUN_FILE_BANDS] [-K KPOINTS_FILE] [-c POSCAR_FILE] [-O PROCAR_FILE] [-w POTCAR_FILE] [-d VASPRUN_FILE_DOS] [-p PROJECT [PROJECT ...]]
                         [-n {all,selection}] [-l {1,2,3}] [-e EMIN] [-E EMAX] [-s SCALE] [-H HEIGHT] [-W WIDTH] [-r RATIO] [-f FONT_SIZE] [-o OUTPUT_FILE] [--format {pdf,png}]
                         [--element ELEMENT] [--orbital-type {d,p,f}] [--bubble-min BUBBLE_MIN] [--bubble-max BUBBLE_MAX] [--bubble-scale BUBBLE_SCALE] [--bubble-density BUBBLE_DENSITY]

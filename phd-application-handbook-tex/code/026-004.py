@@ -1,4 +1,3 @@
-
 # crystal cell vector3: line3 a1; line 4 a2; line 5 a3. sometimes small 
 # numerical errors of {a1,a2,a3} will give rise to worse symmed hamiltonian
 4.1630311801153548   0.0000000000000000   0.0000000000000000

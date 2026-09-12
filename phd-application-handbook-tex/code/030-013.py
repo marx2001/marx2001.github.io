@@ -1,4 +1,3 @@
-
 velocity_single = tb.velocity(k_mesh, t=0.5)
 velocity_sweep = tb.velocity(k_mesh, t=t_values)
 

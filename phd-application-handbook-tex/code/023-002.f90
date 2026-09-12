@@ -1,11 +1,10 @@
-
 ! 子程序：计算给定路径的Berry相位
   subroutine  berryphase
       !> 计算给定路径Berry相位的子程序
       !
       ! 注释：
       !
-      !          目前，您必须在kpoints中定义想要的k路径
+      !          目前，必须在kpoints中定义想要的k路径
       !
       ! 作者：QuanSheng Wu (wuquansheng@gmail.com)
       !

@@ -1,4 +1,3 @@
-
 import wannierberri as wberri
 import numpy as np
 import matplotlib.pyplot as plt

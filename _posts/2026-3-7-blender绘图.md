@@ -377,7 +377,7 @@ x, y, w, h = cv2.selectROI("Select ROI", img0, showCrosshair=True, fromCenter=Fa
 cv2.destroyAllWindows()
 
 if w == 0 or h == 0:
-    raise ValueError("你没有选中有效区域，程序终止。")
+    raise ValueError("未选中有效区域，程序终止。")
 
 print(f"选中的 ROI: x={x}, y={y}, w={w}, h={h}")
 print(f"对应裁剪写法: img[{y}:{y+h}, {x}:{x+w}]")
@@ -410,7 +410,7 @@ print('结束')
 
 ```
 
-(6) 记住上一步输出的ROI这一行内容，计算想要绘制的区域的坐标，同时记得修改你的png和csv文件名。
+(6) 记录上一步输出的 ROI 参数，据此计算目标绘制区域的坐标，同时修改相应的 PNG 和 CSV 文件名。
 
 ```shell
 ROI: x=912, y=602, w=79, h=68
@@ -424,7 +424,7 @@ import numpy as np
 png_file = "B15-T500-final.png"
 csv_file = "2026-03-05_08-36-18_Image-00_Spins_600000.csv"
 
-# 你的 ROI
+# 当前 ROI
 x, y, w, h = 912, 602, 79, 68
 
 # 读图片尺寸
@@ -472,7 +472,7 @@ import numpy as np
 png_file = "B15-T500-final.png"
 csv_file = "2026-03-05_08-36-18_Image-00_Spins_600000.csv"
 
-# 你的 ROI
+# 当前 ROI
 x, y, w, h = 912, 602, 79, 68
 
 # 读图片尺寸
@@ -623,7 +623,7 @@ plt.close()
 print("完成")
 
 ```
-(10)下方是blender代码，要把blender工程文件和你的上面的输出文件放到同一个文件夹。
+(10) 以下为 Blender 代码。需将 Blender 工程文件与上述输出文件置于同一文件夹。
 
 这个是抠图版的代码，只绘制斯格明子本身
 

@@ -128,7 +128,7 @@ Build → Build Crystal...
 Build → Crystals → Crystal Builder...
 ```
 
-你要进入的是可以设置 **space group / lattice parameters / asymmetric unit atoms** 的晶体构建窗口。
+应进入可设置 **space group / lattice parameters / asymmetric unit atoms** 的晶体构建窗口。
 
 ---
 
@@ -418,7 +418,7 @@ OK
 Apply
 ```
 
-不同版本按钮名称略有不同。你要找的是让软件根据当前空间群和非等价位点生成完整晶体结构的按钮。
+不同版本按钮名称略有不同。应选择能够根据当前空间群和非等价位点生成完整晶体结构的按钮。
 
 如果主窗口中有类似选项：
 
@@ -429,7 +429,7 @@ Generate symmetry equivalents
 
 需要勾选或点击它。
 
-因为你输入的是非等价原子位点，必须通过空间群 **P -6 2 m, No. 189** 自动展开，才能得到完整晶胞。
+由于输入的是非等价原子位点，必须通过空间群 **P -6 2 m, No. 189** 自动展开，才能得到完整晶胞。
 
 ---
 

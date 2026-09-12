@@ -1,2 +1,1 @@
-
 print(my_model)

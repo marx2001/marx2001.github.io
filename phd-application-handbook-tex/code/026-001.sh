@@ -1,2 +1,1 @@
-
-conda activate mrx_phonopy
+conda activate mrx_phonopy 

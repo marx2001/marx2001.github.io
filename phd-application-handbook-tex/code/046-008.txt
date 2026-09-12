@@ -1,2 +1,1 @@
-Markdown 自动转换出来的 LaTeX 有时版式不够理想；
-但直接修改 converted/*.tex 又会在下次构建时被覆盖。
+3D Atomistic Document

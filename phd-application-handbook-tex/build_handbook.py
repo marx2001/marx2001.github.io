@@ -62,6 +62,10 @@ PLOTTING_KEYWORDS = (
     "blender绘图", "blender绘制", "论文图集",
 )
 EXCLUDED_ARTICLE_KEYWORDS = ("论文阅读",)
+EXCLUDED_ARTICLE_PATHS = {
+    "_posts/2025-11-26-Nb2SeTeO量子自旋霍尔绝缘体.md",
+    "_posts/2026-7-06-申博latex编辑.md",
+}
 CORE_RESEARCH_KEYWORDS = (
     "2026-09-09", "论文最终代码", "机器学习", "optuna", "tb模型", "超超交换",
     "量子自旋霍尔", "自旋陈数", "边缘态与霍尔响应", "拓扑相界", "计算磁参数j",
@@ -109,6 +113,7 @@ class CodeBlock:
     language: str
     relative_path: str
     line_count: int
+    inline: bool = False
 
 
 @dataclass
@@ -153,6 +158,36 @@ def run_collector() -> list[dict]:
 
 def normalized_key(text: str) -> str:
     return re.sub(r"[\s（）()【】\[\]：:·—_\-]+", "", text).lower()
+
+
+INLINE_CODE_MAX_LINES = 4
+INLINE_CODE_MAX_CHARS = 320
+INLINE_COMMAND_LANGUAGES = {"bash", "shell", "sh", "zsh", "powershell", "bat", "cmd", "console", "terminal"}
+INLINE_COMMAND_PATTERN = re.compile(
+    r"^(?:[$>]\s*)?(?:"
+    r"(?:sudo\s+)?(?:cd|pwd|ls|mkdir|cp|mv|rm|touch|grep|rg|find|sed|awk|chmod|chown|"
+    r"export|source|module|conda|pip|pip3|python|python3|ruby|bundle|jekyll|git|wget|curl|"
+    r"tar|unzip|make|cmake|ninja|mpirun|srun|sbatch|qsub|nohup|echo|cat|head|tail|less|"
+    r"nano|vim|code|ssh|scp|rsync|powershell|pwsh|npm|node|yarn|gem|docker|apt|apt-get|"
+    r"dnf|yum|systemctl|gnuplot|phonopy|wannier90\.x|wannsymm\.x|wt\.x|"
+    r"wann2J\.py|TB2J_[\w.-]+|vasp(?:_std|_gam|_ncl)?)\b|"
+    r"(?:Get|Set|New|Remove|Select|Where|Write|Test|Invoke|Start|Stop)-[A-Za-z]+\b|"
+    r"(?:set\s+)?[A-Za-z_][A-Za-z0-9_:]*\s*=|@echo\b|"
+    r"[A-Za-z0-9_.+-]+\.(?:x|py|sh|pl|rb)\b|\.\.?[/\\]|/[^\s]+)",
+    re.IGNORECASE,
+)
+
+
+def should_inline_code(code: str) -> bool:
+    text = code.strip()
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines or len(lines) > INLINE_CODE_MAX_LINES or len(text) > INLINE_CODE_MAX_CHARS:
+        return False
+    first = next(
+        (line for line in lines if not line.startswith("#") and not line.lower().startswith("rem ")),
+        lines[0],
+    )
+    return bool(INLINE_COMMAND_PATTERN.match(first))
 
 
 def classify(post: dict) -> tuple[str, str, str]:
@@ -348,7 +383,15 @@ class HtmlToLatex:
         code = (code_node if code_node is not None else node).text_content()
         code = (code.replace("\r\n", "\n").replace("\r", "\n")
                 .replace("\ufe0f", "").replace("\u200d", "").replace("\u20e3", "")
-                .rstrip() + "\n")
+                )
+        code_lines = code.splitlines()
+        while code_lines and not code_lines[0].strip():
+            code_lines.pop(0)
+        while code_lines and not code_lines[-1].strip():
+            code_lines.pop()
+        code = "\n".join(code_lines)
+        if code:
+            code += "\n"
         for symbol, replacement in {"✅": "[OK]", "❌": "[X]", "❗": "[!]"}.items():
             code = code.replace(symbol, replacement)
         language = ""
@@ -362,11 +405,22 @@ class HtmlToLatex:
         filename = f"{self.article.article_no:03d}-{self.code_sequence:03d}.{ext}"
         path = CODE_DIR / filename
         path.write_text(code, encoding="utf-8")
+        line_count = max(1, len(code.rstrip("\n").splitlines()))
+        inline = should_inline_code(code)
         block = CodeBlock(
             self.article.article_no, self.code_sequence, language,
-            path.relative_to(TEX_DIR).as_posix(), max(1, code.count("\n")),
+            path.relative_to(TEX_DIR).as_posix(), line_count, inline,
         )
         self.article.code_blocks.append(block)
+        if inline:
+            inline_title = "命令示例" if language in INLINE_COMMAND_LANGUAGES else "短代码"
+            return (
+                "\n" + r"\begin{inlinecodebox}{" + inline_title + " · "
+                + tex_escape_plain(language) + "}\n"
+                + r"\VerbatimInput[fontsize=\small,breaklines=true,breakanywhere=true,tabsize=2,listparameters={\setlength{\topsep}{0pt}\setlength{\partopsep}{0pt}\setlength{\parsep}{0pt}}]{"
+                + block.relative_path + "}\n"
+                + r"\end{inlinecodebox}" + "\n"
+            )
         return (
             "\n" + r"\begin{codeindexbox}{"
             + f"代码清单 A.{self.article.article_no}.{self.code_sequence}" + "}\n"
@@ -512,7 +566,7 @@ def preamble() -> str:
 \definecolor{ResearchGray}{HTML}{F3F6F9}
 \hypersetup{
   colorlinks=true, linkcolor=ResearchNavy, urlcolor=ResearchBlue, citecolor=ResearchNavy,
-  pdftitle={计算材料与拓扑磁性研究工作手册}, pdfauthor={Mrx},
+  pdftitle={计算材料与拓扑磁性研究工作手册}, pdfauthor={马睿骁},
   pdfsubject={博士研究生申请科研手册}
 }
 \setcounter{tocdepth}{1}
@@ -558,6 +612,7 @@ def preamble() -> str:
 \newtcolorbox{partbox}{enhanced,breakable,colback=ResearchCyan,colframe=ResearchNavy,boxrule=0.8pt,arc=2mm,left=4mm,right=4mm,top=3mm,bottom=3mm}
 \newtcolorbox{articlemeta}{enhanced,breakable,colback=white,colframe=ResearchGold,boxrule=0.7pt,arc=1.5mm,left=3mm,right=3mm,top=2mm,bottom=2mm}
 \newtcolorbox{codeindexbox}[1]{enhanced,breakable,colback=ResearchGray,colframe=ResearchBlue,boxrule=0.55pt,arc=1.5mm,left=3mm,right=3mm,top=1.5mm,bottom=1.5mm,title=\textbf{#1},fonttitle=\small}
+\newtcolorbox{inlinecodebox}[1]{enhanced,breakable,colback=black!2,colframe=ResearchBlue,boxrule=0.65pt,arc=1.5mm,left=2.5mm,right=2.5mm,top=1.5mm,bottom=1.5mm,title=\textbf{#1},fonttitle=\small\bfseries,colbacktitle=ResearchBlue,coltitle=white}
 \newtcolorbox{quotebox}{enhanced,breakable,colback=ResearchGray,colframe=ResearchBlue,leftrule=2.5pt,rightrule=0pt,toprule=0pt,bottomrule=0pt,sharp corners,left=4mm,right=2mm,top=1.5mm,bottom=1.5mm}
 \newtcolorbox{missingfigure}{enhanced,breakable,colback=red!2,colframe=red!45!black,boxrule=0.5pt,arc=1mm,left=3mm,right=3mm,top=2mm,bottom=2mm}
 \newtcolorbox{notebox}[1]{enhanced,breakable,colback=ResearchGray,colframe=ResearchBlue,title=\textbf{#1},boxrule=0.5pt}
@@ -565,8 +620,10 @@ def preamble() -> str:
 
 \title{计算材料与拓扑磁性\\研究工作手册}
 \subtitle{博士研究生申请科研手册 · 方法、软件、代码、绘图与心得}
-\author{Mrx}
-\institute{个人科研成果与方法体系整理}
+\author{马睿骁}
+\institute{浙江省量子态调控与光场操控重点实验室\quad 量子物态调控研究所}
+\wechat{19800353973}
+\coveremail{2024210104023@mails.zstu.edu.cn}
 \date{2026 年 9 月}
 \cover{assets/cover.jpg}
 
@@ -597,13 +654,15 @@ def article_tex(article: Article) -> str:
 def code_appendix(articles: list[Article]) -> str:
     chunks = [
         r"\appendix", r"\chapter{完整代码清单}",
-        "本附录按正文文章号排序，完整保留原始代码。"
-        r"每个代码块同时保存为工程 \texttt{code/} 目录中的独立 UTF-8 文件，"
-        "便于复制、检索与复现。",
+        "本附录按正文文章号排序，仅收录不适合在正文展开的较长代码。"
+        r"简短命令与短代码已在正文代码框中直接展示；全部代码块仍保存于工程 \texttt{code/} "
+        "目录，便于复制、检索与复现。",
     ]
-    for article in (item for item in articles if item.code_blocks):
+    for article in (item for item in articles if any(not block.inline for block in item.code_blocks)):
         chunks.append(r"\section*{" + text_to_tex(article.title) + "}")
         for block in article.code_blocks:
+            if block.inline:
+                continue
             chunks.extend([
                 r"\phantomsection\label{code:" + f"{block.article_no}:{block.sequence}" + "}",
                 r"\subsection*{代码清单 A." + f"{block.article_no}.{block.sequence}" + "（"
@@ -649,8 +708,9 @@ def main() -> int:
     all_posts = run_collector()
     raw_posts = [
         post for post in all_posts
-        if not any(normalized_key(keyword) in normalized_key(post["title"] + " " + post["source_path"])
-                   for keyword in EXCLUDED_ARTICLE_KEYWORDS)
+        if post["source_path"] not in EXCLUDED_ARTICLE_PATHS
+        and not any(normalized_key(keyword) in normalized_key(post["title"] + " " + post["source_path"])
+                    for keyword in EXCLUDED_ARTICLE_KEYWORDS)
     ]
     articles = []
     for post in raw_posts:
@@ -685,6 +745,7 @@ def main() -> int:
             "title": article.title, "date": article.date, "part": article.part,
             "part_title": PART_META[article.part]["title"], "subgroup": article.subgroup,
             "classification_reason": article.reason, "code_blocks": len(article.code_blocks),
+            "inline_code_blocks": sum(block.inline for block in article.code_blocks),
             "images": article.image_count, "missing_images": article.missing_images, "url": article.url,
         } for article in articles],
     }
@@ -719,6 +780,8 @@ def main() -> int:
     for part in PART_ORDER:
         print(f"  {PART_META[part]['title']}：{part_counts[part]}")
     print(f"代码块：{sum(len(article.code_blocks) for article in articles)}")
+    print(f"  正文短命令：{sum(block.inline for article in articles for block in article.code_blocks)}")
+    print(f"  附录长代码：{sum(not block.inline for article in articles for block in article.code_blocks)}")
     print(f"图片：{sum(article.image_count for article in articles)}")
     print(f"缺失图片引用：{sum(len(article.missing_images) for article in articles)}")
     print(TEX_FILE)

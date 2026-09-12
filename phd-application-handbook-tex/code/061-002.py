@@ -1,402 +1,349 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
-import re
-import csv
-import math
 import argparse
-from collections import defaultdict, namedtuple
-
+import csv
+from pathlib import Path
 import numpy as np
+import pandas as pd
 
-Edge = namedtuple(
-    "Edge",
-    "pair shell dist absH re im Rx Ry Rz m n atom_m atom_n elem_m elem_n group_m group_n"
-)
 
 # =========================
-# Parse wannier90.win
+# helpers: parse hr.dat
 # =========================
-def _extract_block(txt, block_name):
-    m = re.search(rf"begin\s+{block_name}(.*?)end\s+{block_name}", txt, re.S | re.I)
-    return None if not m else m.group(1).strip()
+def parse_hr_dat(hr_path: Path):
+    lines = hr_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    if len(lines) < 4:
+        raise RuntimeError("hr.dat too short")
+    num_wann = int(lines[1].strip())
+    nrpts = int(lines[2].strip())
 
-def parse_win_lattice_and_atoms(win_path):
-    """
-    Read unit_cell_cart and atoms_cart from wannier90.win.
-    Assumes Angstrom if unit not specified.
-    Returns:
-      A (3x3) with columns = a1,a2,a3 in Angstrom, so cart = A @ frac
-      atoms: list of dict {id, elem, r_cart(np.array shape(3))}
-    """
-    with open(win_path, "r", encoding="utf-8", errors="ignore") as f:
-        txt = f.read()
+    degen = []
+    idx = 3
+    while len(degen) < nrpts:
+        degen.extend([int(t) for t in lines[idx].split()])
+        idx += 1
+    rec_lines = lines[idx:]
+    return num_wann, rec_lines
 
-    cell_block = _extract_block(txt, "unit_cell_cart")
-    if cell_block is None:
-        raise RuntimeError("Cannot find unit_cell_cart block in wannier90.win")
 
-    lines = [ln.strip() for ln in cell_block.splitlines() if ln.strip()]
-    if re.match(r"^(ang|angstrom|bohr)\b", lines[0], re.I):
-        unit = lines[0].lower()
-        vec_lines = lines[1:4]
-    else:
-        unit = "ang"
-        vec_lines = lines[0:3]
-
-    if len(vec_lines) < 3:
-        raise RuntimeError("unit_cell_cart has < 3 lattice vectors")
-
-    a1 = np.array([float(x) for x in vec_lines[0].split()[:3]], dtype=float)
-    a2 = np.array([float(x) for x in vec_lines[1].split()[:3]], dtype=float)
-    a3 = np.array([float(x) for x in vec_lines[2].split()[:3]], dtype=float)
-
-    if "bohr" in unit:
-        bohr_to_ang = 0.52917721092
-        a1 *= bohr_to_ang
-        a2 *= bohr_to_ang
-        a3 *= bohr_to_ang
-
-    A = np.stack([a1, a2, a3], axis=1)  # (3,3), columns are lattice vectors
-
-    atoms_block = _extract_block(txt, "atoms_cart")
-    if atoms_block is None:
-        raise RuntimeError("Cannot find atoms_cart block in wannier90.win")
-
-    atoms = []
-    for idx, ln in enumerate([x for x in atoms_block.splitlines() if x.strip()], start=1):
-        parts = ln.split()
-        if len(parts) < 4:
+def build_H0(num_wann, rec_lines):
+    H0 = np.zeros((num_wann, num_wann), dtype=np.complex128)
+    for ln in rec_lines:
+        if not ln.strip():
             continue
-        elem = parts[0]
-        r = np.array([float(parts[1]), float(parts[2]), float(parts[3])], dtype=float)
-        atoms.append({"id": idx, "elem": elem, "r": r})
-
-    if not atoms:
-        raise RuntimeError("atoms_cart parsed but got 0 atoms")
-
-    return A, atoms
-
-
-# =========================
-# Parse wannier90_centres.xyz
-# =========================
-def parse_centres_xyz(xyz_path):
-    """
-    Parse wannier90_centres.xyz:
-    line1 = N
-    line2 = comment
-    then N lines: <label> x y z
-    Return centers list indexed 1..N: centers[wf] = np.array([x,y,z])
-    """
-    with open(xyz_path, "r", encoding="utf-8", errors="ignore") as f:
-        lines = [ln.strip() for ln in f if ln.strip()]
-
-    n = int(lines[0])
-    if len(lines) < 2 + n:
-        raise RuntimeError(f"centres.xyz incomplete: need {2+n} lines, got {len(lines)}")
-
-    centers = [None] * (n + 1)
-    for i in range(n):
-        parts = lines[2 + i].split()
-        if len(parts) < 4:
-            raise RuntimeError(f"Bad centres.xyz line: {lines[2+i]}")
-        centers[i + 1] = np.array([float(parts[1]), float(parts[2]), float(parts[3])], dtype=float)
-    return centers
-
-
-# =========================
-# Parse wannier90_hr.dat
-# =========================
-def parse_hr_dat(hr_path):
-    """
-    Yields (Rx, Ry, Rz, m, n, reH, imH)
-    """
-    with open(hr_path, "r", encoding="utf-8", errors="ignore") as f:
-        _ = f.readline()  # comment
-        _num_wann = int(f.readline().strip())
-        nrpts = int(f.readline().strip())
-
-        # read degeneracy list
-        degen = []
-        while len(degen) < nrpts:
-            ln = f.readline()
-            if not ln:
-                raise RuntimeError("Unexpected EOF while reading degeneracy list")
-            ln = ln.strip()
-            if not ln:
-                continue
-            degen += [int(x) for x in ln.split()]
-
-        # data
-        for ln in f:
-            ln = ln.strip()
-            if not ln:
-                continue
-            parts = ln.split()
-            if len(parts) < 7:
-                continue
-            Rx, Ry, Rz = int(parts[0]), int(parts[1]), int(parts[2])
-            m, n = int(parts[3]), int(parts[4])
-            reH, imH = float(parts[5]), float(parts[6])
-            yield Rx, Ry, Rz, m, n, reH, imH
-
-
-# =========================
-# Group mapping: element -> group label
-# =========================
-def parse_group_map(s):
-    """
-    "Tc:Tc_d,Ir:Ir_d,Se:Se_p,Ge:Ge_p" -> dict
-    """
-    mp = {}
-    s = (s or "").strip()
-    if not s:
-        return mp
-    for item in s.split(","):
-        item = item.strip()
-        if not item:
+        toks = ln.split()
+        if len(toks) < 7:
             continue
-        if ":" not in item:
-            raise ValueError(f"Bad group_map item '{item}', expected Elem:Group")
-        k, v = item.split(":", 1)
-        mp[k.strip()] = v.strip()
-    return mp
-
-def elem_to_group(elem, group_map):
-    """
-    Default rules (can be overridden by --group_map):
-      Tc -> Tc_d, Ir -> Ir_d, Se -> Se_p, Ge -> Ge_p
-    """
-    if elem in group_map:
-        return group_map[elem]
-    if elem == "Tc":
-        return "Tc_d"
-    if elem == "Ir":
-        return "Ir_d"
-    if elem == "Se":
-        return "Se_p"
-    if elem == "Ge":
-        return "Ge_p"
-    return "OTHER"
-
-def pair_name(g1, g2, order_map):
-    """
-    Deterministic ordering, avoid Se_p<->Tc_d flip.
-    """
-    o1 = order_map.get(g1, 999)
-    o2 = order_map.get(g2, 999)
-    if o1 < o2:
-        return f"{g1}<->{g2}"
-    if o2 < o1:
-        return f"{g2}<->{g1}"
-    return f"{min(g1,g2)}<->{max(g1,g2)}"
+        Rx, Ry, Rz = int(toks[0]), int(toks[1]), int(toks[2])
+        if (Rx, Ry, Rz) != (0, 0, 0):
+            continue
+        m = int(toks[3]) - 1
+        n = int(toks[4]) - 1
+        re0 = float(toks[5])
+        im0 = float(toks[6])
+        H0[m, n] = re0 + 1j * im0
+    return 0.5 * (H0 + H0.conj().T)
 
 
 # =========================
-# Minimum-image mapping: WF -> nearest atom
+# helpers: parse edges.csv -> WF -> (atom_id, elem)
 # =========================
-def cart_to_frac(A, r_cart):
-    return np.linalg.solve(A, r_cart)
+def read_edges_wf_map(edges_path: Path):
+    df = pd.read_csv(edges_path)
+    needed = ["m", "n", "atom_m", "atom_n", "elem_m", "elem_n"]
+    for c in needed:
+        if c not in df.columns:
+            raise RuntimeError(f"edges.csv missing required column: {c}")
 
-def frac_to_cart(A, f):
-    return A @ f
+    wf_to_pairs = {}
+    for _, r in df.iterrows():
+        m = int(r["m"]); n = int(r["n"])
+        am = int(r["atom_m"]); an = int(r["atom_n"])
+        em = str(r["elem_m"]); en = str(r["elem_n"])
+        wf_to_pairs.setdefault(m, set()).add((am, em))
+        wf_to_pairs.setdefault(n, set()).add((an, en))
 
-def wrap_delta_frac(df):
-    return df - np.round(df)
+    bad = []
+    wf_map = {}
+    for wf, s in wf_to_pairs.items():
+        if len(s) != 1:
+            bad.append((wf, sorted(list(s))))
+        else:
+            wf_map[wf] = next(iter(s))
 
-def map_wf_to_atoms(A, centers, atoms):
+    if bad:
+        msg = ["[ERROR] Some WFs map to multiple (atom_id, elem) labels. Fix edges.csv labeling first."]
+        for wf, pairs in bad[:50]:
+            msg.append(f"  wf={wf}: {pairs}")
+        raise RuntimeError("\n".join(msg))
+
+    return wf_map
+
+
+def atoms_by_element(wf_map, num_wann):
+    elem_to_atoms = {}
+    for wf in range(1, num_wann + 1):
+        aid, elem = wf_map[wf]
+        elem_to_atoms.setdefault(elem, set()).add(aid)
+    return {e: sorted(list(s)) for e, s in elem_to_atoms.items()}
+
+
+# =========================
+# helpers: parse win projections (explicit order)
+# =========================
+def norm_orb(tok: str) -> str:
+    t = tok.strip().lower()
+    t = t.replace("dx2y2", "dx2-y2").replace("dx2_y2", "dx2-y2")
+    t = t.replace("d(z2)", "dz2").replace("d(z^2)", "dz2").replace("d(z**2)", "dz2")
+    t = t.replace("d(x2-y2)", "dx2-y2")
+    return t
+
+
+def expand_token(tok: str):
+    t = norm_orb(tok)
+    if t == "d":
+        return ["dxy", "dyz", "dxz", "dz2", "dx2-y2"]
+    if t == "p":
+        return ["px", "py", "pz"]
+    if t == "s":
+        return ["s"]
+    return [t]
+
+
+def parse_win_projections(win_path: Path):
+    lines = win_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    in_proj = False
+    proj_lines = []
+    for ln in lines:
+        s = ln.strip()
+        low = s.lower()
+        if low.startswith("begin projections"):
+            in_proj = True
+            continue
+        if low.startswith("end projections"):
+            in_proj = False
+            continue
+        if not in_proj:
+            continue
+        if (not s) or s.startswith("#") or s.startswith("!"):
+            continue
+        proj_lines.append(s)
+
+    out = []
+    for raw in proj_lines:
+        if ":" not in raw:
+            continue
+        elem, rhs = raw.split(":", 1)
+        elem = elem.strip()
+        rhs = rhs.replace(",", " ").replace(";", " ")
+        toks = [t for t in rhs.split() if t.strip()]
+        orbs = []
+        for t in toks:
+            orbs += expand_token(t)
+        out.append((elem, orbs))
+
+    if not out:
+        raise RuntimeError("[ERROR] No projections found in win. Check begin/end projections block.")
+    return out
+
+
+def build_wf_labels_from_win(proj_spec, elem_to_atoms, num_wann):
     """
-    Returns:
-      wf_atom_id[wf] = atom index in atoms list (0-based)
-      wf_atom_elem[wf] = element string
-    Uses minimum-image distance in fractional space.
+    Construct expected WF label sequence in the SAME ordering as Wannier90 projections expansion.
+    We assume SOC spinor duplication if num_wann == 2 * spatial_count.
+    Return: list labels (1..num_wann): (atom_id, elem, orb)
     """
-    atom_frac = []
-    for a in atoms:
-        atom_frac.append(cart_to_frac(A, a["r"]))
-    atom_frac = np.array(atom_frac)  # (Nat,3)
+    spatial = []
+    for elem, orbs in proj_spec:
+        if elem not in elem_to_atoms:
+            raise RuntimeError(f"[ERROR] win projections element '{elem}' not in edges elements {list(elem_to_atoms.keys())}")
+        for aid in elem_to_atoms[elem]:
+            for orb in orbs:
+                spatial.append((aid, elem, orb))
 
-    wf_atom_id = [None] * len(centers)
-    wf_atom_elem = [None] * len(centers)
+    if len(spatial) == num_wann:
+        return spatial, False
+    if 2 * len(spatial) == num_wann:
+        spinor = []
+        for item in spatial:
+            spinor.append(item)
+            spinor.append(item)
+        return spinor, True
 
-    for wf in range(1, len(centers)):
-        f_w = cart_to_frac(A, centers[wf])
-
-        best_i = None
-        best_d = 1e30
-        for i, f_a in enumerate(atom_frac):
-            df = wrap_delta_frac(f_w - f_a)
-            dr = frac_to_cart(A, df)
-            d = float(np.linalg.norm(dr))
-            if d < best_d:
-                best_d = d
-                best_i = i
-
-        wf_atom_id[wf] = best_i
-        wf_atom_elem[wf] = atoms[best_i]["elem"]
-
-    return wf_atom_id, wf_atom_elem
-
-
-# =========================
-# Main
-# =========================
-def main():
-    ap = argparse.ArgumentParser(
-        description="Summarize hoppings by (group-pair, distance shell) using WF centres + lattice translations."
+    raise RuntimeError(
+        "[ERROR] projection expansion count mismatch.\n"
+        f"  spatial_count={len(spatial)}, num_wann={num_wann}\n"
+        "Expected num_wann == spatial_count (no spinor) OR num_wann == 2*spatial_count (SOC spinor).\n"
     )
-    ap.add_argument("--win", required=True, help="wannier90.win")
-    ap.add_argument("--centres", required=True, help="wannier90_centres.xyz")
-    ap.add_argument("--hr", required=True, help="wannier90_hr.dat")
-    ap.add_argument("--tol", type=float, default=0.10, help="distance bin size (Ang), e.g. 0.05~0.15")
-    ap.add_argument("--min_absH", type=float, default=1e-4, help="min |H| kept (eV)")
-    ap.add_argument("--topk", type=int, default=30, help="topK edges per (pair,shell)")
-    ap.add_argument("--skip_same_atom_R0", action="store_true",
-                    help="skip terms where (atom_m==atom_n) AND (R==0). Recommended to remove onsite/local terms.")
-    ap.add_argument("--skip_diag_R0", action="store_true",
-                    help="skip diagonal terms (m==n) at R==0 (onsite).")
-    ap.add_argument("--pairs", default="ALL", help="comma-separated allowed pairs like Tc_d<->Se_p, or ALL")
-    ap.add_argument("--out_summary", default="hopping_summary_by_shell.csv")
-    ap.add_argument("--out_edges", default="", help="optional: write filtered edges csv (empty=off)")
 
-    # NEW: element -> group mapping (to replace hard-coded wf index ranges)
-    ap.add_argument("--group_map", default="Tc:Tc_d,Ir:Ir_d,Se:Se_p,Ge:Ge_p",
-                    help="Override element->group mapping, e.g. 'Tc:Tc_d,Ir:Ir_d,Se:Se_p'.")
-    ap.add_argument("--group_order", default="Tc_d,Ir_d,Se_p,Ge_p,OTHER",
-                    help="Group ordering used to format A<->B deterministically.")
 
+# =========================
+# local diag + orbital labeling from basis
+# =========================
+def diag_local(H0, wf_list_1based):
+    idx = [w - 1 for w in wf_list_1based]
+    sub = H0[np.ix_(idx, idx)]
+    evals, evecs = np.linalg.eigh(sub)
+    order = np.argsort(np.real(evals))
+    return np.real(evals[order]), evecs[:, order]
+
+
+def try_pairs(evals_rel):
+    if len(evals_rel) % 2 != 0:
+        return []
+    out = []
+    for i in range(0, len(evals_rel), 2):
+        e1 = float(evals_rel[i]); e2 = float(evals_rel[i + 1])
+        out.append((0.5 * (e1 + e2), abs(e2 - e1), i, i + 1))
+    return out
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--hr", default="wannier90_hr.dat")
+    ap.add_argument("--edges", default="edges.csv")
+    ap.add_argument("--win", default="wannier90.win")
+    ap.add_argument("--Ef", type=float, default=0.0, help="output energies as E_rel = E - Ef (eV)")
+    ap.add_argument("--out_prefix", default="cfFINAL")
+    ap.add_argument("--pair_tol", type=float, default=0.02, help="warn if pair split > tol (eV)")
     args = ap.parse_args()
 
-    group_map = parse_group_map(args.group_map)
-    order_list = [x.strip() for x in args.group_order.split(",") if x.strip()]
-    order_map = {g: i for i, g in enumerate(order_list, start=1)}
+    hr_path = Path(args.hr)
+    edges_path = Path(args.edges)
+    win_path = Path(args.win)
+    for p in [hr_path, edges_path, win_path]:
+        if not p.exists():
+            raise FileNotFoundError(p.resolve())
 
-    A, atoms = parse_win_lattice_and_atoms(args.win)
-    centers = parse_centres_xyz(args.centres)
+    num_wann, rec_lines = parse_hr_dat(hr_path)
+    H0 = build_H0(num_wann, rec_lines)
 
-    wf_atom_id, wf_atom_elem = map_wf_to_atoms(A, centers, atoms)
+    wf_map = read_edges_wf_map(edges_path)
+    elem_to_atoms = atoms_by_element(wf_map, num_wann)
 
-    # quick sanity print: how many WFs mapped to each element
-    elem_counts = defaultdict(int)
-    for wf in range(1, len(centers)):
-        elem_counts[wf_atom_elem[wf]] += 1
-    print("[INFO] WF->nearest-atom element counts:", dict(sorted(elem_counts.items(), key=lambda x: x[0])))
+    proj_spec = parse_win_projections(win_path)
+    expected_labels, spinor_dup = build_wf_labels_from_win(proj_spec, elem_to_atoms, num_wann)
 
-    # Allowed pairs
-    allowed_pairs = None
-    if args.pairs.strip().upper() != "ALL":
-        allowed_pairs = set([p.strip() for p in args.pairs.split(",") if p.strip()])
+    # Build WF groups per atom from edges (ground truth for which WF belongs to which atom)
+    atom_to_wfs = {}
+    atom_to_elem = {}
+    for wf in range(1, num_wann + 1):
+        aid, elem = wf_map[wf]
+        atom_to_wfs.setdefault(aid, []).append(wf)
+        atom_to_elem[aid] = elem
+    for aid in atom_to_wfs:
+        atom_to_wfs[aid] = sorted(atom_to_wfs[aid])
 
-    # stats
-    cnt = defaultdict(int)
-    sumsq = defaultdict(float)
-    maxv = defaultdict(float)
-    top_edges = defaultdict(list)
-    filtered_edges = []
+    # Now: assign each WF an orbital label by matching its position in the expected sequence.
+    # This requires that the WF ordering produced by Wannier90 follows the projection expansion ordering.
+    # We'll build wf_orb[wf] = orb_label.
+    wf_orb = {}
+    wf_expected_atom = {}
+    for wf in range(1, num_wann + 1):
+        aid_e, elem_e, orb_e = expected_labels[wf - 1]
+        wf_expected_atom[wf] = (aid_e, elem_e)
+        wf_orb[wf] = orb_e
 
-    # Precompute lattice vectors for translation
-    a1 = A[:, 0]
-    a2 = A[:, 1]
-    a3 = A[:, 2]
+    # Consistency check: WF->atom from edges should match expected atom from win ordering
+    mism = []
+    for wf in range(1, num_wann + 1):
+        aid_true, elem_true = wf_map[wf]
+        aid_e, elem_e = wf_expected_atom[wf]
+        if (aid_true != aid_e) or (elem_true != elem_e):
+            mism.append((wf, (aid_true, elem_true), (aid_e, elem_e)))
+    if mism:
+        # We do not abort; but we warn loudly because orbital labeling would be unreliable.
+        print("[WARN] WF ordering does NOT match win projection expansion ordering for these WFs (first 20 shown):")
+        for it in mism[:20]:
+            print(f"  wf={it[0]} edges={it[1]} expected_from_win={it[2]}")
+        print("[WARN] In this case, you must reorder WFs by parsing wout spread table or use a stricter mapping method.")
+        # If this happens, stop now to avoid producing wrong orbital order.
+        raise RuntimeError("WF ordering mismatch: cannot safely label orbitals from win ordering.")
 
-    def R_to_T(Rx, Ry, Rz):
-        return Rx * a1 + Ry * a2 + Rz * a3
+    # Outputs
+    out_levels = f"{args.out_prefix}_levels.csv"
+    out_order = f"{args.out_prefix}_orbital_order.csv"
+    out_pairs = f"{args.out_prefix}_pair_centers.csv"
 
-    for Rx, Ry, Rz, m, n, reH, imH in parse_hr_dat(args.hr):
-        absH = math.hypot(reH, imH)
-        if absH < args.min_absH:
-            continue
+    rows_levels = []
+    rows_pairs = []
+    lowest = {}  # (aid, elem, orb) -> lowest E_rel
 
-        atom_m = wf_atom_id[m]
-        atom_n = wf_atom_id[n]
-        elem_m = wf_atom_elem[m]
-        elem_n = wf_atom_elem[n]
+    for aid in sorted(atom_to_wfs.keys()):
+        elem = atom_to_elem[aid]
+        wfs = atom_to_wfs[aid]
+        evals, evecs = diag_local(H0, wfs)
+        evals_rel = evals - args.Ef
 
-        gm = elem_to_group(elem_m, group_map)
-        gn = elem_to_group(elem_n, group_map)
+        # basis orbital label list for this atom (same length as wfs)
+        basis_orbs = [wf_orb[wf] for wf in wfs]
 
-        # drop OTHER by default (consistent with your original behavior)
-        if gm == "OTHER" or gn == "OTHER":
-            continue
+        for j in range(len(evals_rel)):
+            c2 = np.abs(evecs[:, j]) ** 2
+            # orbital weight = sum |c_i|^2 over basis functions with same orb label
+            orb_w = {}
+            for i, orb in enumerate(basis_orbs):
+                orb_w[orb] = orb_w.get(orb, 0.0) + float(c2[i])
+            dom_orb = max(orb_w.keys(), key=lambda k: orb_w[k])
+            dom_w = orb_w[dom_orb]
 
-        pair = pair_name(gm, gn, order_map=order_map)
-        if allowed_pairs is not None and pair not in allowed_pairs:
-            continue
+            rows_levels.append({
+                "atom_id": aid,
+                "elem": elem,
+                "n_wf": len(wfs),
+                "level_index": j + 1,
+                "E_rel": float(evals_rel[j]),
+                "dominant_orb": dom_orb,
+                "dominant_w": float(dom_w)
+            })
 
-        # Skip onsite/local terms if requested
-        if (Rx, Ry, Rz) == (0, 0, 0):
-            if args.skip_diag_R0 and (m == n):
-                continue
-            if args.skip_same_atom_R0 and (atom_m == atom_n):
-                continue
+            key = (aid, elem, dom_orb)
+            lowest[key] = min(lowest.get(key, 1e30), float(evals_rel[j]))
 
-        # distance between WF centers considering translation R
-        T = R_to_T(Rx, Ry, Rz)
-        dr = (centers[n] + T) - centers[m]
-        dist = float(np.linalg.norm(dr))
+        # pair diagnostics
+        pairs = try_pairs(evals_rel)
+        for pi, (center, split, i1, i2) in enumerate(pairs, start=1):
+            warn = int(split > args.pair_tol)
+            # label by combined weights
+            c2 = (np.abs(evecs[:, i1]) ** 2 + np.abs(evecs[:, i2]) ** 2)
+            orb_w = {}
+            for i, orb in enumerate(basis_orbs):
+                orb_w[orb] = orb_w.get(orb, 0.0) + float(c2[i])
+            dom_orb = max(orb_w.keys(), key=lambda k: orb_w[k])
+            dom_w = orb_w[dom_orb]
 
-        # bin to shell
-        shell = round(dist / args.tol) * args.tol
-        key = (pair, shell)
+            rows_pairs.append({
+                "atom_id": aid,
+                "elem": elem,
+                "n_wf": len(wfs),
+                "pair_index": pi,
+                "center_rel": float(center),
+                "split": float(split),
+                "dominant_orb_pair": dom_orb,
+                "dominant_w_pair": float(dom_w),
+                "warn_split_gt_tol": warn
+            })
 
-        cnt[key] += 1
-        sumsq[key] += absH * absH
-        if absH > maxv[key]:
-            maxv[key] = absH
+    pd.DataFrame(rows_levels).to_csv(out_levels, index=False)
+    pd.DataFrame(rows_pairs).to_csv(out_pairs, index=False)
 
-        e = Edge(pair, shell, dist, absH, reH, imH, Rx, Ry, Rz, m, n,
-                 atom_m, atom_n, elem_m, elem_n, gm, gn)
+    out_rows = []
+    for (aid, elem, orb), E0 in sorted(lowest.items(), key=lambda x: (x[0][1], x[0][0], x[1], x[0][2])):
+        out_rows.append({
+            "atom_id": aid, "elem": elem, "orbital": orb,
+            "lowest_E_rel": float(E0)
+        })
+    pd.DataFrame(out_rows).to_csv(out_order, index=False)
 
-        lst = top_edges[key]
-        lst.append(e)
-        lst.sort(key=lambda x: x.absH, reverse=True)
-        if len(lst) > args.topk:
-            lst[:] = lst[:args.topk]
-
-        if args.out_edges:
-            filtered_edges.append(e)
-
-    # write summary
-    with open(args.out_summary, "w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow([
-            "pair", "shell_A", "count", "max_absH_eV", "rms_absH_eV",
-            f"top{args.topk}_edges(m,n,atom_m,atom_n,elem_m,elem_n,group_m,group_n,Rx,Ry,Rz,absH,dist)"
-        ])
-        for (pair, shell) in sorted(cnt.keys(), key=lambda x: (x[0], x[1])):
-            c = cnt[(pair, shell)]
-            rms = math.sqrt(sumsq[(pair, shell)] / c) if c else 0.0
-            tops = top_edges[(pair, shell)]
-            tops_str = "; ".join([
-                f"{e.m}-{e.n}|a{e.atom_m+1}-a{e.atom_n+1}|{e.elem_m}-{e.elem_n}"
-                f"|{e.group_m}-{e.group_n}"
-                f"@({e.Rx},{e.Ry},{e.Rz})|{e.absH:.6g}|d={e.dist:.3f}"
-                for e in tops
-            ])
-            w.writerow([pair, f"{shell:.3f}", c, f"{maxv[(pair, shell)]:.6g}", f"{rms:.6g}", tops_str])
-
-    # optional edges
-    if args.out_edges:
-        with open(args.out_edges, "w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow([
-                "pair", "shell_A", "dist_A", "absH_eV", "re", "im",
-                "Rx", "Ry", "Rz", "m", "n",
-                "atom_m", "atom_n", "elem_m", "elem_n",
-                "group_m", "group_n"
-            ])
-            for e in filtered_edges:
-                w.writerow([
-                    e.pair, f"{e.shell:.3f}", f"{e.dist:.6f}", f"{e.absH:.8g}",
-                    f"{e.re:.8g}", f"{e.im:.8g}",
-                    e.Rx, e.Ry, e.Rz, e.m, e.n,
-                    e.atom_m + 1, e.atom_n + 1, e.elem_m, e.elem_n,
-                    e.group_m, e.group_n
-                ])
-
-    print("Done.")
-    print("Summary:", args.out_summary)
-    if args.out_edges:
-        print("Edges:", args.out_edges)
+    print("[OK] Done.")
+    print(f"  spinor_dup = {spinor_dup}")
+    print(f"  wrote: {out_levels}")
+    print(f"  wrote: {out_pairs}")
+    print(f"  wrote: {out_order}")
+    print("Notes:")
+    print("  - This route labels orbitals from win projection expansion order; it is stable and does NOT depend on chk/amn.")
+    print("  - If you are FM+SOC (TR broken), pair_centers are diagnostic only; do not treat them as Kramers by default.")
 
 
 if __name__ == "__main__":

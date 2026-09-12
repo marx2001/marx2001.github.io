@@ -1,4 +1,3 @@
-
 mesh = Mesh(["k"], dim_k=2)
 points = np.linspace(
     [0, 0], [1, 1], 10, endpoint=False

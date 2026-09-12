@@ -1,4 +1,3 @@
-
 ```shell
 
  # z2 number for 6 planes

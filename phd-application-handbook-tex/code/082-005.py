@@ -1,85 +1,55 @@
-
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.interpolate import griddata
-from matplotlib.colors import Normalize, LinearSegmentedColormap
 
-# ===== 数据加载 =====
-data = np.loadtxt('MAE.dat', skiprows=1)
-phi = data[:, 0] * np.pi / 180
-theta = data[:, 1] * np.pi / 180
-R = data[:, 2]
+# =========================
+# Parameters
+# =========================
+nkx, nky = 21, 21
+nkx, nky = nkx * 3, nky * 3
 
-# ===== 网格生成 =====
-nphi, ntheta = 500, 500
-phinew = np.linspace(0, np.pi, nphi)
-thetanew = np.linspace(0, 2*np.pi, ntheta)
-xx, yy = np.meshgrid(phinew, thetanew)
+# =========================
+# Load data
+# =========================
+data = np.loadtxt("BERRYCURV.dat", skiprows=20)
 
-# ===== 镜像对称插值 =====
-phi_mirror = np.pi - xx
-theta_mirror = (yy + np.pi) % (2*np.pi)
-R_upper = griddata((phi, theta), R, (xx, yy), method='cubic')
-R_lower = griddata((phi, theta), R, (phi_mirror, theta_mirror), method='cubic')
-Rnew = np.where(xx > np.pi/2, R_lower, R_upper)
+# Extract reciprocal coordinates + Berry curvature
+kx = data[:, 4]      # 倒数第五列
+ky = data[:, 5]      # 倒数第四列
+berry = data[:, 3]   # 贝里曲率
 
-# ===== 坐标转换 (放大 4 倍) =====
-scale_factor = 4.0
-x = scale_factor * Rnew * np.sin(xx) * np.cos(yy)
-y = scale_factor * Rnew * np.sin(xx) * np.sin(yy)
-z = scale_factor * Rnew * np.cos(xx)
+# Read B1, B2 from header (line 9 and 10, 0-based index 8,9)
+with open("BERRYCURV.dat", "r") as f:
+    lines = f.readlines()
 
-# ===== 柔和渐变色 (橙-黄-绿) =====
-cmap_soft = LinearSegmentedColormap.from_list(
-    "OrangeYellowGreen", ["#FFA500", "#FFFF66", "#008000"]
-)
+B1 = np.array([float(x) for x in lines[8].split()[-3:-1]])
+B2 = np.array([float(x) for x in lines[9].split()[-3:-1]])
 
-# ===== 可视化 =====
-fig = plt.figure(figsize=(12, 8))
-ax = fig.add_subplot(111, projection='3d')
+# Convert to Cartesian-like coords used in your original script
+kx_n = B1[0] * kx + B2[0] * ky
+ky_n = B1[1] * kx + B2[1] * ky
 
-# 统一颜色映射
-norm = Normalize(vmin=np.min(Rnew), vmax=np.max(Rnew))
-colors = cmap_soft(norm(Rnew))
+# Reshape to grid
+kx_grid = kx_n.reshape(nkx, nky)
+ky_grid = ky_n.reshape(nkx, nky)
+berry_grid = berry.reshape(nkx, nky)
 
-surf = ax.plot_surface(
-    x, y, z,
-    facecolors=colors,
-    rcount=300, ccount=300,
-    antialiased=True
-)
+# =========================
+# Plot: ONLY contourf + colorbar
+# =========================
+fig, ax = plt.subplots(figsize=(10, 8))
 
-# ===== 视角和比例 =====
-ax.view_init(elev=30, azim=-50)
+# 颜色：反转红蓝渐变（如需反转 RdBu，可使用 RdBu_r）
+level = 100
+cf = ax.contourf(kx_grid, ky_grid, berry_grid, level, cmap="RdBu_r")
 
-# 自动保持 x,y,z 方向比例一致
-ax.set_box_aspect([np.ptp(x), np.ptp(y), np.ptp(z)])
+# 去掉主图所有边框/坐标轴/刻度/标题
+ax.set_axis_off()
+ax.set_aspect("equal", adjustable="box")
 
-# ===== 设置坐标范围（比图形大 1.5 倍） =====
-margin = 1.5
-ax.set_xlim([np.min(x) * margin, np.max(x) * margin])
-ax.set_ylim([np.min(y) * margin, np.max(y) * margin])
-ax.set_zlim([np.min(z) * margin, np.max(z) * margin])
+# 只保留 colour bar（需要的话可删掉 label 这行）
+cbar = fig.colorbar(cf, ax=ax, fraction=0.046, pad=0.04)
+cbar.set_label(r"Berry Curvature $(\AA^2)$", fontsize=12)
 
-# ===== 坐标轴样式：只保留网格，去掉刻度数字和标签 =====
-ax.tick_params(labelbottom=False, labelleft=False, labelright=False, labeltop=False)
-ax.set_xlabel("")
-ax.set_ylabel("")
-ax.set_zlabel("")
-ax.grid(True)
-
-# 网格线颜色调浅
-ax.xaxis._axinfo['grid']['color'] = (0.8, 0.8, 0.8, 1)
-ax.yaxis._axinfo['grid']['color'] = (0.8, 0.8, 0.8, 1)
-ax.zaxis._axinfo['grid']['color'] = (0.8, 0.8, 0.8, 1)
-
-# ===== 颜色条（柔和渐变） =====
-mappable = plt.cm.ScalarMappable(norm=norm, cmap=cmap_soft)
-mappable.set_array([])
-cbar = fig.colorbar(mappable, shrink=0.5, aspect=10)
-cbar.set_label("")  # 去掉标签
-
-# ===== 保存 & 显示 =====
-plt.tight_layout()
-plt.savefig("MAE_3D_orange_yellow_green_scaled4_margin15.png", dpi=600, bbox_inches="tight", facecolor="white")
-plt.show()
+# 保存图片（tight 以尽量减少白边，同时包含 colorbar）
+fig.savefig("Berry.png", dpi=600, bbox_inches="tight", pad_inches=0)
+plt.close(fig)

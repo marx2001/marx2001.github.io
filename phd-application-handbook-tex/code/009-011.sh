@@ -1,4 +1,3 @@
-
 &TB_FILE
 Hrfile = 'wannier90_hr.dat'
 Package = 'VASP'

@@ -1,14 +1,8 @@
-长期内容修改：
-    改个人网页 _posts/*.md
+Element: Cs
+Name: Cs1
+Oxidation state: 0
+Occupancy: 1.0
 
-PDF 局部排版修改：
-    改 pdf_tex_edits/*.tex
-
-PDF 全局格式修改：
-    改 main.tex
-
-文章选择和顺序：
-    改 pdf_order.txt
-
-脚本逻辑：
-    改 build.py
+a = 0.0000
+b = 0.3632
+c = 0.0000

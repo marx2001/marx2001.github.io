@@ -1,4 +1,1 @@
-main.tex
-build.py
-pdf_order.txt
-pdf_tex_edits/*.tex
+189

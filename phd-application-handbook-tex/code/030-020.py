@@ -1,4 +1,3 @@
-
 tb_symbolic = TBModel(lattice)
 tb_symbolic.set_onsite([0.0, 0.0])
 tb_symbolic.set_hop("t", 0, 1, [0, 0])

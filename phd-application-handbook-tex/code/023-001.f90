@@ -1,4 +1,3 @@
-
 ! 子程序：计算单个k点的Berry曲率（基于费米能级）
 subroutine Berry_curvature_singlek_EF(k, mu, Omega_x, Omega_y, Omega_z)
      !> 计算单个k点的Berry曲率

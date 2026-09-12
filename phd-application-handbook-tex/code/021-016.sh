@@ -1,5 +1,3 @@
-
-
 kmesh_tol=0.00001
 
 begin projections
