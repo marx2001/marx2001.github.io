@@ -1,0 +1,64 @@
+%!TEX program = xelatex
+\documentclass[11pt,a4paper]{article}
+\usepackage[UTF8]{ctex}
+\usepackage{geometry}
+\usepackage{xcolor}
+\usepackage{fontspec}
+\usepackage{fancyhdr}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{microtype}
+
+\geometry{left=2.20cm,right=2.20cm,top=1.80cm,bottom=1.75cm,headheight=16pt,headsep=0.45cm}
+\setmainfont{Source Serif 4}
+\setsansfont{Source Sans 3}
+\setCJKmainfont{Microsoft YaHei}
+\setCJKsansfont{Microsoft YaHei}
+\definecolor{StatementNavy}{HTML}{17324D}
+\definecolor{StatementTeal}{HTML}{0B7A75}
+\definecolor{StatementGold}{HTML}{C7A54B}
+\definecolor{BodyGrey}{HTML}{344050}
+\color{BodyGrey}
+\hypersetup{colorlinks=true,urlcolor=StatementTeal,linkcolor=StatementNavy}
+\setlength{\parindent}{2em}
+\setlength{\parskip}{0.32em}
+\linespread{1.18}
+\setlength{\emergencystretch}{2em}
+\setlist[itemize]{leftmargin=2em,itemsep=0.2em,topsep=0.25em}
+\titleformat{\section}{\large\bfseries\color{StatementNavy}}{}{0pt}{}[\vspace{0.15em}{\color{StatementGold}\titlerule[0.8pt]}]
+\titlespacing*{\section}{0pt}{0.90em}{0.32em}
+
+\newcommand{\ApplicantName}{马睿骁}
+\newcommand{\EnglishName}{Ruixiao Ma}
+\newcommand{\CurrentUniversity}{浙江理工大学}
+\newcommand{\CurrentMajor}{物理学硕士}
+\newcommand{\TargetField}{铁电/多铁材料、低维功能材料与界面物理}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\sffamily\small\textcolor{StatementNavy}{\ApplicantName\enskip |\enskip 博士申请个人陈述}}
+\fancyhead[R]{\sffamily\small\textcolor{StatementTeal}{\CurrentUniversity}}
+\fancyfoot[C]{\sffamily\small\textcolor{gray}{\thepage}}
+\renewcommand{\headrulewidth}{0.7pt}
+\renewcommand{\headrule}{\hbox to\headwidth{\color{StatementGold}\leaders\hrule height \headrulewidth\hfill}}
+
+\begin{document}
+\begin{center}
+  {\sffamily\fontsize{22}{26}\selectfont\bfseries\color{StatementNavy} 博士申请个人陈述}\par
+  \vspace{0.35em}
+  {\sffamily\large\bfseries\color{StatementTeal}\ApplicantName\enskip /\enskip \EnglishName}\par
+  \vspace{0.25em}
+  {\sffamily\small \CurrentMajor\enskip\textperiodcentered\enskip 研究方向：\TargetField}\par
+  \vspace{0.6em}
+  {\color{StatementGold}\rule{\linewidth}{1.1pt}}
+\end{center}
+\vspace{0.35em}
+
+\input{content}
+
+\vfill
+\begin{flushright}
+\sffamily\small\textcolor{gray}{\ApplicantName\quad 2026年9月}
+\end{flushright}
+\end{document}
