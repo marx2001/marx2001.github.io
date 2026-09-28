@@ -1,0 +1,3 @@
+a = fractional x
+b = fractional y
+c = fractional z

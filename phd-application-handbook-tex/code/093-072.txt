@@ -1,0 +1,2 @@
+先把文件名加入 pdf_order.txt
+再运行 python build.py --only 关键词

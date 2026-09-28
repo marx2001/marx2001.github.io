@@ -1,0 +1,227 @@
+
+---
+# Only the main Sass file needs front matter (the dashes are enough)
+---
+
+@import "styles";
+
+/* === 自定义代码块样式 === */
+pre code {
+  display: block;
+  padding: 1em;
+  background-color: #282c34;
+  color: #abb2bf;
+  border-radius: 8px;
+  overflow-x: auto;
+  overflow-y: auto;
+  max-height: 500px;
+  position: relative;
+  font-size: 0.9em;
+  line-height: 1.4;
+  white-space: pre;
+}
+
+pre code::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+
+pre code::-webkit-scrollbar-thumb {
+  background: #5c6370;
+  border-radius: 4px;
+}
+
+/* ====================== */
+/* 分页文章列表样式 - 精确匹配图片效果 */
+/* ====================== */
+
+#posts-container {
+  .post-preview {
+    margin-bottom: 1.5rem;
+    
+    > a {
+      color: #212529;
+      text-decoration: none;
+      
+      &:focus,
+      &:hover {
+        text-decoration: none;
+        color: #0085A1;
+        
+        .post-title {
+          color: #0085A1;
+        }
+      }
+      
+      .post-title {
+        font-size: 30px;
+        font-weight: 700;
+        margin-top: 25px;
+        margin-bottom: 5px;
+        line-height: 1.2;
+        font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      }
+      
+      .post-subtitle {
+        font-weight: 300;
+        margin: 0 0 8px; /* [OK] 调整副标题底部间距 */
+        font-size: 24px; /* [OK] 确保副标题字体大小正常 */
+        line-height: 1.3;
+        font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+        color: #6c757d;
+      }
+    }
+    
+    /* [X] 删除分类信息样式 */
+    /* .post-category {
+        font-size: 16px;
+        font-weight: 600;
+        color: #007bff;
+        margin-bottom: 6px;
+        font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+        letter-spacing: 0.3px;
+    } */
+    
+    .post-meta {
+      font-size: 18px;
+      font-style: italic;
+      margin-top: 0;
+      margin-bottom: 8px;
+      color: #6c757d;
+      font-family: 'Lora', 'Times New Roman', serif;
+      line-height: 1.5;
+      
+      a {
+        color: #212529;
+        text-decoration: none;
+        
+        &:focus,
+        &:hover {
+          text-decoration: underline;
+          color: #0085A1;
+        }
+      }
+    }
+    
+    @media only screen and (min-width: 768px) {
+      > a {
+        .post-title {
+          font-size: 36px;
+        }
+      }
+    }
+  }
+  
+  /* 分隔线样式 */
+  hr {
+    margin: 8px 0 !important;
+    border: 0;
+    border-top: 1px solid rgba(0, 0, 0, 0.1);
+    width: 100%;
+  }
+}
+
+/* 无文章提示样式 */
+.no-posts {
+  text-align: center;
+  padding: 3rem 0;
+  
+  h3 {
+    color: #6c757d;
+    margin-bottom: 1rem;
+    font-size: 1.5rem;
+  }
+  
+  p {
+    color: #6c757d;
+    margin-bottom: 0.5rem;
+    font-size: 1.1rem;
+  }
+}
+
+/* ====================== */
+/* 分页控件样式 */
+/* ====================== */
+
+#pagination {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin: 1.5rem 0 2rem !important;
+  padding: 1rem 0 !important;
+  border-top: 1px solid #dee2e6;
+  
+  .pagination-btn {
+    padding: 8px 16px;
+    margin: 0 10px;
+    background-color: #fff;
+    border: 1px solid #007bff;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.3s;
+    font-size: 14px;
+    color: #007bff;
+    font-weight: 600;
+    
+    &:hover:not(.disabled) {
+      background-color: #007bff;
+      color: #fff;
+    }
+    
+    &.disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      color: #6c757d;
+      border-color: #6c757d;
+    }
+  }
+  
+  .page-info {
+    margin: 0 15px;
+    color: #6c757d;
+    font-size: 16px;
+  }
+}
+
+/* ====================== */
+/* 响应式设计 */
+/* ====================== */
+
+@media (max-width: 768px) {
+  #posts-container .post-preview {
+    margin-bottom: 1rem;
+    
+    > a {
+      .post-title {
+        font-size: 28px;
+        margin-top: 20px;
+        margin-bottom: 4px;
+      }
+      
+      .post-subtitle {
+        font-size: 20px;
+        margin: 0 0 6px; /* [OK] 移动端调整副标题间距 */
+      }
+    }
+    
+    .post-meta {
+      font-size: 16px;
+      margin-bottom: 6px;
+    }
+  }
+  
+  #posts-container hr {
+    margin: 6px 0 !important;
+  }
+  
+  #pagination {
+    margin: 1rem 0 1.5rem !important;
+    padding: 0.8rem 0 !important;
+    flex-direction: column;
+    gap: 8px;
+    
+    .page-info {
+      margin: 8px 0;
+    }
+  }
+}

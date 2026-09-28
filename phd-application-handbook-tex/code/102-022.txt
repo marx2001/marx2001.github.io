@@ -1,0 +1,5 @@
+添加 Camera
+→
+调整视角
+→
+Ctrl + Alt + NumPad 0

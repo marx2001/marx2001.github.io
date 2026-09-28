@@ -1,0 +1,5 @@
+#pagination::before,
+#pagination::after {
+  content: none !important;
+  display: none !important;
+}

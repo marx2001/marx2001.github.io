@@ -1,0 +1,1 @@
+jekyll-paginate-v2

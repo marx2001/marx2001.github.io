@@ -1,0 +1,41 @@
+%!TEX TS-program = xelatex
+%!TEX encoding = UTF-8 Unicode
+\documentclass[11pt,a4paper]{awesome-cv}
+
+\usepackage{xeCJK}
+\setCJKmainfont{Microsoft YaHei}
+\setCJKsansfont{Microsoft YaHei}
+
+\geometry{left=1.45cm,top=0.9cm,right=1.45cm,bottom=1.7cm,footskip=0.55cm}
+\definecolor{academicblue}{HTML}{1F5A94}
+\colorlet{awesome}{academicblue}
+\setbool{acvSectionColorHighlight}{true}
+\renewcommand{\acvHeaderSocialSep}{\enskip\textbar\enskip}
+
+\name{马睿骁}{Ruixiao Ma}
+\position{物理学硕士研究生\enskip\cdotp\enskip 计算材料与拓扑磁性}
+\address{浙江理工大学\enskip\cdotp\enskip 浙江省量子态调控与光场操控重点实验室}
+\mobile{19800353973}
+\email{2024210104023@mails.zstu.edu.cn}
+\homepage{marx2001.github.io}
+\github{marx2001}
+\dateofbirth{2001.11}
+\extrainfo{北京大兴\enskip\textbar\enskip 共青团员}
+
+\begin{document}
+\makecvheader[C]
+\makecvfooter
+  {更新于 2026 年 9 月}
+  {马睿骁\enskip\cdotp\enskip 学术简历}
+  {\thepage}
+
+\input{sections/research.tex}
+\input{sections/education.tex}
+\input{sections/research-experience.tex}
+\input{sections/skills.tex}
+\newpage
+\input{sections/experience.tex}
+\input{sections/honors.tex}
+\input{sections/service.tex}
+
+\end{document}

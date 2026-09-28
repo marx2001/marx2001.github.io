@@ -1,0 +1,4 @@
+ruby -v
+gem -v
+bundle -v
+jekyll -v

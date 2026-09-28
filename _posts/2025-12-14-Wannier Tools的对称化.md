@@ -7,17 +7,15 @@ categories: sci-note
 permalink: /sci-note_posts/20251215-wt-sym
 ---
 
-
-# <center>Tutorials-irvsp补充和指令​</center>
+## <center>Tutorials-irvsp补充和指令​</center>
 
 ### 简介
 
 确保hr.dat仍保留DFT计算中的对称性，这样能保证wannier90的计算结果是正确的
 
-# <center>流程​</center>
+## <center>流程​</center>
 
 1. 准备POSCAR
-
 2. 判断空间群： 
 
 ```shell
@@ -36,7 +34,7 @@ phonopy --symmetry --tolerance 0.005
 
 3. 复制新POSCAR，再做计算静态自洽、能带计算
 
-# <center>Wannier Tools对称化​</center>
+## <center>Wannier Tools对称化​</center>
 
 1. 准备输入文件locaxis.in
 
@@ -72,7 +70,7 @@ phonopy --symmetry --tolerance 0.005
 
 采用晶格对称性，设置line 20为0，即不读取原子坐标系。
 
-准备poscar.in，内容：
+**准备poscar.in，内容：**
 
 ```python
 
@@ -91,10 +89,10 @@ phonopy --symmetry --tolerance 0.005
      0.5000003284704491    0.5000001458636731    0.4865206618880933 O
 
 ```
+
 复制poscar进去。
 
 对应的轨道，准备文件wann.in
-
 
 ```python
 
@@ -132,7 +130,7 @@ T
 
 ```
 
-准备wannier90.in文件，内容：
+**准备wannier90.in文件，内容：**
 
 ```python
 
@@ -220,6 +218,7 @@ end kpoints
 conda activate sym_env
 
 ```
+
 运行程序
 
 ```shell

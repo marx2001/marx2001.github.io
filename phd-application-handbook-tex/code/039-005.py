@@ -1,0 +1,2 @@
+
+python 2step.py --edges edges.csv --out Ge.csv --mediators Ge --d_tcse 3.0 --d_sex 3.0 --min_absH 1e-4 --top_paths 2000 --require_same_tc_atom --max_netR_L1 6 --exclude_netR0 --delta_mode sequential --delta_floor 0.5 --hr wannier90_hr.dat

@@ -1,0 +1,39 @@
+
+----------------------------------------
+       Tight-binding model report       
+----------------------------------------
+r-space dimension           = 2
+k-space dimension           = 2
+periodic directions         = [0, 1]
+spinful                     = False
+number of spin components   = 1
+number of electronic states = 2
+number of orbitals          = 2
+
+Lattice vectors (Cartesian):
+  # 0 ===> [ 1.000,  0.000]
+  # 1 ===> [ 0.000,  1.000]
+Volume of unit cell (Cartesian) = 1.000 [A^d]
+
+Reciprocal lattice vectors (Cartesian):
+  # 0 ===> [ 6.283,  0.000]
+  # 1 ===> [ 0.000,  6.283]
+Volume of reciprocal unit cell = 39.478 [A^-d]
+
+Orbital vectors (Cartesian):
+  # 0 ===> [ 0.000,  0.000]
+  # 1 ===> [ 0.500,  0.500]
+
+Orbital vectors (fractional):
+  # 0 ===> [ 0.000,  0.000]
+  # 1 ===> [ 0.500,  0.500]
+----------------------------------------
+Site energies:
+  < 0 | H | 0 > = 'm'
+  < 1 | H | 1 > = 'm'
+Hoppings:
+  < 0 | H | 1  + [ 0.0 ,  0.0 ] > = 't1'
+  < 1 | H | 0  + [ 0.0 ,  1.0 ] > = 't2'
+Hopping distances:
+  | pos( 0 ) - pos( 1 ) + [ 0.0 ,  0.0 ] | =   0.707 (param)
+  | pos( 1 ) - pos( 0 ) + [ 0.0 ,  1.0 ] | =   0.707 (param)

@@ -1,0 +1,5 @@
+Farzad Mahfouzi and Nicholas Kioussis,
+First-principles calculation of the Dzyaloshinskii--Moriya interaction:
+A Green's function approach,
+Physical Review B 103, 094410 (2021).
+DOI: 10.1103/PhysRevB.103.094410

@@ -1,0 +1,8 @@
+Key Light
+主光
+
+Fill Light
+补光
+
+Rim Light
+轮廓光

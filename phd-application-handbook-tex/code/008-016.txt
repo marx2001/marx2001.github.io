@@ -1,0 +1,5 @@
+Takashi Koretsune, Naoto Nagaosa, and Ryotaro Arita,
+Control of Dzyaloshinskii--Moriya interaction in Mn1-xFexGe:
+a first-principles study,
+Scientific Reports 5, 13302 (2015).
+DOI: 10.1038/srep13302

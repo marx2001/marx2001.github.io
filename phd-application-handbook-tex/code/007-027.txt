@@ -1,0 +1,8 @@
+Element: V
+Name: V1
+Oxidation state: 0
+Occupancy: 1.0
+
+a = 0.8220
+b = 0.5334
+c = 0.5000

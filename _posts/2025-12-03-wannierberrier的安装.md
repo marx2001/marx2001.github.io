@@ -7,18 +7,20 @@ categories: sci-note
 permalink: /sci-note_posts/20251203-wann
 ---
 
-
-# <center>Recording​</center>
-
+## <center>Recording​</center>
 
 ### 1. 步骤
+
 创建虚拟环境
+
 ```shell
 conda create -n wannier-sym python=3.12.12 -y
 
 conda activate wannier-sym
 ```
+
 使用清华源安装
+
 ```shell
 pip install wannierberri -i https://pypi.tuna.tsinghua.edu.cn/simple
 
@@ -31,7 +33,7 @@ http://pypi.mirrors.opencas.cn/simple/       # 中国科学院
 https://pypi.tuna.tsinghua.edu.cn/simple/    # 清华大学 
 ```
 
-查看所需依赖的版本：
+**查看所需依赖的版本：**
 
 ```shell
 
@@ -43,8 +45,7 @@ python3 --version
 
 修改并更新知乎中的代码，还需要安装FFT等库，安装很简单，就不在此一一列出了。
 
-目前的代码是大概正确的，报错是因为晶格常数不完全对称，但是没有找到代码中调整tolerance的api，所以我用高对称性结构重新加入wannier接口拟合一遍。
-第一版代码，存在报错，这是为了记录，可以及时进行版本回退
+目前的代码是大概正确的，报错是因为晶格常数不完全对称，但是没有找到代码中调整tolerance的api，所以我用高对称性结构重新加入wannier接口拟合一遍。第一版代码，存在报错，这是为了记录，可以及时进行版本回退
 
 ```shell
 

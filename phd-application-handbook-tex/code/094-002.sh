@@ -1,0 +1,3 @@
+
+ISMEAR=0
+ICHARG=11

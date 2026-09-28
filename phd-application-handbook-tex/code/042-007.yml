@@ -1,0 +1,3 @@
+slugify:
+  mode: "default"
+  case: false

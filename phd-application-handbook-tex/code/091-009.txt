@@ -1,0 +1,6 @@
+{% for post in paginator.posts %}
+  ...
+  {% unless forloop.last %}
+    <hr>
+  {% endunless %}
+{% endfor %}

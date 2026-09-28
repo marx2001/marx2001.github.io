@@ -1,0 +1,44 @@
+
+SYSTEM = MOPTSNS
+LREAL= Auto
+ALGO= Normal
+#ISEARCH=1
+PREC=High
+
+ISTART = 0
+ICHARG = 2
+
+ENCUT = 520
+NCORE= 4
+ISYM=2
+
+ISMEAR =0
+SIGMA = 0.04
+
+NSW = 0
+ISIF = 2
+IBRION =-1
+LWAVE=.T
+LCHARG=.T
+EDIFF = 1E-6
+EDIFFG = -0.01
+
+NELM=100
+
+LDAU=.T
+LDAUTYPE=2
+LDAUL=2 -1 -1 -1           #库伦排斥的轨道，对应元素
+LDAUU=1.5 0.0 0.0 0.0   #几个元素几个数
+LDAUJ=0.0 0.0 0.0 0.0   #stoner交换参数大小
+LDAUPRINT = 2
+
+ISPIN=2
+MAGMOM = 0 0 4 0 0 -4 9*0
+LMAXMIX=4
+
+LSORBIT=.T
+
+AMIX     = 0.1
+BMIX     = 0.0001 
+AMIX_MAG = 0.8
+BMIX_MAG = 0.0001

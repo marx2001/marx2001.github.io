@@ -1,0 +1,2 @@
+Apply symmetry
+Generate symmetry equivalents

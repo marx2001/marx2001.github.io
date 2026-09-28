@@ -1,0 +1,1 @@
+输入 6 个非等价位点 → Apply symmetry / Build → 得到 25 原子完整晶胞

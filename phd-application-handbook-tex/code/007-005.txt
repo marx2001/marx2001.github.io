@@ -1,0 +1,4 @@
+Cs: 3
+V : 9
+Te: 13
+Total: 25 atoms

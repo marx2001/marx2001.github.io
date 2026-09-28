@@ -1,0 +1,5 @@
+View
+→
+Align View
+→
+Align Active Camera to View

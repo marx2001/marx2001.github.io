@@ -1,0 +1,1 @@
+LWAVE=.TRUE.  ISYM = -1

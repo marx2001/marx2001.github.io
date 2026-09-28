@@ -1,0 +1,2 @@
+converted/        自动生成层，不手动修改
+pdf_tex_edits/    手动编辑层，专门用于调整 PDF 版式

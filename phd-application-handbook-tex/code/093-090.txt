@@ -1,0 +1,11 @@
+1. 在个人网页中新建或修改 Markdown 文件；
+2. 确保 front matter 中包含 categories: sci-note；
+3. 将该 Markdown 文件名加入 pdf_order.txt；
+4. 运行 python build.py --only 关键词，检查单篇预览；
+5. 如果是第一次构建，检查 pdf_tex_edits/ 中是否已生成同名 tex；
+6. 修改 Markdown 内容或图片；
+7. 如果只是 PDF 版式问题，则修改 pdf_tex_edits/*.tex；
+8. 再次运行 python build.py --only 关键词；
+9. 满意后运行 python build.py；
+10. 检查完整 PDF；
+11. 将 output/Ruixiao_Ma_Research_Portfolio.pdf 作为申博补充材料发送。

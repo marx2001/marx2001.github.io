@@ -1,0 +1,8 @@
+Element: Te
+Name: Te2
+Oxidation state: 0
+Occupancy: 1.0
+
+a = 0.666667
+b = 0.333333
+c = 0.25213

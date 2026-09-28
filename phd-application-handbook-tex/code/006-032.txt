@@ -1,0 +1,54 @@
+[1] H. Yang, J. Liang, and Q. Cui,
+    First-principles calculations for Dzyaloshinskii--Moriya interaction,
+    Nature Reviews Physics 5, 43--61 (2023).
+    DOI: 10.1038/s42254-022-00529-0
+
+[2] H. Xiang, C. Lee, H.-J. Koo, X. Gong, and M.-H. Whangbo,
+    Magnetic properties and energy-mapping analysis,
+    Dalton Transactions 42, 823--853 (2013).
+    DOI: 10.1039/C2DT31662E
+
+[3] D. Šabani, C. Bacaksız, and M. V. Milošević,
+    Ab initio methodology for magnetic exchange parameters:
+    Generic four-state energy mapping onto a Heisenberg spin Hamiltonian,
+    Physical Review B 102, 014457 (2020).
+    DOI: 10.1103/PhysRevB.102.014457
+
+[4] C. Xu, B. Xu, B. Dupé, and L. Bellaiche,
+    Magnetic interactions in BiFeO3: A first-principles study,
+    Physical Review B 99, 104420 (2019).
+    DOI: 10.1103/PhysRevB.99.104420
+
+[5] B. Xu, S. Meyer, M. J. Verstraete, L. Bellaiche, and B. Dupé,
+    First-principles study of spin spirals in the multiferroic BiFeO3,
+    Physical Review B 103, 214423 (2021).
+    DOI: 10.1103/PhysRevB.103.214423
+
+[6] J. H. Yang, Z. L. Li, X. Z. Lu, M.-H. Whangbo, S.-H. Wei,
+    X. G. Gong, and H. J. Xiang,
+    Strong Dzyaloshinskii--Moriya Interaction and Origin of Ferroelectricity in Cu2OSeO3,
+    Physical Review Letters 109, 107203 (2012).
+    DOI: 10.1103/PhysRevLett.109.107203
+
+[7] G. C. Loh and C. K. Gan,
+    Exchange and Dzyaloshinskii--Moriya interactions in bulk FeGe:
+    Effects of atomic vacancies,
+    AIP Advances 7, 056412 (2017).
+    DOI: 10.1063/1.4973847
+
+[8] T. Koretsune, N. Nagaosa, and R. Arita,
+    Control of Dzyaloshinskii--Moriya interaction in Mn1-xFexGe:
+    a first-principles study,
+    Scientific Reports 5, 13302 (2015).
+    DOI: 10.1038/srep13302
+
+[9] X. He, N. Helbig, M. J. Verstraete, and E. Bousquet,
+    TB2J: A python package for computing magnetic interaction parameters,
+    Computer Physics Communications 264, 107938 (2021).
+    DOI: 10.1016/j.cpc.2021.107938
+
+[10] F. Mahfouzi and N. Kioussis,
+     First-principles calculation of the Dzyaloshinskii--Moriya interaction:
+     A Green's function approach,
+     Physical Review B 103, 094410 (2021).
+     DOI: 10.1103/PhysRevB.103.094410
