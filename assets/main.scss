@@ -521,6 +521,30 @@ mark {
   top: -2px;
 }
 
+/* Keep equations and wide tables readable on narrow screens. */
+.post-content mjx-container[jax="SVG"][display="true"] {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.3rem 0;
+}
+
+.post-content mjx-container[jax="SVG"] {
+  text-indent: 0;
+}
+
+.post-content .table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  margin: 1.5rem 0;
+}
+
+.post-content .table-scroll table {
+  min-width: 620px;
+  margin: 0;
+}
+
 
 
 /* ====================== */

@@ -26,9 +26,9 @@ layout: default
     <div class="col-lg-8 col-md-10 mx-auto">
 
       <div id="posts-container">
-        {% assign featured_posts = site.posts | where: "featured", true %}
+        {% assign recent_posts = site.data.recent_posts %}
 
-        {% for post in featured_posts %}
+        {% for post in recent_posts %}
           <div class="post-preview">
             <a href="{{ post.url | relative_url }}">
               <h2 class="post-title">{{ post.title }}</h2>
@@ -39,7 +39,7 @@ layout: default
               {% endif %}
             </a>
             <p class="post-meta">
-              Posted on {{ post.date | date: "%B %d, %Y" }}
+              Updated on {{ post.last_modified_at | default: post.date | date: "%B %d, %Y" }}
               · {% assign words = post.content | number_of_words %}
               {% if words < 120 %}1 min read{% else %}{{ words | divided_by: 120 }} mins read{% endif %}
             </p>
