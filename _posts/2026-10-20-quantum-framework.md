@@ -21,7 +21,7 @@ last_modified_at: 2026-10-20
 
 对于一个给定的量子体系，可以按照下面的思路研究：
 
-1. **建立模型**：明确粒子的质量、所处势场及其他相互作用，构造哈密顿算符 \(\hat H\)。
+1. **建立模型**：明确粒子的质量、所处势场及其他相互作用，构造哈密顿算符 <span class="math-inline" markdown="0">&#92;(&#92;hat H&#92;)</span>。
 2. **确定量子态**：结合初始条件和适当的边界条件，求解薛定谔方程，得到随时间演化的量子态。
 3. **选择表象**：用位置、动量或能量本征态等不同基底，表示同一个量子态。
 4. **研究物理性质**：利用位置、动量、能量等算符，计算测量概率、期望值等物理信息。
@@ -55,11 +55,11 @@ last_modified_at: 2026-10-20
 
 其中：
 
-- \(|\psi(t)\rangle\)：时刻 \(t\) 的量子态（态矢量）。
-- \(\hat H\)：哈密顿算符，描述体系的能量并决定量子态的时间演化。
-- \(\hbar\)：约化普朗克常数。
+- <span class="math-inline" markdown="0">&#92;(&#92;lvert &#92;psi(t)&#92;rangle&#92;)</span>：时刻 <span class="math-inline" markdown="0">&#92;(t&#92;)</span> 的量子态（态矢量）。
+- <span class="math-inline" markdown="0">&#92;(&#92;hat H&#92;)</span>：哈密顿算符，描述体系的能量并决定量子态的时间演化。
+- <span class="math-inline" markdown="0">&#92;(&#92;hbar&#92;)</span>：约化普朗克常数。
 
-例如，对一维非相对论单粒子，在位置表象中，若势函数为 \(V(x,t)\)，则：
+例如，对一维非相对论单粒子，在位置表象中，若势函数为 <span class="math-inline" markdown="0">&#92;(V(x,t)&#92;)</span>，则：
 
 <div class="math-display" markdown="0">
 \[
@@ -85,9 +85,9 @@ i\hbar\frac{\partial\psi(x,t)}{\partial t}
 
 ## 三、态矢量与波函数：同一个量子态的两种表达层次
 
-**态矢量** \(|\psi\rangle\) 是量子态的抽象数学描述，本身不依赖于选择哪一组基底。
+**态矢量** <span class="math-inline" markdown="0">&#92;(&#92;lvert &#92;psi&#92;rangle&#92;)</span> 是量子态的抽象数学描述，本身不依赖于选择哪一组基底。
 
-**波函数** \(\psi(x)\) 是该态矢量在**位置表象**下的表示：
+**波函数** <span class="math-inline" markdown="0">&#92;(&#92;psi(x)&#92;)</span> 是该态矢量在**位置表象**下的表示：
 
 <div class="math-display" markdown="0">
 \[
@@ -99,7 +99,7 @@ i\hbar\frac{\partial\psi(x,t)}{\partial t}
 
 ### 1. 为什么函数可以类比为列向量？
 
-将波函数在若干位置 \(x_1,x_2,\ldots,x_N\) 处取值，可得到：
+将波函数在若干位置 <span class="math-inline" markdown="0">&#92;(x_1,x_2,&#92;ldots,x_N&#92;)</span> 处取值，可得到：
 
 <div class="math-display" markdown="0">
 \[
@@ -113,15 +113,15 @@ i\hbar\frac{\partial\psi(x,t)}{\partial t}
 \]
 </div>
 
-- 整个 \(\psi(x)\) 是位置表象下的**波函数**。
-- 每个 \(\psi(x_i)\) 是在位置 \(x_i\) 处的**概率幅**，而不是不同的“方程解”。
+- 整个 <span class="math-inline" markdown="0">&#92;(&#92;psi(x)&#92;)</span> 是位置表象下的**波函数**。
+- 每个 <span class="math-inline" markdown="0">&#92;(&#92;psi(x_i)&#92;)</span> 是在位置 <span class="math-inline" markdown="0">&#92;(x_i&#92;)</span> 处的**概率幅**，而不是不同的“方程解”。
 - 这个列向量是连续波函数的一种**离散取样示意**。在严格的离散数值表示中，还需要考虑基底的归一化、网格间距等因素。
 
-对于归一化的一维位置波函数，\(|\psi(x)|^2\) 是位置的概率密度，而非粒子在 \(x\) 处的一条确定轨迹。
+对于归一化的一维位置波函数，<span class="math-inline" markdown="0">&#92;(&#92;lvert&#92;psi(x)&#92;rvert^2&#92;)</span> 是位置的概率密度，而非粒子在 <span class="math-inline" markdown="0">&#92;(x&#92;)</span> 处的一条确定轨迹。
 
 ### 2. 态矢量为什么能够线性叠加？
 
-在一组完整的离散正交归一基底 \(\{|n\rangle\}\) 下：
+在一组完整的离散正交归一基底 <span class="math-inline" markdown="0">&#92;(&#92;{&#92;lvert n&#92;rangle&#92;}&#92;)</span> 下：
 
 <div class="math-display" markdown="0">
 \[
@@ -130,7 +130,7 @@ i\hbar\frac{\partial\psi(x,t)}{\partial t}
 \]
 </div>
 
-这里的 \(|n\rangle\) 是基矢，\(c_n\) 是对应的展开系数。把这些系数排列起来，就是态矢量在这组基底下的列向量表示。
+这里的 <span class="math-inline" markdown="0">&#92;(&#92;lvert n&#92;rangle&#92;)</span> 是基矢，<span class="math-inline" markdown="0">&#92;(c_n&#92;)</span> 是对应的展开系数。把这些系数排列起来，就是态矢量在这组基底下的列向量表示。
 
 **关键区别：** 态矢量能够展开为多个基矢的线性组合，不代表列向量中的每个元素都是一个完整波函数。
 
@@ -142,15 +142,15 @@ i\hbar\frac{\partial\psi(x,t)}{\partial t}
 
 | 表象 | 所选基底 | 态矢量对应的分量 |
 | --- | --- | --- |
-| 位置表象 | 位置本征态 \(|x\rangle\) | \(\psi(x)=\langle x|\psi\rangle\) |
-| 动量表象 | 动量本征态 \(|p\rangle\) | \(\phi(p)=\langle p|\psi\rangle\) |
-| 能量表象 | 哈密顿算符的本征态 \(|n\rangle\) | \(c_n=\langle n|\psi\rangle\) |
+| 位置表象 | 位置本征态 <span class="math-inline" markdown="0">&#92;(&#92;lvert x&#92;rangle&#92;)</span> | <span class="math-inline" markdown="0">&#92;(&#92;psi(x)=&#92;langle x&#92;vert &#92;psi&#92;rangle&#92;)</span> |
+| 动量表象 | 动量本征态 <span class="math-inline" markdown="0">&#92;(&#92;lvert p&#92;rangle&#92;)</span> | <span class="math-inline" markdown="0">&#92;(&#92;phi(p)=&#92;langle p&#92;vert &#92;psi&#92;rangle&#92;)</span> |
+| 能量表象 | 哈密顿算符的本征态 <span class="math-inline" markdown="0">&#92;(&#92;lvert n&#92;rangle&#92;)</span> | <span class="math-inline" markdown="0">&#92;(c_n=&#92;langle n&#92;vert &#92;psi&#92;rangle&#92;)</span> |
 
 位置表象体现量子态在位置基底上的概率幅分布；能量表象体现它在各个能量本征态上的展开系数。
 
 ### 位置表象如何转换为能量表象？
 
-设 \(\hat H|n\rangle=E_n|n\rangle\)，并令 \(u_n(x)=\langle x|n\rangle\)，则在离散、完备、正交归一的能量本征态基底下：
+设 <span class="math-inline" markdown="0">&#92;(&#92;hat H&#92;lvert n&#92;rangle=E_n&#92;lvert n&#92;rangle&#92;)</span>，并令 <span class="math-inline" markdown="0">&#92;(u_n(x)=&#92;langle x&#92;vert n&#92;rangle&#92;)</span>，则在离散、完备、正交归一的能量本征态基底下：
 
 <div class="math-display" markdown="0">
 \[
@@ -189,7 +189,7 @@ A\mathbf v=\mathbf w
 
 **抽象算符在选定基底后，可以用矩阵表示。** 但普通的算符作用与表象变换不能混为一谈：
 
-- **算符作用**：产生新的数学向量，例如 \(\hat A|\psi\rangle\)。这不一定意味着实际发生了一次物理过程。
+- **算符作用**：产生新的数学向量，例如 <span class="math-inline" markdown="0">&#92;(&#92;hat A&#92;lvert &#92;psi&#92;rangle&#92;)</span>。这不一定意味着实际发生了一次物理过程。
 - **表象变换**：对同一个抽象量子态，换用不同基底表示；向量的坐标改变，但物理态不变。
 
 ### 1. 在求解量子态时使用算符
@@ -202,11 +202,11 @@ A\mathbf v=\mathbf w
 \]
 </div>
 
-它对应线性代数中的 \(A\mathbf v=\lambda\mathbf v\)。求解这一方程，可以找到允许的能量本征值及对应本征态。它们也可用作进一步求解薛定谔方程的基底。
+它对应线性代数中的 <span class="math-inline" markdown="0">&#92;(A&#92;mathbf v=&#92;lambda&#92;mathbf v&#92;)</span>。求解这一方程，可以找到允许的能量本征值及对应本征态。它们也可用作进一步求解薛定谔方程的基底。
 
 ### 2. 在已知量子态后使用算符
 
-若已知归一化的波函数 \(\psi(x)\)，可以通过物理量算符计算期望值。例如，在一维位置表象下：
+若已知归一化的波函数 <span class="math-inline" markdown="0">&#92;(&#92;psi(x)&#92;)</span>，可以通过物理量算符计算期望值。例如，在一维位置表象下：
 
 **位置期望值：**
 
@@ -267,7 +267,7 @@ A\mathbf v=\mathbf w
 \]
 </div>
 
-其中 \(u_n(x)=\langle x|n\rangle\)。这两式不是两个不同的物理解，而是**同一个随时间演化的量子态的抽象表示与位置表象表示**。
+其中 <span class="math-inline" markdown="0">&#92;(u_n(x)=&#92;langle x&#92;vert n&#92;rangle&#92;)</span>。这两式不是两个不同的物理解，而是**同一个随时间演化的量子态的抽象表示与位置表象表示**。
 
 ---
 
@@ -276,7 +276,7 @@ A\mathbf v=\mathbf w
 | 容易产生的理解 | 更准确的理解 |
 | --- | --- |
 | 波函数就是态矢量本身 | 波函数是抽象态矢量在位置表象下的表示 |
-| 列向量每一项都是一个波函数 | 每一项是所选基底下的一个分量；位置取样时是 \(\psi(x_i)\) |
+| 列向量每一项都是一个波函数 | 每一项是所选基底下的一个分量；位置取样时是 <span class="math-inline" markdown="0">&#92;(&#92;psi(x_i)&#92;)</span> |
 | 波函数给出粒子的确定运动轨迹 | 波函数提供测量结果的概率幅信息，其演化由薛定谔方程决定 |
 | 表象变换就是算符作用产生新态 | 表象变换保持抽象量子态不变，仅改变其表示 |
 | 算符作用后就直接得到物理量的数值 | 一般仍得到向量；期望值需要进行内积等运算 |
