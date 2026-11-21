@@ -408,7 +408,6 @@ mark {
 
 #pagination .pagination-next {
   margin-left: auto !important;
-  margin-right: -150px !important; // 适当调整右侧边距，保持与内容区边距一致
 }
 
 #pagination .pagination-placeholder {
@@ -442,12 +441,6 @@ mark {
   #pagination .pagination-next {
     margin: 0 !important;
   }
-}
-
-#pagination::before,
-#pagination::after {
-  content: none !important;
-  display: none !important;
 }
 
 #pagination::before,
@@ -862,4 +855,78 @@ button.copy-btn::-moz-focus-inner {
     height: 15px;
     transform: translate(-50%, -56%) rotate(45deg) !important;
   }
+}
+
+/* =========================================
+   科研阅读排版：表格 / 术语表 / IPA / 图片 / 公式
+   ========================================= */
+
+/* 表格基础样式：Markdown 管道表格原本是无边框裸 <table> */
+.post-content table {
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
+  border-collapse: collapse;
+  border-spacing: 0;
+  font-size: 0.94em;
+  line-height: 1.55;
+}
+
+/* 关键：抵消 .post-content 上的 overflow-wrap: anywhere，
+   否则英文术语（noncommutative 等）与 IPA 会被拦腰折断。 */
+.post-content th,
+.post-content td {
+  padding: 0.5rem 0.65rem;
+  border: 1px solid #dee2e6;
+  vertical-align: top;
+  text-align: left;
+  overflow-wrap: normal;
+  word-break: normal;
+  hyphens: none;
+}
+
+.post-content thead th {
+  background-color: #f6f8fa;
+  font-weight: 700;
+}
+
+.post-content tbody tr:nth-child(even) {
+  background-color: #fbfcfd;
+}
+
+/* 宽表（术语表 / IPA / 多列结果表）在窄屏独立横向滚动，不撑破正文列。
+   由 assets/js/table-scroll.js 运行时包一层，不加 min-width：
+   内容放得下时正常铺满，放不下时才出现滚动条。 */
+.table-scroll-x {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  margin: 1.5rem 0;
+}
+
+.table-scroll-x > table {
+  margin: 0;
+}
+
+/* 图片：兜底限制宽度，保留原始论文配图文件本身不做处理 */
+.post-content img {
+  max-width: 100%;
+  height: auto;
+}
+
+/* 数学公式容器（原先分别写在 4 篇文章的行内 <style> 中） */
+.math-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  margin: 1.1em 0;
+}
+
+/* IPA 术语表：英语教材式 |IPA| 粗体显示。
+   字体回退针对 IPA Unicode 字符覆盖好的字体，未引入任何远程字体。 */
+.post-content table strong {
+  font-family: "Charis SIL", "Doulos SIL", "Gentium Plus", "Lora", "Segoe UI", "Lucida Sans Unicode", sans-serif;
+  font-weight: 700;
+  letter-spacing: normal;
+  white-space: nowrap;
 }

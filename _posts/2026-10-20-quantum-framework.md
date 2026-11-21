@@ -99,24 +99,3 @@ i\hbar\frac{d}{dt}|\psi(t)\rangle=\hat H|\psi(t)\rangle
 **确定物理体系与势函数 → 构造哈密顿算符、求解薛定谔方程 → 得到量子态 → 选择基底写出波函数或其他表象的展开系数 → 利用算符研究物理性质。**
 
 这是便于理解量子力学的逻辑框架，而非严格的先后操作顺序。**态矢量描述量子态，表象决定如何表示它，算符描述物理量及其作用，薛定谔方程决定量子态随时间的演化。**
-
-<!-- 与线性代数笔记一致的数学公式渲染配置 -->
-<style>
-.math-display { overflow-x: auto; overflow-y: hidden; margin: 1.1em 0; }
-</style>
-<script>
-(function () {
-  if (window.MathJax) return;
-  window.MathJax = {
-    tex: {
-      inlineMath: [['\\(', '\\)']],
-      displayMath: [['\\[', '\\]']],
-      processEscapes: true
-    }
-  };
-  var script = document.createElement('script');
-  script.src = 'https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js';
-  script.async = true;
-  document.head.appendChild(script);
-})();
-</script>

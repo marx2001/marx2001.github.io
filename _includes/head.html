@@ -23,14 +23,19 @@
   <link rel="canonical" href="{{ page.url | replace:'index.html','' | absolute_url }}">
   <link rel="alternate" type="application/rss+xml" title="{{ site.title | escape }}" href="{{ "/feed.xml" | relative_url }}">
 
-  <!-- highlight.js 样式 -->
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
-
-<!-- highlight.js 脚本 -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-  <script>hljs.highlightAll();</script>
-
-  {% if page.math %}
+  {%- comment -%}
+    数学公式加载条件：front matter 显式 math: true，或正文出现数学定界符时自动加载。
+    kramdown 会把 $$…$$ 转换成 \( … \) / \[ … \]，这里两种形式都检测，
+    避免漏写 math: true 时公式以原始 LaTeX 源码静默显示。
+  {%- endcomment -%}
+  {%- assign math_page_html = page.content | default: '' -%}
+  {%- assign math_needed = page.math -%}
+  {%- unless math_needed -%}
+    {%- if math_page_html contains '\(' or math_page_html contains '\[' -%}
+      {%- assign math_needed = true -%}
+    {%- endif -%}
+  {%- endunless -%}
+  {% if math_needed %}
   <script>
     window.MathJax = {
       tex: {
